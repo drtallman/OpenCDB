@@ -8,6 +8,7 @@
 
 pub mod error;
 pub mod hierarchy;
+pub mod links;
 pub mod naming;
 
 pub use error::CdbError;

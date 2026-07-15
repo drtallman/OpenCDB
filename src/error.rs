@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::hierarchy::HierarchyError;
+use crate::links::LinkViolation;
 use crate::naming::NamingViolation;
 
 /// Top-level error for the `rusty_cdb` API.
@@ -15,4 +16,7 @@ pub enum CdbError {
     /// File Hierarchy Structure module (spec §7.5).
     #[error(transparent)]
     Hierarchy(#[from] HierarchyError),
+    /// Links module (spec §7.7).
+    #[error(transparent)]
+    Link(#[from] LinkViolation),
 }
