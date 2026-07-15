@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::hierarchy::HierarchyError;
 use crate::links::LinkViolation;
+use crate::metadata::MetadataError;
 use crate::naming::NamingViolation;
 
 /// Top-level error for the `rusty_cdb` API.
@@ -19,4 +20,7 @@ pub enum CdbError {
     /// Links module (spec §7.7).
     #[error(transparent)]
     Link(#[from] LinkViolation),
+    /// Global and resource metadata module (spec §7.9).
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
 }

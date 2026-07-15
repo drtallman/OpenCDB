@@ -10,6 +10,7 @@ pub mod error;
 pub mod hierarchy;
 pub mod links;
 pub mod media_types;
+pub mod metadata;
 pub mod naming;
 
 pub use error::CdbError;
