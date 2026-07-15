@@ -6,6 +6,7 @@
 //! that makes the core implementable. Development is strictly test-driven
 //! against the spec — see `docs/TDD_PLAN.md`.
 
+pub mod crs;
 pub mod error;
 pub mod hierarchy;
 pub mod links;

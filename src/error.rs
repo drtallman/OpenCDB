@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::crs::CrsError;
 use crate::hierarchy::HierarchyError;
 use crate::links::LinkViolation;
 use crate::metadata::MetadataError;
@@ -23,4 +24,7 @@ pub enum CdbError {
     /// Global and resource metadata module (spec §7.9).
     #[error(transparent)]
     Metadata(#[from] MetadataError),
+    /// Coordinate Reference System module (spec §7.3).
+    #[error(transparent)]
+    Crs(#[from] CrsError),
 }
