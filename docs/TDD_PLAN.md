@@ -265,11 +265,17 @@ for Phase 9).
 
 ## 7. Progress
 
-- Phases 1–5 done (commits `phase-1(naming)` … `phase-5(metadata)`), 75 tests.
+- Phases 1–6 done (commits `phase-1(naming)` … `phase-6(crs)`), 97 tests.
   Note: the Name4 empty-folder warning is emitted by the hierarchy validator
   (Phase 2), since detecting it requires walking the tree. Phase 5 notes:
   wire names follow the spec tables verbatim (`ID`, `contactPoint`,
   `CharacterSetCode`); datetime parsing is strict about the RFC 3339 `T`
   separator (chrono would tolerate a space); gpkg is accepted as a declared
   encoding but the core cannot write that container (profiles do).
-- Next: Phase 6 (CRS), Phase 14a (facade + Annex A conformance suite) → 0.1.0.
+  Phase 6 notes: the WKT-2 parser is comma-lenient because the spec's own
+  CRS examples are malformed strict WKT (missing comma between compound
+  members, space before `[`) — they parse verbatim in the tests. The storage
+  CRS persists as canonical WKT-2 in `global_metadata/crs.wkt`, wrapped in
+  `COORDINATEMETADATA[crs,EPOCH[…]]` when a datastore epoch is set; a
+  second, different CRS write is refused (CRS3).
+- Next: Phase 14a (facade + Annex A conformance suite) → 0.1.0.
