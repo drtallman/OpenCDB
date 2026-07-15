@@ -262,3 +262,11 @@ conformance milestone, then optional modules ordered by dependency (tiling
 before topology because edge-clipping needs tile boundaries; coverages before
 tiling extensions only for metadata, the tiled-coverage integration test waits
 for Phase 9).
+
+## 7. Progress
+
+- Phases 1–4 done (commits `phase-1(naming)` … `phase-4(media-types)`), 48 tests.
+  Note: the Name4 empty-folder warning is emitted by the hierarchy validator
+  (Phase 2), since detecting it requires walking the tree.
+- Next: Phase 5 (metadata), Phase 6 (CRS), Phase 14a (facade + Annex A
+  conformance suite) → 0.1.0.
