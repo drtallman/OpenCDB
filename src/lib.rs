@@ -7,6 +7,7 @@
 //! against the spec — see `docs/TDD_PLAN.md`.
 
 pub mod error;
+pub mod hierarchy;
 pub mod naming;
 
 pub use error::CdbError;
