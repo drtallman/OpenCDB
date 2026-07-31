@@ -5,6 +5,23 @@
 //! requirements module as a Rust module, plus an application-profile layer
 //! that makes the core implementable. Development is strictly test-driven
 //! against the spec — see `docs/TDD_PLAN.md`.
+//!
+//! # Example
+//!
+//! Create a datastore from the default simulation profile and validate it
+//! against Annex A `/conf/minimal-core`:
+//!
+//! ```
+//! use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let tmp = tempfile::tempdir()?;
+//! let profile = SimulationProfile::json();
+//! let seed = DatastoreSeed::new("MyStore", "My Store", "Demo datastore", "ops@example.com");
+//! let datastore = CdbDatastore::create(tmp.path(), &profile, seed)?;
+//! let report = datastore.validate(&profile)?;
+//! assert!(report.is_conformant());
+//! # Ok(()) }
+//! ```
 
 pub mod crs;
 pub mod datastore;
