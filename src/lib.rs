@@ -16,4 +16,4 @@ pub mod naming;
 pub mod profiles;
 
 pub use error::CdbError;
-pub use profiles::{ApplicationProfile, RequirementsClass};
+pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};

@@ -8,6 +8,10 @@
 //! the [`RequirementsClass`] enumeration behind Annex A's `/conf/minimal-core`
 //! declaration.
 
+pub mod simulation;
+
+pub use simulation::SimulationProfile;
+
 use std::fmt;
 
 use crate::crs::{CrsViolation, StorageCrs};
