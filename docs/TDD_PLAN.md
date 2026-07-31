@@ -226,14 +226,44 @@ required nodes), not a full parser — enough to satisfy CRS4/CRS5/VCRS tests.
   StreetName/StreetType/StreetWidth example as fixture).
 
 ### Phase 14 — Datastore facade, profile trait, conformance suite
-- `CdbDatastore::create(root, profile)` / `open(root)` / `validate()` →
-  `ConformanceReport` listing pass/fail per requirements class.
-- Annex A abstract test: `tests/conformance_core.rs` builds a full datastore
-  via the default profile and asserts the five mandatory classes (CRS, File
-  Naming, File Structure, Links, Metadata) all pass, and that a datastore
-  missing any one of them fails with the matching error.
-- End-to-end round-trip: create → write vector tiles + an elevation coverage +
-  metadata → reopen → read back → byte/value equality.
+
+Split into **14a** (mandatory core — the `0.1.0` milestone, done) and **14b**
+(full conformance over the optional modules, last phase).
+
+**14a (as built):**
+- `CdbDatastore::create(parent, &dyn ApplicationProfile, DatastoreSeed)` /
+  `open(root)` / `validate(&dyn ApplicationProfile)` → `ConformanceReport`
+  listing pass/fail per requirements class. Signature decisions vs the original
+  sketch: `create` takes a `DatastoreSeed` because the §7.9.4.1 mandatory
+  identity elements (ID, title, description, contactPoint) are instance
+  properties no profile can supply — policy fields come only from the profile,
+  so collisions are impossible by construction. `validate` takes the profile
+  (instead of the datastore storing one) because Annex A judges a datastore
+  *against a profile declaration* and the spec defines no on-disk profile
+  identifier; the datastore stays self-describing for read/write operations,
+  the profile is the yardstick for conformance. `open(root)` keeps its planned
+  signature.
+- `profiles::ApplicationProfile` (object-safe): every spec singularity duty is
+  a required trait item — style guide (Name5), storage CRS (CRS3), metadata
+  standard/encoding/UoM (Metadata2/5/8), storage technology (Annex B),
+  conformance-class declaration (Annex A `/conf/minimal-core`), and the
+  resource-metadata recognizer (a Name5 path duty). Provided defaults only
+  where the spec itself defaults: root name `cdb` (RFile1), language derived
+  from the style guide (Name3/Metadata4 single source), tiling declaration
+  `None`, `known_extensions()` empty (Name7-B vouching hook).
+- Annex A: `tests/conformance_core.rs` mechanizes `/conf/minimal-core`
+  (profile-declaration inspection) and operationalizes it — a full
+  default-profile datastore passes all five mandatory classes with zero
+  warnings, and break-one-class scenarios each report the matching violation
+  under the right class.
+- Round-trip at 14a is restricted to what exists: `tests/roundtrip_datastore.rs`
+  covers global metadata (json and xml), storage CRS (incl. a dynamic-datum
+  epoch via `COORDINATEMETADATA`), and resource metadata, all through the
+  facade with a fresh reopen.
+
+**14b (deferred until Phases 7–9 exist):** extend the conformance suite over
+the optional classes and run the full round-trip — create → write vector tiles
++ an elevation coverage + metadata → reopen → read back → byte/value equality.
 
 ## 5. TDD working agreement
 
@@ -278,4 +308,20 @@ for Phase 9).
   CRS persists as canonical WKT-2 in `global_metadata/crs.wkt`, wrapped in
   `COORDINATEMETADATA[crs,EPOCH[…]]` when a datastore epoch is set; a
   second, different CRS write is refused (CRS3).
-- Next: Phase 14a (facade + Annex A conformance suite) → 0.1.0.
+- Phase 14a done (commits `phase-14a(profiles)` ×2, `phase-14a(datastore)` ×3,
+  `phase-14a(conformance)`), 142 tests (129 unit + 12 integration + 1 doc) —
+  the `0.1.0` milestone. Design notes: the `crs` stem joined
+  `global_metadata`/`vector_attributes` in `StyleGuide`'s auto-reserved set,
+  because this crate's own CRS5 persistence writes `crs.wkt` for any profile;
+  the `.wkt` extension stays out of the spec-verbatim Name7 table — instead
+  profiles vouch for extra industry-standard extensions via
+  `known_extensions()` (the simulation profile vouches `wkt`), so a fresh
+  datastore validates with zero violations and zero warnings. The simulation
+  profile's resource-metadata convention (its Name5 path duty) is a sibling
+  `metadata/` directory with a reserved lowercase name:
+  `/Tiles/RoadNetwork.gpkg` → `/Tiles/metadata/RoadNetwork.json`.
+  Profile-vs-datastore declaration mismatches are report findings
+  (`CdbViolation::DeclarationMismatch`), not operational errors — `error.rs`
+  is unchanged by the phase. `ConformanceReport` implements `Display` but
+  deliberately not serde (no normative wire format exists; revisit at 14b).
+- Next: Phase 7 (geometry).
