@@ -8,19 +8,31 @@
 //! `Error`); the two are never conflated. Conformance is decided by violations
 //! alone: [`ConformanceReport::is_conformant`] and
 //! [`ConformanceReport::class_passed`] ignore warnings.
+//!
+//! [`CdbDatastore`] is the operational facade: [`CdbDatastore::create`]
+//! materializes a datastore from a [`DatastoreSeed`] (its mandatory §7.9.4.1
+//! identity) and an [`ApplicationProfile`] (its policy), and the read/write
+//! methods persist and retrieve the global metadata, storage CRS, and
+//! resource metadata records through the requirements modules.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::crs::{CrsViolation, CrsWarning};
-use crate::hierarchy::{HierarchyViolation, HierarchyWarning};
+use crate::crs::{CrsError, CrsViolation, CrsWarning, StorageCrs};
+use crate::error::CdbError;
+use crate::hierarchy::{DatastoreLayout, HierarchyViolation, HierarchyWarning};
 use crate::links::LinkViolation;
-use crate::metadata::MetadataViolation;
-use crate::naming::{NamingViolation, NamingWarning};
-use crate::profiles::RequirementsClass;
+use crate::metadata::{
+    GLOBAL_METADATA_STEM, GlobalMetadata, MetadataEncoding, MetadataError, MetadataViolation,
+    ResourceMetadata,
+};
+use crate::naming::{NamingViolation, NamingWarning, split_extension};
+use crate::profiles::{ApplicationProfile, RequirementsClass};
 
 /// A datastore-wide SHALL violation, gathering every requirements module's
 /// violation plus the two profile-layer findings Annex A `/conf/minimal-core`
@@ -302,9 +314,295 @@ impl fmt::Display for ConformanceReport {
     }
 }
 
+/// The four mandatory identity elements of a datastore's global metadata
+/// record (§7.9.4.1 table: `ID`, `title`, `description`, `contactPoint`) plus
+/// an optional creation instant. Everything else a global record carries —
+/// language, standard, encoding, unit of measure — is *policy*, supplied by
+/// the [`ApplicationProfile`] at [`CdbDatastore::create`]; a seed therefore
+/// cannot overlap or contradict the profile.
+///
+/// Emptiness is not validated here: [`CdbDatastore::create`] catches it when
+/// the global-metadata builder runs, before any directory is created.
+#[derive(Debug, Clone)]
+pub struct DatastoreSeed {
+    id: String,
+    title: String,
+    description: String,
+    contact_point: String,
+    created: Option<DateTime<Utc>>,
+}
+
+impl DatastoreSeed {
+    /// A seed carrying the four mandatory §7.9.4.1 identity elements. The
+    /// creation instant defaults to the moment of [`CdbDatastore::create`];
+    /// override it with [`Self::created`].
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+        contact_point: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            description: description.into(),
+            contact_point: contact_point.into(),
+            created: None,
+        }
+    }
+
+    /// Sets the record's creation instant (§7.9.4.1 `created`), overriding the
+    /// default of "now" captured at create time.
+    #[must_use]
+    pub fn created(mut self, value: DateTime<Utc>) -> Self {
+        self.created = Some(value);
+        self
+    }
+}
+
+/// The operational facade over a single CDB datastore: it creates and opens
+/// datastores and reads and writes their global metadata, storage CRS, and
+/// resource metadata records through the requirements modules.
+///
+/// A datastore stores **no** profile. It is self-describing for read/write
+/// operations — encoding, CRS, and identity all live on disk — whereas an
+/// [`ApplicationProfile`] is the yardstick only for conformance (`validate`,
+/// added in a later step). Operations therefore never depend on which profile
+/// a caller happens to hold.
+#[derive(Debug, Clone)]
+pub struct CdbDatastore {
+    layout: DatastoreLayout,
+}
+
+impl CdbDatastore {
+    /// Creates a new datastore under `parent`, materializing its root folder
+    /// (named by [`ApplicationProfile::root_folder_name`] — `cdb` by default,
+    /// Requirement File1/RFile1), the `global_metadata/` folder (Requirement
+    /// File6), the global metadata record (Requirement Metadata1, composed
+    /// from the `seed`'s identity and the profile's policy), and the
+    /// storage-CRS record (Requirement CRS5).
+    ///
+    /// All policy is validated **before** the first disk write: the
+    /// global-metadata builder checks the mandatory §7.9.4.1 elements and the
+    /// profile's storage CRS is resolved up front, so a bad seed or a
+    /// mis-declared profile fails before any directory exists.
+    ///
+    /// `create` is **not** atomic: a failure after the first write may leave a
+    /// partial datastore on disk. The 0.1.0 milestone ships no cleanup guard.
+    pub fn create(
+        parent: &Path,
+        profile: &dyn ApplicationProfile,
+        seed: DatastoreSeed,
+    ) -> Result<Self, CdbError> {
+        let DatastoreSeed {
+            id,
+            title,
+            description,
+            contact_point,
+            created,
+        } = seed;
+        // Compose the global record from the seed's identity and the profile's
+        // policy; the builder validates the mandatory §7.9.4.1 elements.
+        let language = profile.language().map_err(MetadataError::from)?;
+        let metadata = GlobalMetadata::builder()
+            .id(id)
+            .title(title)
+            .description(description)
+            .contact_point(contact_point)
+            .created(created.unwrap_or_else(Utc::now))
+            .language(language)
+            .standard(profile.metadata_standard())
+            .encoding(profile.metadata_encoding())
+            .uom(profile.uom())
+            .build()
+            .map_err(MetadataError::from)?;
+        // Resolve the profile's storage CRS; a mis-declared CRS fails here,
+        // still before any disk write (Requirements CRS3/CRS4).
+        let crs = profile.storage_crs().map_err(CrsError::from)?;
+        // Policy is now proven; only now touch the disk.
+        let layout = DatastoreLayout::create_named(parent, profile.root_folder_name())?;
+        metadata.write_to(&layout)?;
+        crs.write_to(&layout)?;
+        Ok(Self { layout })
+    }
+
+    /// Opens an existing datastore rooted at `root` (Requirement File3: the
+    /// root must be an existing directory). Conformance is **not** judged
+    /// here — that is the job of `validate`; `open` only confirms the root is
+    /// a usable directory.
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self, CdbError> {
+        let layout = DatastoreLayout::open(root)?;
+        Ok(Self { layout })
+    }
+
+    /// The datastore's file hierarchy (Requirement File5).
+    pub fn layout(&self) -> &DatastoreLayout {
+        &self.layout
+    }
+
+    /// The datastore's physical root directory (Requirement File2).
+    pub fn root(&self) -> &Path {
+        self.layout.root()
+    }
+
+    /// Resolves a datastore-relative logical path to a physical path under the
+    /// root, rejecting traversal that would escape it (Requirement File2-B).
+    pub fn resolve(&self, logical: &str) -> Result<PathBuf, CdbError> {
+        Ok(self.layout.resolve(logical)?)
+    }
+
+    /// Reads the datastore's global metadata record (Requirements
+    /// Metadata1/Metadata3).
+    pub fn global_metadata(&self) -> Result<GlobalMetadata, CdbError> {
+        Ok(GlobalMetadata::read_from(&self.layout)?)
+    }
+
+    /// Writes (or rewrites) the global metadata record. Enforces Requirement
+    /// Metadata5 — one metadata encoding per datastore — the way
+    /// [`StorageCrs::write_to`] enforces the single-CRS rule (CRS3): if a
+    /// global record already exists on disk in a *different* encoding, the
+    /// write is refused with [`MetadataViolation::EncodingMismatch`]
+    /// (`declared` = the incoming record's encoding, `found` = the on-disk
+    /// file's). A same-encoding rewrite — e.g. adding a license — is allowed.
+    pub fn write_global_metadata(&self, metadata: &GlobalMetadata) -> Result<PathBuf, CdbError> {
+        let dir = self.layout.global_metadata_dir();
+        for (extension, found) in [
+            ("json", MetadataEncoding::Json),
+            ("xml", MetadataEncoding::Xml),
+        ] {
+            if found != metadata.encoding {
+                let name = format!("{GLOBAL_METADATA_STEM}.{extension}");
+                if dir.join(&name).is_file() {
+                    return Err(CdbError::Metadata(MetadataError::Violation(
+                        MetadataViolation::EncodingMismatch {
+                            file: name,
+                            declared: metadata.encoding,
+                            found,
+                        },
+                    )));
+                }
+            }
+        }
+        Ok(metadata.write_to(&self.layout)?)
+    }
+
+    /// Reads the datastore's storage CRS (Requirement CRS5).
+    pub fn storage_crs(&self) -> Result<StorageCrs, CdbError> {
+        Ok(StorageCrs::read_from(&self.layout)?)
+    }
+
+    /// Writes a resource (dataset) metadata record (§7.9.4.2) to
+    /// `logical_path`, returning the physical file written.
+    ///
+    /// The record is validated first, so an invalid one is refused before any
+    /// file is touched. Then Requirement Metadata5 is enforced against the
+    /// path: its final-component extension must denote the datastore's
+    /// declared encoding, mapped by the same table as
+    /// [`crate::metadata::encoding_violations`] (`json` → JSON, `xml`/`xsd`
+    /// → XML, `gpkg` → GeoPackage). A recognized extension for a *different*
+    /// encoding is a [`MetadataViolation::EncodingMismatch`]; an absent or
+    /// unrecognized extension is a [`MetadataViolation::Malformed`] (that
+    /// mismatch variant cannot name a "no encoding" found value). A
+    /// `gpkg`-declared datastore cannot be written by the core and yields
+    /// [`MetadataError::UnsupportedEncoding`], as [`GlobalMetadata::write_to`]
+    /// does.
+    pub fn write_resource_metadata(
+        &self,
+        logical_path: &str,
+        metadata: &ResourceMetadata,
+    ) -> Result<PathBuf, CdbError> {
+        metadata.validate().map_err(MetadataError::from)?;
+        let declared = self.global_metadata()?.encoding;
+        match path_extension(logical_path).and_then(extension_encoding) {
+            Some(found) if found == declared => {}
+            Some(found) => {
+                return Err(CdbError::Metadata(MetadataError::Violation(
+                    MetadataViolation::EncodingMismatch {
+                        file: logical_path.to_owned(),
+                        declared,
+                        found,
+                    },
+                )));
+            }
+            None => {
+                return Err(CdbError::Metadata(MetadataError::Violation(
+                    MetadataViolation::Malformed {
+                        reason: format!(
+                            "resource metadata path {logical_path:?} must end in .{} to match \
+                             the datastore's declared encoding",
+                            declared.extension()
+                        ),
+                    },
+                )));
+            }
+        }
+        let content = match declared {
+            MetadataEncoding::Json => metadata.to_json_string()?,
+            MetadataEncoding::Xml => metadata.to_xml_string()?,
+            MetadataEncoding::Gpkg => {
+                return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                    MetadataEncoding::Gpkg,
+                )));
+            }
+        };
+        let path = self.resolve(logical_path)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(MetadataError::from)?;
+        }
+        fs::write(&path, content).map_err(MetadataError::from)?;
+        Ok(path)
+    }
+
+    /// Reads a resource metadata record from `logical_path`, parsing it by the
+    /// path's final-component extension (§7.9.4.2): `json` as JSON,
+    /// `xml`/`xsd` as XML. Any other extension is a
+    /// [`MetadataViolation::Malformed`] — the core reads only the two textual
+    /// encodings.
+    pub fn read_resource_metadata(&self, logical_path: &str) -> Result<ResourceMetadata, CdbError> {
+        let path = self.resolve(logical_path)?;
+        let content = fs::read_to_string(&path).map_err(MetadataError::from)?;
+        match path_extension(logical_path).and_then(extension_encoding) {
+            Some(MetadataEncoding::Json) => Ok(ResourceMetadata::from_json_str(&content)?),
+            Some(MetadataEncoding::Xml) => Ok(ResourceMetadata::from_xml_str(&content)?),
+            _ => Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::Malformed {
+                    reason: format!(
+                        "resource metadata path {logical_path:?} has no json or xml extension"
+                    ),
+                },
+            ))),
+        }
+    }
+}
+
+/// The extension of a logical path's final component, if any. Isolating the
+/// final component keeps a dot in a parent directory name from being mistaken
+/// for the file's extension.
+fn path_extension(logical_path: &str) -> Option<&str> {
+    let file_name = logical_path.rsplit('/').next().unwrap_or(logical_path);
+    split_extension(file_name).1
+}
+
+/// Maps a file extension to the metadata encoding it denotes, using the same
+/// table as [`crate::metadata::encoding_violations`] (Requirement Metadata5,
+/// §7.9.3.5): `json` → JSON, `xml`/`xsd` → XML, `gpkg` → GeoPackage. Any
+/// other extension yields `None`.
+fn extension_encoding(extension: &str) -> Option<MetadataEncoding> {
+    match extension.to_ascii_lowercase().as_str() {
+        "xml" | "xsd" => Some(MetadataEncoding::Xml),
+        "json" => Some(MetadataEncoding::Json),
+        "gpkg" => Some(MetadataEncoding::Gpkg),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hierarchy::HierarchyError;
+    use crate::metadata::{MetadataStandard, UnitOfMeasure};
+    use crate::profiles::SimulationProfile;
+    use tempfile::tempdir;
 
     /// Taxonomy (`/conf/minimal-core`): every module violation folds into
     /// [`CdbViolation`] via `From`, and `class()` files it under the correct
@@ -453,5 +751,169 @@ mod tests {
         assert!(text.contains("simulation"), "{text}");
         assert!(text.contains("PASS"), "{text}");
         assert!(text.contains("FAIL"), "{text}");
+    }
+
+    /// Requirements File1/File6, Metadata1, CRS5 (§7.5.2/§7.5.7/§7.9.3.1/
+    /// §7.3.1.4): `create` materializes the datastore root with a
+    /// `global_metadata/` folder holding both the global metadata record and
+    /// the storage-CRS record.
+    #[test]
+    fn req_core_file_structure_create_builds_root_metadata_and_crs() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+
+        assert!(store.root().ends_with("cdb"));
+        let global = store.root().join("global_metadata");
+        assert!(global.join("global_metadata.json").is_file());
+        assert!(global.join("crs.wkt").is_file());
+    }
+
+    /// Requirements Metadata2/4/5/8 + §7.9.4.1: the global record `create`
+    /// writes merges the seed's four identity elements with the profile's
+    /// policy — language, standard, encoding, and unit of measure.
+    #[test]
+    fn create_composes_seed_identity_and_profile_policy() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new(
+                "doi:cdb.demo",
+                "Demo title",
+                "Demo description",
+                "contact@example.test",
+            ),
+        )
+        .unwrap();
+
+        let global = store.global_metadata().unwrap();
+        assert_eq!(global.id, "doi:cdb.demo");
+        assert_eq!(global.title, "Demo title");
+        assert_eq!(global.description, "Demo description");
+        assert_eq!(global.contact_point, "contact@example.test");
+        assert_eq!(global.language.as_str(), "en");
+        assert_eq!(global.metadata_standard, MetadataStandard::Dcat);
+        assert_eq!(global.encoding, MetadataEncoding::Json);
+        assert_eq!(global.uom, UnitOfMeasure::Meters);
+    }
+
+    /// §7.9.4.1: the four identity elements are mandatory. An empty `ID` fails
+    /// `create` at policy time — the global-metadata builder rejects it before
+    /// any directory is created (policy precedes the first disk write).
+    #[test]
+    fn create_rejects_empty_seed_identity() {
+        let tmp = tempdir().unwrap();
+        let result = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("", "Title", "Description", "contact"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::MissingElement { .. }
+            )))
+        ));
+        assert!(
+            !tmp.path().join("cdb").exists(),
+            "no datastore directory must be created when policy fails"
+        );
+    }
+
+    /// Requirement File3 (§7.5.4): `open` of a path that does not exist is a
+    /// hierarchy `RootMissing` error.
+    #[test]
+    fn open_missing_root_errors() {
+        let tmp = tempdir().unwrap();
+        let result = CdbDatastore::open(tmp.path().join("does-not-exist"));
+        assert!(matches!(
+            result,
+            Err(CdbError::Hierarchy(HierarchyError::RootMissing(_)))
+        ));
+    }
+
+    /// Requirement Metadata5 (§7.9.3.5): one metadata encoding per datastore.
+    /// `write_global_metadata` refuses a record whose encoding differs from
+    /// the on-disk global record's, but a same-encoding rewrite (here, adding
+    /// a license) succeeds and reads back equal.
+    #[test]
+    fn req_core_metadata_encoding_write_global_metadata_refuses_switch() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("id", "Title", "Description", "contact"),
+        )
+        .unwrap();
+
+        // Switching the datastore to XML is refused (Metadata5).
+        let mut switched = store.global_metadata().unwrap();
+        switched.encoding = MetadataEncoding::Xml;
+        assert!(matches!(
+            store.write_global_metadata(&switched),
+            Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::EncodingMismatch { .. }
+            )))
+        ));
+
+        // A same-encoding rewrite succeeds and round-trips.
+        let mut licensed = store.global_metadata().unwrap();
+        licensed.license = Some("CC-BY-4.0".to_owned());
+        store.write_global_metadata(&licensed).unwrap();
+        assert_eq!(store.global_metadata().unwrap(), licensed);
+    }
+
+    /// Requirement Metadata5 + §7.9.4.2: a valid resource-metadata record
+    /// writes to a `.json` path on a JSON datastore and reads back equal; the
+    /// same record is refused when the path's `.xml` extension contradicts the
+    /// declared encoding; and an invalid record is refused before any file is
+    /// written.
+    #[test]
+    fn resource_metadata_roundtrip_and_declared_encoding_enforced() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("id", "Title", "Description", "contact"),
+        )
+        .unwrap();
+
+        let record = ResourceMetadata::new("roads", "RoadNetwork", "The road network");
+        let path = store
+            .write_resource_metadata("/Tiles/metadata/RoadNetwork.json", &record)
+            .unwrap();
+        assert!(path.is_file());
+        assert!(path.starts_with(store.root()));
+        assert_eq!(
+            store
+                .read_resource_metadata("/Tiles/metadata/RoadNetwork.json")
+                .unwrap(),
+            record
+        );
+
+        // The path's extension must denote the datastore's JSON encoding.
+        assert!(matches!(
+            store.write_resource_metadata("/Tiles/metadata/RoadNetwork.xml", &record),
+            Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::EncodingMismatch { .. }
+            )))
+        ));
+
+        // An invalid record (empty title) is refused before any file exists.
+        let invalid = ResourceMetadata::new("bad", "", "Missing title");
+        let invalid_path = "/Tiles/metadata/Bad.json";
+        assert!(matches!(
+            store.write_resource_metadata(invalid_path, &invalid),
+            Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::MissingElement { .. }
+            )))
+        ));
+        assert!(!store.resolve(invalid_path).unwrap().exists());
     }
 }

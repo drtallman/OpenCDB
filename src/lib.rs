@@ -16,6 +16,6 @@ pub mod metadata;
 pub mod naming;
 pub mod profiles;
 
-pub use datastore::{CdbViolation, CdbWarning, ConformanceReport};
+pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
 pub use error::CdbError;
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
