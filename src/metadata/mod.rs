@@ -66,6 +66,12 @@ pub enum MetadataViolation {
         declared: MetadataEncoding,
         found: MetadataEncoding,
     },
+    #[error(
+        "no global metadata file found under {searched:?} (violates /req/core/metadata-repository and /req/core/metadata-global)"
+    )]
+    MissingGlobalMetadata { searched: PathBuf },
+    #[error("global metadata could not be parsed: {reason} (violates /req/core/metadata-encoding)")]
+    Malformed { reason: String },
     #[error(transparent)]
     Link(#[from] LinkViolation),
 }
@@ -76,11 +82,6 @@ pub enum MetadataViolation {
 pub enum MetadataError {
     #[error(transparent)]
     Violation(#[from] MetadataViolation),
-    #[error(
-        "no global metadata file found under {searched:?} (violates \
-         /req/core/metadata-repository and /req/core/metadata-global)"
-    )]
-    GlobalMetadataNotFound { searched: PathBuf },
     #[error(
         "the core cannot write {0}-encoded metadata files; that container belongs to an application profile"
     )]
@@ -473,7 +474,7 @@ impl GlobalMetadata {
                 Self::from_xml_str(&content)
             };
         }
-        Err(MetadataError::GlobalMetadataNotFound { searched: dir })
+        Err(MetadataViolation::MissingGlobalMetadata { searched: dir }.into())
     }
 
     /// The logical path (link) to the physical global metadata file
@@ -485,9 +486,10 @@ impl GlobalMetadata {
                 return Ok(format!("/{GLOBAL_METADATA_DIR}/{name}"));
             }
         }
-        Err(MetadataError::GlobalMetadataNotFound {
+        Err(MetadataViolation::MissingGlobalMetadata {
             searched: layout.global_metadata_dir(),
-        })
+        }
+        .into())
     }
 }
 
@@ -1005,11 +1007,15 @@ mod tests {
         let layout = DatastoreLayout::create(tmp.path()).unwrap();
         assert!(matches!(
             GlobalMetadata::read_from(&layout),
-            Err(MetadataError::GlobalMetadataNotFound { .. })
+            Err(MetadataError::Violation(
+                MetadataViolation::MissingGlobalMetadata { .. }
+            ))
         ));
         assert!(matches!(
             GlobalMetadata::locate(&layout),
-            Err(MetadataError::GlobalMetadataNotFound { .. })
+            Err(MetadataError::Violation(
+                MetadataViolation::MissingGlobalMetadata { .. }
+            ))
         ));
     }
 

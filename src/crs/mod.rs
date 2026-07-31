@@ -66,6 +66,8 @@ pub enum CrsViolation {
     CrsAlreadyDefined { existing: String },
     #[error("{keyword} is not a vertical CRS (violates /req/core/crs/vcrs-topic2)")]
     NotAVerticalCrs { keyword: String },
+    #[error("no CRS metadata found at {searched:?} (violates /req/core/crs/crsMetadata)")]
+    MissingCrsMetadata { searched: PathBuf },
 }
 
 /// A finding against a SHOULD recommendation.
@@ -77,14 +79,24 @@ pub enum CrsWarning {
     NotWgs84 { found: String },
 }
 
+impl fmt::Display for CrsWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CrsWarning::NotWgs84 { found } => write!(
+                f,
+                "storage CRS is {found}; WGS-84 (EPSG:4326/4979) is recommended \
+                 (/rec/core/crs/crs-definition)"
+            ),
+        }
+    }
+}
+
 /// Operational errors for CRS metadata I/O.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CrsError {
     #[error(transparent)]
     Violation(#[from] CrsViolation),
-    #[error("no CRS metadata found at {searched:?} (violates /req/core/crs/crsMetadata)")]
-    CrsNotFound { searched: PathBuf },
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -326,7 +338,7 @@ impl StorageCrs {
     pub fn read_from(layout: &DatastoreLayout) -> Result<Self, CrsError> {
         let path = layout.global_metadata_dir().join(CRS_FILE_NAME);
         if !path.is_file() {
-            return Err(CrsError::CrsNotFound { searched: path });
+            return Err(CrsViolation::MissingCrsMetadata { searched: path }.into());
         }
         let text = fs::read_to_string(&path)?;
         Ok(Self::from_wkt(&text)?)

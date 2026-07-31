@@ -57,6 +57,22 @@ pub enum NamingWarning {
     NonSpecExtension { name: String, extension: String },
 }
 
+impl fmt::Display for NamingWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NamingWarning::NonAscii { name } => write!(
+                f,
+                "non-ASCII characters in name {name:?} (recommendation /req/core/name-unicode A)"
+            ),
+            NamingWarning::NonSpecExtension { name, extension } => write!(
+                f,
+                "extension {extension:?} of {name:?} is not in the spec extension table; it \
+                 must be an industry-standard extension (/req/core/name-extensions B)"
+            ),
+        }
+    }
+}
+
 /// The four case rules of Requirement Name6 (`/req/core/name-case`, §7.4.7).
 /// A CDB datastore uses exactly one rule for all names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

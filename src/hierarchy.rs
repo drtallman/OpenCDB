@@ -5,6 +5,7 @@
 //! folder. Also emits the empty-folder recommendation of §7.4.5
 //! (Recommendation Name4), since detecting it requires walking the tree.
 
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -35,10 +36,13 @@ pub enum HierarchyError {
 }
 
 /// A violation of a SHALL requirement found by [`DatastoreLayout::validate`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HierarchyViolation {
     /// Requirement File6: `global_metadata` must exist at the root.
+    #[error(
+        "no global_metadata folder at datastore root {root:?} (violates /req/core/file-root-global-metadata)"
+    )]
     MissingGlobalMetadata { root: PathBuf },
 }
 
@@ -50,6 +54,21 @@ pub enum HierarchyWarning {
     EmptyFolder(PathBuf),
     /// Recommendation RFile1 (§7.5.6): the root should be named `cdb`.
     RootNameNotCdb { name: String },
+}
+
+impl fmt::Display for HierarchyWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HierarchyWarning::EmptyFolder(path) => {
+                write!(f, "empty folder {path:?} (recommendation §7.4.5)")
+            }
+            HierarchyWarning::RootNameNotCdb { name } => write!(
+                f,
+                "datastore root is named {name:?}; \"cdb\" is recommended \
+                 (/rec/core/file-hierarchy-root-name)"
+            ),
+        }
+    }
 }
 
 /// Findings from validating a datastore hierarchy.
