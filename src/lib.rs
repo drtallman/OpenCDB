@@ -7,6 +7,7 @@
 //! against the spec — see `docs/TDD_PLAN.md`.
 
 pub mod crs;
+pub mod datastore;
 pub mod error;
 pub mod hierarchy;
 pub mod links;
@@ -15,5 +16,6 @@ pub mod metadata;
 pub mod naming;
 pub mod profiles;
 
+pub use datastore::{CdbViolation, CdbWarning, ConformanceReport};
 pub use error::CdbError;
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
