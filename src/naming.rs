@@ -275,8 +275,10 @@ pub fn file_warnings(name: &str) -> Vec<NamingWarning> {
 /// datastore-wide case rule (Name6) and language (Name3).
 ///
 /// Names mandated verbatim by the spec (e.g. `global_metadata`, Requirement
-/// File6; `vector_attributes`, Requirement Attr1-C) are reserved and exempt
-/// from the case rule, which would otherwise conflict with it.
+/// File6; `vector_attributes`, Requirement Attr1-C) — or by this crate's
+/// persistence of spec-mandated records (`crs.wkt`, Requirement CRS5, written
+/// by [`crate::crs::StorageCrs::write_to`]) — are reserved and exempt from
+/// the case rule, which would otherwise conflict with them.
 #[derive(Debug, Clone)]
 pub struct StyleGuide {
     case_rule: CaseRule,
@@ -286,7 +288,10 @@ pub struct StyleGuide {
 
 impl StyleGuide {
     pub fn new(case_rule: CaseRule, language: impl Into<String>) -> Self {
-        let reserved_names = ["global_metadata", "vector_attributes"]
+        // "crs" is reserved for every profile: this crate's own
+        // `StorageCrs::write_to` persists the storage CRS as `crs.wkt`
+        // (Requirement CRS5), so per-profile reservation would be a footgun.
+        let reserved_names = ["global_metadata", "vector_attributes", "crs"]
             .into_iter()
             .map(String::from)
             .collect();
@@ -629,5 +634,17 @@ mod tests {
     fn naming_violation_converts_to_cdb_error() {
         let e: crate::CdbError = NamingViolation::EmptyName.into();
         assert!(matches!(e, crate::CdbError::Naming(_)));
+    }
+
+    /// §7.4.6 Requirement Name5, with §7.3.1.4 CRS5 and §7.5.7 File6 — the
+    /// default style guide reserves the names this crate persists for
+    /// spec-mandated records (`crs.wkt` for the storage CRS, `global_metadata`
+    /// for the global record), so they are exempt from the case rule.
+    #[test]
+    fn req_core_name_ap_guide_crate_persistence_names_reserved() {
+        let guide = StyleGuide::new(CaseRule::PascalCase, "en");
+        assert!(guide.validate_component("crs.wkt").is_ok());
+        assert!(guide.validate_component("global_metadata.json").is_ok());
+        assert!(StyleGuide::default().validate_component("crs.wkt").is_ok());
     }
 }

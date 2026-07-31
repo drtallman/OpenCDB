@@ -13,5 +13,7 @@ pub mod links;
 pub mod media_types;
 pub mod metadata;
 pub mod naming;
+pub mod profiles;
 
 pub use error::CdbError;
+pub use profiles::{ApplicationProfile, RequirementsClass};
