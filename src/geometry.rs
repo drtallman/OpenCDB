@@ -615,90 +615,108 @@ impl CdbGeometry {
     }
 }
 
+/// Wraps a planar geo-types `Point` directly as [`CdbGeometry::Point`].
 impl From<geo_types::Point<f64>> for CdbGeometry {
     fn from(value: geo_types::Point<f64>) -> CdbGeometry {
         CdbGeometry::Point(value)
     }
 }
 
+/// Wraps a planar geo-types `LineString` directly as [`CdbGeometry::LineString`].
 impl From<geo_types::LineString<f64>> for CdbGeometry {
     fn from(value: geo_types::LineString<f64>) -> CdbGeometry {
         CdbGeometry::LineString(value)
     }
 }
 
+/// Wraps a planar geo-types `Polygon` directly as [`CdbGeometry::Polygon`].
 impl From<geo_types::Polygon<f64>> for CdbGeometry {
     fn from(value: geo_types::Polygon<f64>) -> CdbGeometry {
         CdbGeometry::Polygon(value)
     }
 }
 
+/// Wraps a planar geo-types `MultiPoint` directly as [`CdbGeometry::MultiPoint`].
 impl From<geo_types::MultiPoint<f64>> for CdbGeometry {
     fn from(value: geo_types::MultiPoint<f64>) -> CdbGeometry {
         CdbGeometry::MultiPoint(value)
     }
 }
 
+/// Wraps a planar geo-types `MultiLineString` directly as
+/// [`CdbGeometry::MultiLineString`].
 impl From<geo_types::MultiLineString<f64>> for CdbGeometry {
     fn from(value: geo_types::MultiLineString<f64>) -> CdbGeometry {
         CdbGeometry::MultiLineString(value)
     }
 }
 
+/// Wraps a planar geo-types `MultiPolygon` directly as
+/// [`CdbGeometry::MultiPolygon`].
 impl From<geo_types::MultiPolygon<f64>> for CdbGeometry {
     fn from(value: geo_types::MultiPolygon<f64>) -> CdbGeometry {
         CdbGeometry::MultiPolygon(value)
     }
 }
 
+/// Converts every member recursively (losslessly, via
+/// `From<geo_types::Geometry>`) into a [`CdbGeometry::GeometryCollection`].
 impl From<geo_types::GeometryCollection<f64>> for CdbGeometry {
     fn from(value: geo_types::GeometryCollection<f64>) -> CdbGeometry {
         CdbGeometry::GeometryCollection(value.0.into_iter().map(CdbGeometry::from).collect())
     }
 }
 
+/// Wraps a [`PointZ`] (code 1001) directly as [`CdbGeometry::PointZ`].
 impl From<PointZ> for CdbGeometry {
     fn from(value: PointZ) -> CdbGeometry {
         CdbGeometry::PointZ(value)
     }
 }
 
+/// Wraps a [`LineStringZ`] (code 1002) directly as [`CdbGeometry::LineStringZ`].
 impl From<LineStringZ> for CdbGeometry {
     fn from(value: LineStringZ) -> CdbGeometry {
         CdbGeometry::LineStringZ(value)
     }
 }
 
+/// Wraps a [`PolygonZ`] (code 1003) directly as [`CdbGeometry::PolygonZ`].
 impl From<PolygonZ> for CdbGeometry {
     fn from(value: PolygonZ) -> CdbGeometry {
         CdbGeometry::PolygonZ(value)
     }
 }
 
+/// Wraps a [`MultiPointZ`] (code 1004) directly as [`CdbGeometry::MultiPointZ`].
 impl From<MultiPointZ> for CdbGeometry {
     fn from(value: MultiPointZ) -> CdbGeometry {
         CdbGeometry::MultiPointZ(value)
     }
 }
 
+/// Wraps a [`PointM`] (code 2001) directly as [`CdbGeometry::PointM`].
 impl From<PointM> for CdbGeometry {
     fn from(value: PointM) -> CdbGeometry {
         CdbGeometry::PointM(value)
     }
 }
 
+/// Wraps a [`LineStringM`] (code 2002) directly as [`CdbGeometry::LineStringM`].
 impl From<LineStringM> for CdbGeometry {
     fn from(value: LineStringM) -> CdbGeometry {
         CdbGeometry::LineStringM(value)
     }
 }
 
+/// Wraps a [`PolygonM`] (code 2003) directly as [`CdbGeometry::PolygonM`].
 impl From<PolygonM> for CdbGeometry {
     fn from(value: PolygonM) -> CdbGeometry {
         CdbGeometry::PolygonM(value)
     }
 }
 
+/// Wraps a [`MultiPointM`] (code 2004) directly as [`CdbGeometry::MultiPointM`].
 impl From<MultiPointM> for CdbGeometry {
     fn from(value: MultiPointM) -> CdbGeometry {
         CdbGeometry::MultiPointM(value)
