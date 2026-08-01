@@ -26,6 +26,7 @@
 pub mod crs;
 pub mod datastore;
 pub mod error;
+pub mod geometry;
 pub mod hierarchy;
 pub mod links;
 pub mod media_types;
@@ -35,4 +36,5 @@ pub mod profiles;
 
 pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
 pub use error::CdbError;
+pub use geometry::{GeometryCode, GeometryViolation};
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
