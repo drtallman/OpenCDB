@@ -133,7 +133,7 @@ the validator, not hard errors.)
 | Metadata7 | temporal intervals ABNF incl. half-bounded `../` forms | parser tests: bounded, `../end`, `start/..`, invalid |
 | Metadata8 | one UoM for measurements: M, FT, K, MI; element named `uom` | enum + serde field-name test |
 | Global elements table | mandatory: ID, title, description, contactPoint, created, language; optional: update, temporal, accessRights, license | builder validation + XML/JSON round-trips via quick-xml/serde |
-| Resource metadata table | mandatory: ID, type(=dataset), title, description; conditional/optional per table; CharacterSetCode default utf8 | same pattern |
+| Resource metadata table | mandatory: ID, type(=dataset), title, description; conditional/optional per table (incl. the Geom4 conditional `uom: Option<UnitOfMeasure>`, added in Phase 7); CharacterSetCode default utf8 | same pattern |
 
 ### Phase 6 — CRS (`/req/core/crs/*`), mandatory
 | Req | Rule | Tests |
@@ -158,11 +158,14 @@ required nodes), not a full parser — enough to satisfy CRS4/CRS5/VCRS tests.
 | Geom2 | type codes: 0-7 core, 1001-1004 Z, 2001-2004 M, ext 11-14 | `GeometryCode ↔ geo_types::Geometry` mapping table tests (codes match GeoPackage) |
 | Geom3 | Z geometries require z-UoM in global metadata | PointZ without registered UoM → error |
 | Geom4 | M geometries require m units in dataset metadata | same pattern |
-| Geom5 | every coordinate unambiguously in the one datastore CRS | geometry insert tagged with foreign CRS → error |
-| Geom6 | GeometryCollection: single CRS across members | mixed-CRS collection → error |
+| Geom5 | every coordinate unambiguously in the one datastore CRS | `CdbGeometry::validate_in` `source_crs` check → `ForeignCrs` (incl. the unverifiable-claim rule: a claim against an anonymous datastore CRS is foreign) |
+| Geom6 | GeometryCollection: single CRS across members | by-construction impossibility — members carry no CRS (documented + doc-tested), same pattern as CRS2; recursion covers member z/m-UoM checks |
 
-`geo-types` has no native Z/M, so Z/M variants are thin wrappers
-(`ZGeometry { xy: geo_types::Geometry, z: Vec<f64> }`-style) — tests first.
+`geo-types` has no native Z/M; the Z/M variants are eight typed structs behind
+a closed enum, superseding the parallel-array `ZGeometry { xy, z: Vec<f64> }`
+sketch above — spec-absent combos (MultiPolygon Z, ZM) are then unrepresentable
+and Geom2's table holds by construction. Approved design record:
+`docs/superpowers/specs/2026-08-01-geometry-module-design.md`.
 
 ### Phase 8 — Coverages (`/req/core/coverage-*`), optional
 | Req | Rule | Tests |
@@ -324,4 +327,17 @@ for Phase 9).
   (`CdbViolation::DeclarationMismatch`), not operational errors — `error.rs`
   is unchanged by the phase. `ConformanceReport` implements `Display` but
   deliberately not serde (no normative wire format exists; revisit at 14b).
-- Next: Phase 7 (geometry).
+- Phase 7 done (commits `phase-7(geometry)` ×5 incl. one review fix,
+  `phase-7(metadata)`), 153 tests (140 unit + 12 integration + 1 doc) — the
+  first optional class after the milestone, shipped as `0.2.0`. `geometry`:
+  `GeometryCode` (20 codes, GeoPackage-consistent; extension codes 11–14
+  flagged non-CDB-1.x), eight typed Z/M structs with length invariants,
+  `CdbGeometry` (15 variants, lossless `From` over geo-types incl.
+  Line/Rect/Triangle), and `GeometryContext` + `validate_in` (Geom3/4 z/m-UoM
+  presence, Geom5/6 foreign-CRS — a claim against an anonymous datastore CRS
+  counts as foreign). `GeometryViolation` has six variants and no warning type
+  (§7.6 has no SHOULDs); Geom5-B/6-B and the ZM / MultiPolygon-Z absence hold
+  by construction (members carry no CRS, spec-absent combos unrepresentable).
+  The Geom4 m-value UoM rides on the new `ResourceMetadata.uom`. Design record:
+  `docs/superpowers/specs/2026-08-01-geometry-module-design.md`.
+- Next: Phase 8 (coverages).
