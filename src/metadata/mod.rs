@@ -694,6 +694,12 @@ pub struct ResourceMetadata {
     pub license: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rights: Option<String>,
+    /// Unit of measure for measurement values (e.g. geometry m coordinates)
+    /// in this dataset — the conditional element introduced by Requirement
+    /// Geom4 (/req/core/geometry-mvalue, §7.6.3); element name per
+    /// Requirement Metadata8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uom: Option<UnitOfMeasure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Extent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -728,6 +734,7 @@ impl ResourceMetadata {
             contact_point: None,
             license: None,
             rights: None,
+            uom: None,
             extent: None,
             associations: Vec::new(),
             character_set: CharacterSet::Utf8,
@@ -1171,5 +1178,31 @@ mod tests {
         let violation = MetadataViolation::MissingElement { element: "ID" };
         let error: crate::CdbError = MetadataError::from(violation).into();
         assert!(matches!(error, crate::CdbError::Metadata(_)));
+    }
+
+    /// §7.6.3 Requirement Geom4 /req/core/geometry-mvalue — m-value units
+    /// are "specified in the metadata for a given CDB dataset". The
+    /// geometry module makes the optional `uom` element conditional on
+    /// resource metadata (element name per Metadata8's naming rule).
+    #[test]
+    fn req_core_geometry_mvalue_resource_uom_roundtrip() {
+        let mut record = ResourceMetadata::new("Roads", "Road Network", "Primary roads");
+        assert_eq!(record.uom, None);
+        let json = record.to_json_string().unwrap();
+        assert!(
+            !json.contains("\"uom\""),
+            "absent uom must not serialize: {json}"
+        );
+
+        record.uom = Some(UnitOfMeasure::Meters);
+        let json = record.to_json_string().unwrap();
+        // `to_json_string` pretty-prints, so the separator is `": "`.
+        assert!(json.contains("\"uom\": \"M\""), "wire name/value: {json}");
+        let back = ResourceMetadata::from_json_str(&json).unwrap();
+        assert_eq!(back.uom, Some(UnitOfMeasure::Meters));
+
+        let xml = record.to_xml_string().unwrap();
+        let back = ResourceMetadata::from_xml_str(&xml).unwrap();
+        assert_eq!(back.uom, Some(UnitOfMeasure::Meters));
     }
 }
