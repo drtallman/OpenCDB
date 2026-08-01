@@ -333,9 +333,9 @@ for Phase 9).
   `GeometryCode` (20 codes, GeoPackage-consistent; extension codes 11–14
   flagged non-CDB-1.x), eight typed Z/M structs with length invariants,
   `CdbGeometry` (15 variants, lossless `From` over geo-types incl.
-  Line/Rect/Triangle), and `GeometryContext` + `validate_in` (Geom3/4 z/m-UoM
-  presence, Geom5/6 foreign-CRS — a claim against an anonymous datastore CRS
-  counts as foreign). `GeometryViolation` has six variants and no warning type
+  Line/Rect/Triangle), and `CdbGeometry::validate_in` against a
+  `GeometryContext` (Geom3/4 z/m-UoM presence, Geom5/6 foreign-CRS — a claim
+  against an anonymous datastore CRS counts as foreign). `GeometryViolation` has six variants and no warning type
   (§7.6 has no SHOULDs); Geom5-B/6-B and the ZM / MultiPolygon-Z absence hold
   by construction (members carry no CRS, spec-absent combos unrepresentable).
   The Geom4 m-value UoM rides on the new `ResourceMetadata.uom`. Design record:
