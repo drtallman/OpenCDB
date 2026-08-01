@@ -493,6 +493,242 @@ impl MultiPointM {
     }
 }
 
+/// A Simple Features geometry value (Requirement Geom1,
+/// `/req/core/geometry-model`, §7.6.2.1). The CDB 2.0 geometry model *is*
+/// OGC Simple Feature Access, so the seven planar (xy) types wrap
+/// [`geo_types`] directly and the eight typed Z/M geometries wrap the structs
+/// of this module. Code 0 (`Geometry`, the abstract Simple Features root) has
+/// no variant of its own — it is represented by this enum as a whole.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CdbGeometry {
+    /// Code 1 — a planar point.
+    Point(geo_types::Point<f64>),
+    /// Code 2 — a planar linestring.
+    LineString(geo_types::LineString<f64>),
+    /// Code 3 — a planar polygon.
+    Polygon(geo_types::Polygon<f64>),
+    /// Code 4 — planar points.
+    MultiPoint(geo_types::MultiPoint<f64>),
+    /// Code 5 — planar linestrings.
+    MultiLineString(geo_types::MultiLineString<f64>),
+    /// Code 6 — planar polygons.
+    MultiPolygon(geo_types::MultiPolygon<f64>),
+    /// Code 7 — a heterogeneous collection; members may themselves be Z/M.
+    GeometryCollection(Vec<CdbGeometry>),
+    /// Code 1001 — a point carrying a z coordinate.
+    PointZ(PointZ),
+    /// Code 1002 — a linestring carrying z values.
+    LineStringZ(LineStringZ),
+    /// Code 1003 — a polygon carrying z values.
+    PolygonZ(PolygonZ),
+    /// Code 1004 — a multipoint carrying z values.
+    MultiPointZ(MultiPointZ),
+    /// Code 2001 — a point carrying an m coordinate.
+    PointM(PointM),
+    /// Code 2002 — a linestring carrying m values.
+    LineStringM(LineStringM),
+    /// Code 2003 — a polygon carrying m values.
+    PolygonM(PolygonM),
+    /// Code 2004 — a multipoint carrying m values.
+    MultiPointM(MultiPointM),
+}
+
+impl CdbGeometry {
+    /// The §7.6.1 type code (Geom2) of this geometry. A collection is always
+    /// [`GeometryCode::GeometryCollection`], regardless of its members.
+    pub fn geometry_code(&self) -> GeometryCode {
+        match self {
+            CdbGeometry::Point(_) => GeometryCode::Point,
+            CdbGeometry::LineString(_) => GeometryCode::Linestring,
+            CdbGeometry::Polygon(_) => GeometryCode::Polygon,
+            CdbGeometry::MultiPoint(_) => GeometryCode::MultiPoint,
+            CdbGeometry::MultiLineString(_) => GeometryCode::MultiLinestring,
+            CdbGeometry::MultiPolygon(_) => GeometryCode::MultiPolygon,
+            CdbGeometry::GeometryCollection(_) => GeometryCode::GeometryCollection,
+            CdbGeometry::PointZ(_) => GeometryCode::PointZ,
+            CdbGeometry::LineStringZ(_) => GeometryCode::LinestringZ,
+            CdbGeometry::PolygonZ(_) => GeometryCode::PolygonZ,
+            CdbGeometry::MultiPointZ(_) => GeometryCode::MultiPointZ,
+            CdbGeometry::PointM(_) => GeometryCode::PointM,
+            CdbGeometry::LineStringM(_) => GeometryCode::LinestringM,
+            CdbGeometry::PolygonM(_) => GeometryCode::PolygonM,
+            CdbGeometry::MultiPointM(_) => GeometryCode::MultiPointM,
+        }
+    }
+
+    /// Whether this geometry carries z coordinates — true for a Z variant or
+    /// a collection with any (recursively) Z member.
+    pub fn has_z(&self) -> bool {
+        match self {
+            CdbGeometry::PointZ(_)
+            | CdbGeometry::LineStringZ(_)
+            | CdbGeometry::PolygonZ(_)
+            | CdbGeometry::MultiPointZ(_) => true,
+            CdbGeometry::GeometryCollection(members) => members.iter().any(CdbGeometry::has_z),
+            _ => false,
+        }
+    }
+
+    /// Whether this geometry carries m coordinates — true for an M variant or
+    /// a collection with any (recursively) M member.
+    pub fn has_m(&self) -> bool {
+        match self {
+            CdbGeometry::PointM(_)
+            | CdbGeometry::LineStringM(_)
+            | CdbGeometry::PolygonM(_)
+            | CdbGeometry::MultiPointM(_) => true,
+            CdbGeometry::GeometryCollection(members) => members.iter().any(CdbGeometry::has_m),
+            _ => false,
+        }
+    }
+
+    /// The lossless planar ([`geo_types::Geometry`]) view, or `None` when any
+    /// z/m coordinate would be dropped. The seven xy variants convert
+    /// directly; a collection converts only when every member does; Z/M
+    /// variants always yield `None`. Coordinates are never dropped silently.
+    pub fn into_xy(self) -> Option<geo_types::Geometry<f64>> {
+        match self {
+            CdbGeometry::Point(p) => Some(geo_types::Geometry::Point(p)),
+            CdbGeometry::LineString(ls) => Some(geo_types::Geometry::LineString(ls)),
+            CdbGeometry::Polygon(poly) => Some(geo_types::Geometry::Polygon(poly)),
+            CdbGeometry::MultiPoint(mp) => Some(geo_types::Geometry::MultiPoint(mp)),
+            CdbGeometry::MultiLineString(mls) => Some(geo_types::Geometry::MultiLineString(mls)),
+            CdbGeometry::MultiPolygon(mpoly) => Some(geo_types::Geometry::MultiPolygon(mpoly)),
+            CdbGeometry::GeometryCollection(members) => {
+                let converted = members
+                    .into_iter()
+                    .map(CdbGeometry::into_xy)
+                    .collect::<Option<Vec<_>>>()?;
+                Some(geo_types::Geometry::GeometryCollection(
+                    geo_types::GeometryCollection(converted),
+                ))
+            }
+            CdbGeometry::PointZ(_)
+            | CdbGeometry::LineStringZ(_)
+            | CdbGeometry::PolygonZ(_)
+            | CdbGeometry::MultiPointZ(_)
+            | CdbGeometry::PointM(_)
+            | CdbGeometry::LineStringM(_)
+            | CdbGeometry::PolygonM(_)
+            | CdbGeometry::MultiPointM(_) => None,
+        }
+    }
+}
+
+impl From<geo_types::Point<f64>> for CdbGeometry {
+    fn from(value: geo_types::Point<f64>) -> CdbGeometry {
+        CdbGeometry::Point(value)
+    }
+}
+
+impl From<geo_types::LineString<f64>> for CdbGeometry {
+    fn from(value: geo_types::LineString<f64>) -> CdbGeometry {
+        CdbGeometry::LineString(value)
+    }
+}
+
+impl From<geo_types::Polygon<f64>> for CdbGeometry {
+    fn from(value: geo_types::Polygon<f64>) -> CdbGeometry {
+        CdbGeometry::Polygon(value)
+    }
+}
+
+impl From<geo_types::MultiPoint<f64>> for CdbGeometry {
+    fn from(value: geo_types::MultiPoint<f64>) -> CdbGeometry {
+        CdbGeometry::MultiPoint(value)
+    }
+}
+
+impl From<geo_types::MultiLineString<f64>> for CdbGeometry {
+    fn from(value: geo_types::MultiLineString<f64>) -> CdbGeometry {
+        CdbGeometry::MultiLineString(value)
+    }
+}
+
+impl From<geo_types::MultiPolygon<f64>> for CdbGeometry {
+    fn from(value: geo_types::MultiPolygon<f64>) -> CdbGeometry {
+        CdbGeometry::MultiPolygon(value)
+    }
+}
+
+impl From<geo_types::GeometryCollection<f64>> for CdbGeometry {
+    fn from(value: geo_types::GeometryCollection<f64>) -> CdbGeometry {
+        CdbGeometry::GeometryCollection(value.0.into_iter().map(CdbGeometry::from).collect())
+    }
+}
+
+impl From<PointZ> for CdbGeometry {
+    fn from(value: PointZ) -> CdbGeometry {
+        CdbGeometry::PointZ(value)
+    }
+}
+
+impl From<LineStringZ> for CdbGeometry {
+    fn from(value: LineStringZ) -> CdbGeometry {
+        CdbGeometry::LineStringZ(value)
+    }
+}
+
+impl From<PolygonZ> for CdbGeometry {
+    fn from(value: PolygonZ) -> CdbGeometry {
+        CdbGeometry::PolygonZ(value)
+    }
+}
+
+impl From<MultiPointZ> for CdbGeometry {
+    fn from(value: MultiPointZ) -> CdbGeometry {
+        CdbGeometry::MultiPointZ(value)
+    }
+}
+
+impl From<PointM> for CdbGeometry {
+    fn from(value: PointM) -> CdbGeometry {
+        CdbGeometry::PointM(value)
+    }
+}
+
+impl From<LineStringM> for CdbGeometry {
+    fn from(value: LineStringM) -> CdbGeometry {
+        CdbGeometry::LineStringM(value)
+    }
+}
+
+impl From<PolygonM> for CdbGeometry {
+    fn from(value: PolygonM) -> CdbGeometry {
+        CdbGeometry::PolygonM(value)
+    }
+}
+
+impl From<MultiPointM> for CdbGeometry {
+    fn from(value: MultiPointM) -> CdbGeometry {
+        CdbGeometry::MultiPointM(value)
+    }
+}
+
+/// Lossless conversion from any [`geo_types::Geometry`]: the geo-types
+/// conveniences that are not Simple Features table types collapse to their
+/// SF equivalents (a `Line` becomes a two-vertex [`CdbGeometry::LineString`];
+/// a `Rect` or `Triangle` becomes a [`CdbGeometry::Polygon`]); a
+/// `GeometryCollection` recurses through its members.
+impl From<geo_types::Geometry<f64>> for CdbGeometry {
+    fn from(value: geo_types::Geometry<f64>) -> CdbGeometry {
+        match value {
+            geo_types::Geometry::Point(p) => CdbGeometry::Point(p),
+            geo_types::Geometry::Line(l) => {
+                CdbGeometry::LineString(geo_types::LineString::from(vec![l.start, l.end]))
+            }
+            geo_types::Geometry::LineString(ls) => CdbGeometry::LineString(ls),
+            geo_types::Geometry::Polygon(poly) => CdbGeometry::Polygon(poly),
+            geo_types::Geometry::MultiPoint(mp) => CdbGeometry::MultiPoint(mp),
+            geo_types::Geometry::MultiLineString(mls) => CdbGeometry::MultiLineString(mls),
+            geo_types::Geometry::MultiPolygon(mpoly) => CdbGeometry::MultiPolygon(mpoly),
+            geo_types::Geometry::GeometryCollection(gc) => CdbGeometry::from(gc),
+            geo_types::Geometry::Rect(r) => CdbGeometry::Polygon(r.to_polygon()),
+            geo_types::Geometry::Triangle(t) => CdbGeometry::Polygon(t.to_polygon()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,5 +857,57 @@ mod tests {
         assert_eq!(pz.z(), 30.0);
         let pm = PointM::new(Point::new(1.0, 2.0), 0.5);
         assert_eq!(pm.m(), 0.5);
+    }
+
+    /// §7.6.2.1 Requirement Geom1 /req/core/geometry-model — the model IS
+    /// Simple Features via geo-types: lossless conversion both ways for the
+    /// XY types, and codes per Geom2. (The draft cites "ISO 19111:2019" in
+    /// Geom1's text; that is a typo for Simple Feature Access Part 1.)
+    #[test]
+    fn req_core_geometry_model_geo_types_identity() {
+        use geo_types::{Geometry, LineString, Point};
+
+        let cases: Vec<(Geometry<f64>, GeometryCode)> = vec![
+            (Geometry::Point(Point::new(1.0, 2.0)), GeometryCode::Point),
+            (
+                Geometry::LineString(LineString::from(vec![(0.0, 0.0), (1.0, 1.0)])),
+                GeometryCode::Linestring,
+            ),
+            (
+                Geometry::GeometryCollection(geo_types::GeometryCollection(vec![Geometry::Point(
+                    Point::new(3.0, 4.0),
+                )])),
+                GeometryCode::GeometryCollection,
+            ),
+        ];
+        for (geo, code) in cases {
+            let cdb = CdbGeometry::from(geo.clone());
+            assert_eq!(cdb.geometry_code(), code);
+            assert!(!cdb.has_z() && !cdb.has_m());
+            assert_eq!(cdb.into_xy(), Some(geo)); // lossless round-trip
+        }
+
+        // geo-types conveniences map losslessly into SF table types.
+        let line = geo_types::Line::new(
+            geo_types::coord! { x: 0.0, y: 0.0 },
+            geo_types::coord! { x: 1.0, y: 1.0 },
+        );
+        assert_eq!(
+            CdbGeometry::from(Geometry::Line(line)).geometry_code(),
+            GeometryCode::Linestring
+        );
+
+        // Z/M variants: correct codes, has_z/has_m, and NO lossy xy view.
+        let pz = CdbGeometry::from(PointZ::new(Point::new(1.0, 2.0), 30.0));
+        assert_eq!(pz.geometry_code(), GeometryCode::PointZ);
+        assert!(pz.has_z() && !pz.has_m());
+        assert_eq!(pz.clone().into_xy(), None);
+
+        // A collection MAY contain Z members (each member's own code is in
+        // the table); the collection then has_z and has no pure-XY view.
+        let coll = CdbGeometry::GeometryCollection(vec![pz]);
+        assert_eq!(coll.geometry_code(), GeometryCode::GeometryCollection);
+        assert!(coll.has_z());
+        assert_eq!(coll.into_xy(), None);
     }
 }
