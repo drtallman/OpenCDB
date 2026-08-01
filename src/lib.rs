@@ -37,7 +37,7 @@ pub mod profiles;
 pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
 pub use error::CdbError;
 pub use geometry::{
-    CdbGeometry, GeometryCode, GeometryViolation, LineStringM, LineStringZ, MultiPointM,
-    MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
+    CdbGeometry, GeometryCode, GeometryContext, GeometryViolation, LineStringM, LineStringZ,
+    MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
 };
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};

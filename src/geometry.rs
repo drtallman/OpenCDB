@@ -10,6 +10,9 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::crs::StorageCrs;
+use crate::metadata::{GlobalMetadata, ResourceMetadata, UnitOfMeasure};
+
 /// A violation of a SHALL requirement of the geometry module (§7.6).
 /// The module has no warning type: §7.6 contains no SHOULD recommendations.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -38,6 +41,22 @@ pub enum GeometryViolation {
         found: usize,
         part: String,
     },
+    /// §7.6.3 Requirement Geom3 (/req/core/geometry-zvalue; the requirement
+    /// box's `geometry-zcoordinate` slug is the same rule).
+    #[error(
+        "geometry has z coordinates but the datastore declares no z unit of measure (violates /req/core/geometry-zvalue)"
+    )]
+    MissingZUom,
+    /// §7.6.3 Requirement Geom4.
+    #[error(
+        "geometry has m values but the dataset metadata declares no m unit of measure (violates /req/core/geometry-mvalue)"
+    )]
+    MissingMUom,
+    /// §7.6.3/§7.6.4 Requirements Geom5/Geom6.
+    #[error(
+        "geometry declares CRS {declared} but the datastore CRS is {datastore} (violates /req/core/geometry-coordinates)"
+    )]
+    ForeignCrs { declared: String, datastore: String },
 }
 
 /// Geometry type codes of spec §7.6.1 (Requirement Geom2,
@@ -613,6 +632,119 @@ impl CdbGeometry {
             | CdbGeometry::MultiPointM(_) => None,
         }
     }
+
+    /// Validates this geometry's units and CRS association against the
+    /// datastore it lives in (§7.6.3–§7.6.4, Requirements Geom3–Geom6),
+    /// returning the first violation encountered (checks run CRS → z → m).
+    ///
+    /// `source_crs` is an OPTIONAL CRS claim carried by the geometry. `None`
+    /// means the geometry is associated with the containing datastore's CRS
+    /// (the normal case) and the CRS check passes. `Some(claim)` must PROVABLY
+    /// identify the datastore CRS: Requirement Geom5
+    /// (`/req/core/geometry-coordinates`) forbids a foreign or unverifiable
+    /// CRS, so a claim is a [`GeometryViolation::ForeignCrs`] when the
+    /// datastore CRS differs from it or is unidentified (rendered
+    /// `"unidentified"`). Authority and code are compared ASCII
+    /// case-insensitively via [`crs_ids_match`].
+    ///
+    /// Geom5-B/Geom6-B (`/req/core/geometry-collection-srs`) hold by
+    /// construction: a [`CdbGeometry`] value carries no per-member CRS, so a
+    /// collection has a single CRS. No extra recursion is needed here — the
+    /// unit checks reach collection members because
+    /// [`CdbGeometry::has_z`]/[`CdbGeometry::has_m`] are themselves recursive.
+    /// z units come from the global metadata (Geom3,
+    /// [`GeometryViolation::MissingZUom`]); m units from the dataset metadata
+    /// (Geom4, [`GeometryViolation::MissingMUom`]).
+    pub fn validate_in(
+        &self,
+        ctx: &GeometryContext,
+        source_crs: Option<&(String, String)>,
+    ) -> Result<(), GeometryViolation> {
+        if let Some(claim) = source_crs {
+            match &ctx.datastore_crs {
+                Some(ds) if crs_ids_match(ds, claim) => {}
+                other => {
+                    return Err(GeometryViolation::ForeignCrs {
+                        declared: format!("{}:{}", claim.0, claim.1),
+                        datastore: other
+                            .as_ref()
+                            .map(|d| format!("{}:{}", d.0, d.1))
+                            .unwrap_or_else(|| "unidentified".to_owned()),
+                    });
+                }
+            }
+        }
+        if self.has_z() && ctx.z_uom.is_none() {
+            return Err(GeometryViolation::MissingZUom);
+        }
+        if self.has_m() && ctx.m_uom.is_none() {
+            return Err(GeometryViolation::MissingMUom);
+        }
+        Ok(())
+    }
+}
+
+/// The datastore facts a geometry is validated against (§7.6.3–§7.6.4,
+/// Requirements Geom3–Geom6): the datastore CRS identity for the Geom5
+/// association check, the global z unit of measure (Geom3), and the dataset
+/// m unit of measure (Geom4). Construct one from explicit parts with
+/// [`GeometryContext::new`], or from datastore metadata with
+/// [`GeometryContext::from_datastore`]. Fields are private: a context is only
+/// ever consumed by [`CdbGeometry::validate_in`].
+pub struct GeometryContext {
+    /// The datastore CRS as an `(authority, code)` pair (e.g.
+    /// `("EPSG", "4326")`), or `None` when the CRS carries no identifier —
+    /// an "unidentified" datastore CRS against which no claim is provable.
+    datastore_crs: Option<(String, String)>,
+    /// The global-metadata z unit of measure (Geom3), or `None` when none is
+    /// declared — required whenever a validated geometry has z coordinates.
+    z_uom: Option<UnitOfMeasure>,
+    /// The dataset-metadata m unit of measure (Geom4), or `None` when none is
+    /// declared — required whenever a validated geometry has m values.
+    m_uom: Option<UnitOfMeasure>,
+}
+
+impl GeometryContext {
+    /// Builds a context from explicit parts: the datastore CRS `(authority,
+    /// code)` pair for the Geom5 association check, the global z unit of
+    /// measure (Geom3), and the dataset m unit of measure (Geom4). Each part
+    /// is optional; a `None` unit fails validation only for a geometry that
+    /// actually carries the corresponding z/m coordinates.
+    pub fn new(
+        datastore_crs: Option<(String, String)>,
+        z_uom: Option<UnitOfMeasure>,
+        m_uom: Option<UnitOfMeasure>,
+    ) -> GeometryContext {
+        GeometryContext {
+            datastore_crs,
+            z_uom,
+            m_uom,
+        }
+    }
+
+    /// Builds a context from datastore metadata: the datastore CRS identity
+    /// via [`StorageCrs::authority`] (Geom5), the z unit of measure from the
+    /// datastore-wide global metadata (Geom3, `GlobalMetadata::uom`), and the
+    /// m unit of measure from the dataset (resource) metadata when one is
+    /// supplied and declares it (Geom4, `ResourceMetadata::uom`).
+    pub fn from_datastore(
+        crs: &StorageCrs,
+        global: &GlobalMetadata,
+        resource: Option<&ResourceMetadata>,
+    ) -> GeometryContext {
+        GeometryContext {
+            datastore_crs: crs.authority(),
+            z_uom: Some(global.uom),
+            m_uom: resource.and_then(|r| r.uom),
+        }
+    }
+}
+
+/// ASCII case-insensitive equality of two CRS `(authority, code)` identifiers
+/// (Requirement Geom5, `/req/core/geometry-coordinates`): `EPSG:4326` and
+/// `epsg:4326` identify the same CRS. Both components must match.
+fn crs_ids_match(a: &(String, String), b: &(String, String)) -> bool {
+    a.0.eq_ignore_ascii_case(&b.0) && a.1.eq_ignore_ascii_case(&b.1)
 }
 
 /// Wraps a planar geo-types `Point` directly as [`CdbGeometry::Point`].
@@ -750,7 +882,13 @@ impl From<geo_types::Geometry<f64>> for CdbGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crs::StorageCrs;
     use crate::error::CdbError;
+    use crate::metadata::temporal::parse_datetime;
+    use crate::metadata::{
+        GlobalMetadata, MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure,
+    };
+    use crate::profiles::simulation::WGS84_2D_WKT;
 
     /// §7.6.2.2 Requirement Geom2 /req/core/geometry-types — the code table
     /// is GeoPackage-consistent: 0–7 core, 1001–1004 Z, 2001–2004 M,
@@ -927,5 +1065,115 @@ mod tests {
         assert_eq!(coll.geometry_code(), GeometryCode::GeometryCollection);
         assert!(coll.has_z());
         assert_eq!(coll.into_xy(), None);
+    }
+
+    /// §7.6.3 Requirement Geom3 /req/core/geometry-zvalue — z units SHALL
+    /// be specified in the global metadata UoM. (The draft's requirement
+    /// box spells the slug `geometry-zcoordinate`; the class listing says
+    /// `geometry-zvalue` — we cite the latter.)
+    #[test]
+    fn req_core_geometry_zvalue_requires_global_uom() {
+        use geo_types::Point;
+        let pz = CdbGeometry::from(PointZ::new(Point::new(1.0, 2.0), 30.0));
+
+        let no_units = GeometryContext::new(None, None, None);
+        assert!(matches!(
+            pz.validate_in(&no_units, None),
+            Err(GeometryViolation::MissingZUom)
+        ));
+
+        let with_z = GeometryContext::new(None, Some(UnitOfMeasure::Meters), None);
+        assert!(pz.validate_in(&with_z, None).is_ok());
+
+        // XY geometry needs no units at all.
+        let p = CdbGeometry::from(geo_types::Geometry::Point(Point::new(0.0, 0.0)));
+        assert!(p.validate_in(&no_units, None).is_ok());
+    }
+
+    /// §7.6.3 Requirement Geom4 /req/core/geometry-mvalue — m units come
+    /// from the DATASET (resource) metadata, wired via
+    /// `GeometryContext::from_datastore`.
+    #[test]
+    fn req_core_geometry_mvalue_requires_dataset_uom() {
+        use geo_types::Point;
+        let pm = CdbGeometry::from(PointM::new(Point::new(1.0, 2.0), 0.5));
+
+        let crs = StorageCrs::from_wkt(WGS84_2D_WKT).unwrap();
+        let global = GlobalMetadata::builder()
+            .id("Store")
+            .title("Store")
+            .description("Test store")
+            .contact_point("ops@example.com")
+            .language(crate::metadata::LanguageTag::new("en").unwrap())
+            .standard(MetadataStandard::Dcat)
+            .encoding(MetadataEncoding::Json)
+            .uom(UnitOfMeasure::Meters)
+            .created(parse_datetime("2026-08-01T00:00:00Z").unwrap())
+            .build()
+            .unwrap();
+
+        // Resource metadata WITHOUT uom -> Geom4 violation for M geometry.
+        let bare = ResourceMetadata::new("Roads", "Road Network", "Primary roads");
+        let ctx = GeometryContext::from_datastore(&crs, &global, Some(&bare));
+        assert!(matches!(
+            pm.validate_in(&ctx, None),
+            Err(GeometryViolation::MissingMUom)
+        ));
+
+        // Resource metadata WITH uom -> ok. Global uom flows to z_uom.
+        let mut with_uom = bare.clone();
+        with_uom.uom = Some(UnitOfMeasure::Meters);
+        let ctx = GeometryContext::from_datastore(&crs, &global, Some(&with_uom));
+        assert!(pm.validate_in(&ctx, None).is_ok());
+    }
+
+    /// §7.6.3 Requirement Geom5 /req/core/geometry-coordinates — a claimed
+    /// source CRS must provably match the datastore CRS; an unverifiable
+    /// claim (anonymous datastore CRS) is the ambiguity Geom5 forbids.
+    #[test]
+    fn req_core_geometry_coordinates_foreign_crs_rejected() {
+        use geo_types::Point;
+        let p = CdbGeometry::from(geo_types::Geometry::Point(Point::new(0.0, 0.0)));
+        let epsg4326 = ("EPSG".to_owned(), "4326".to_owned());
+        let nad83 = ("EPSG".to_owned(), "4269".to_owned());
+
+        let ctx = GeometryContext::new(Some(epsg4326.clone()), None, None);
+        assert!(p.validate_in(&ctx, None).is_ok()); // association via datastore
+        assert!(p.validate_in(&ctx, Some(&epsg4326)).is_ok()); // provable match
+        // Case-insensitive authority comparison.
+        let lower = ("epsg".to_owned(), "4326".to_owned());
+        assert!(p.validate_in(&ctx, Some(&lower)).is_ok());
+        assert!(matches!(
+            p.validate_in(&ctx, Some(&nad83)),
+            Err(GeometryViolation::ForeignCrs { .. })
+        ));
+
+        // Claim against an anonymous datastore CRS is unverifiable -> foreign.
+        let anon = GeometryContext::new(None, None, None);
+        assert!(matches!(
+            p.validate_in(&anon, Some(&epsg4326)),
+            Err(GeometryViolation::ForeignCrs { datastore, .. }) if datastore == "unidentified"
+        ));
+    }
+
+    /// §7.6.4 Requirement Geom6 /req/core/geometry-collection-srs — members
+    /// carry no CRS of their own (single CRS by construction, the same
+    /// pattern as CRS2); validation recurses so member unit requirements
+    /// still bite.
+    #[test]
+    fn req_core_geometry_collection_srs_single_crs_by_construction() {
+        use geo_types::Point;
+        let coll = CdbGeometry::GeometryCollection(vec![
+            CdbGeometry::from(geo_types::Geometry::Point(Point::new(0.0, 0.0))),
+            CdbGeometry::from(PointZ::new(Point::new(1.0, 1.0), 10.0)),
+        ]);
+
+        let no_units = GeometryContext::new(None, None, None);
+        assert!(matches!(
+            coll.validate_in(&no_units, None),
+            Err(GeometryViolation::MissingZUom) // recursion reaches the member
+        ));
+        let ctx = GeometryContext::new(None, Some(UnitOfMeasure::Meters), None);
+        assert!(coll.validate_in(&ctx, None).is_ok());
     }
 }
