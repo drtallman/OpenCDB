@@ -645,7 +645,7 @@ impl CdbGeometry {
     /// CRS, so a claim is a [`GeometryViolation::ForeignCrs`] when the
     /// datastore CRS differs from it or is unidentified (rendered
     /// `"unidentified"`). Authority and code are compared ASCII
-    /// case-insensitively via [`crs_ids_match`].
+    /// case-insensitively via `crs_ids_match`.
     ///
     /// Geom5-B/Geom6-B (`/req/core/geometry-collection-srs`) hold by
     /// construction: a [`CdbGeometry`] value carries no per-member CRS, so a
@@ -691,6 +691,7 @@ impl CdbGeometry {
 /// [`GeometryContext::new`], or from datastore metadata with
 /// [`GeometryContext::from_datastore`]. Fields are private: a context is only
 /// ever consumed by [`CdbGeometry::validate_in`].
+#[derive(Debug, Clone)]
 pub struct GeometryContext {
     /// The datastore CRS as an `(authority, code)` pair (e.g.
     /// `("EPSG", "4326")`), or `None` when the CRS carries no identifier —
@@ -1175,5 +1176,49 @@ mod tests {
         ));
         let ctx = GeometryContext::new(None, Some(UnitOfMeasure::Meters), None);
         assert!(coll.validate_in(&ctx, None).is_ok());
+    }
+
+    /// Branch-coverage pin (not a spec clause): drives three implementation
+    /// branches the requirement tests leave uncovered — the per-interior-ring
+    /// z-length check in `PolygonZ::new`, the M-side `None` arm of `into_xy`,
+    /// and the `Rect`/`Triangle` arms of `From<geo_types::Geometry>`.
+    #[test]
+    fn geometry_branch_coverage_gaps() {
+        use geo_types::{Geometry, LineString, Point, Polygon};
+
+        // (a) Interior-ring COUNT matches, but the single interior ring's z
+        // length is wrong -> the per-ring check fires with an "interior <i>"
+        // part (distinct from the "interior rings" count branch).
+        let exterior = LineString::from(vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        let interior = LineString::from(vec![(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]);
+        let poly = Polygon::new(exterior, vec![interior]);
+        let ext_len = poly.exterior().0.len();
+        let int_len = poly.interiors()[0].0.len();
+        let err =
+            PolygonZ::new(poly, vec![1.0; ext_len], vec![vec![1.0; int_len - 1]]).unwrap_err();
+        assert!(matches!(
+            &err,
+            GeometryViolation::ZLengthMismatch { part, .. } if part.starts_with("interior")
+        ));
+
+        // (b) An M geometry has no lossless planar view -> into_xy is None.
+        let pm = CdbGeometry::from(PointM::new(Point::new(1.0, 2.0), 0.5));
+        assert_eq!(pm.into_xy(), None);
+
+        // (c) Rect and Triangle conveniences both collapse to a Polygon.
+        let rect = CdbGeometry::from(Geometry::Rect(geo_types::Rect::new(
+            geo_types::coord! { x: 0.0, y: 0.0 },
+            geo_types::coord! { x: 2.0, y: 2.0 },
+        )));
+        assert!(matches!(&rect, CdbGeometry::Polygon(_)));
+        assert_eq!(rect.geometry_code(), GeometryCode::Polygon);
+
+        let tri = CdbGeometry::from(Geometry::Triangle(geo_types::Triangle::new(
+            geo_types::coord! { x: 0.0, y: 0.0 },
+            geo_types::coord! { x: 1.0, y: 0.0 },
+            geo_types::coord! { x: 0.0, y: 1.0 },
+        )));
+        assert!(matches!(&tri, CdbGeometry::Polygon(_)));
+        assert_eq!(tri.geometry_code(), GeometryCode::Polygon);
     }
 }
