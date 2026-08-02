@@ -5,7 +5,7 @@
 //! Abstract Specification Topic 6 / ISO 19123 (Coverages2) and on the CRS
 //! and Metadata core modules. This module is metadata + rules only — no
 //! raster decoding (encodings are application-profile business).
-//! `validate_coverage_instance` and [`DomainSet::validate`] are the
+//! [`validate_coverage_instance`] and [`DomainSet::validate`] are the
 //! module's rule enforcement (Coverages1/Coverages3), the same
 //! design-level conformance pattern as CRS2 and Geom1.
 //!
@@ -16,6 +16,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::metadata::{MetadataViolation, ResourceMetadata};
 
 /// A violation of a SHALL requirement of the coverages module (§7.2).
 /// Non-exhaustive: later tasks (domain set, coverage instance) add variants.
@@ -52,6 +54,31 @@ pub enum CoverageViolation {
         "field_type {field_type:?} is not Height, so quantity_definition is required (violates /req/core/coverage-domainSet H, §7.2.6.5)"
     )]
     MissingQuantityDefinition { field_type: String },
+    /// Requirement Coverages5 (§7.2.5): every coverage instance SHALL have
+    /// resource metadata; an instance with none has no minimum metadata.
+    #[error(
+        "coverage instance has no resource metadata (violates /req/core/coverage-min-metadata)"
+    )]
+    MissingResourceMetadata,
+    /// Requirement Coverages6 (§7.2.6): a coverage instance's resource
+    /// metadata SHALL carry a domainSet element describing its range.
+    #[error(
+        "coverage instance's resource metadata has no domainSet element (violates /req/core/coverage-domainSet)"
+    )]
+    MissingDomainSet,
+    /// Requirement Coverages4 (§7.2.4): a coverage's CRS SHALL be the
+    /// datastore CRS. A declared CRS that does not PROVABLY match the
+    /// datastore CRS violates the requirement; an anonymous datastore CRS
+    /// renders as "unidentified" (Geom5's provable-match rule).
+    #[error(
+        "coverage declares CRS {declared} but the datastore CRS is {datastore} (violates /req/core/coverage-crs)"
+    )]
+    CoverageCrsMismatch { declared: String, datastore: String },
+    /// A coverage instance's resource metadata failed its own module's
+    /// validation; surfaced through the coverage family so a coverage-instance
+    /// check yields a single error type (Coverages5 delegates to Metadata).
+    #[error(transparent)]
+    Metadata(#[from] MetadataViolation),
 }
 
 /// A SHOULD-level finding of the coverages module (§7.2). Unlike
@@ -349,6 +376,53 @@ impl DomainSet {
     }
 }
 
+/// Validates a single coverage instance against the coverage-instance SHALL
+/// requirements (Coverages4/5/6), first-violation-wins in this order:
+///
+/// 1. Coverages4 (§7.2.4): a coverage's CRS SHALL be the datastore CRS. A
+///    `source_crs` claim must PROVABLY match `datastore_crs` (compared with
+///    `crate::crs::authority_ids_match`, Geom5's provable-match rule); a
+///    claim against an anonymous (`None`) datastore CRS is the very
+///    ambiguity the requirement forbids and renders the datastore as
+///    `"unidentified"` in [`CoverageCrsMismatch`]. No claim (`source_crs`
+///    is `None`) is association-via-datastore and passes this check.
+/// 2. Coverages5 (§7.2.5): the instance SHALL have resource metadata, else
+///    [`MissingResourceMetadata`]; that record is then validated by its own
+///    module and any failure is surfaced as [`Metadata`].
+/// 3. Coverages6 (§7.2.6): the record SHALL carry a domainSet, else
+///    [`MissingDomainSet`], validated in turn by [`DomainSet::validate`].
+///
+/// [`CoverageCrsMismatch`]: CoverageViolation::CoverageCrsMismatch
+/// [`MissingResourceMetadata`]: CoverageViolation::MissingResourceMetadata
+/// [`Metadata`]: CoverageViolation::Metadata
+/// [`MissingDomainSet`]: CoverageViolation::MissingDomainSet
+pub fn validate_coverage_instance(
+    resource: Option<&ResourceMetadata>,
+    source_crs: Option<&(String, String)>,
+    datastore_crs: Option<&(String, String)>,
+) -> Result<(), CoverageViolation> {
+    if let Some(claim) = source_crs {
+        match datastore_crs {
+            Some(ds) if crate::crs::authority_ids_match(ds, claim) => {}
+            other => {
+                return Err(CoverageViolation::CoverageCrsMismatch {
+                    declared: format!("{}:{}", claim.0, claim.1),
+                    datastore: other
+                        .map(|d| format!("{}:{}", d.0, d.1))
+                        .unwrap_or_else(|| "unidentified".to_owned()),
+                });
+            }
+        }
+    }
+    let record = resource.ok_or(CoverageViolation::MissingResourceMetadata)?;
+    record.validate()?;
+    let domain_set = record
+        .domain_set
+        .as_ref()
+        .ok_or(CoverageViolation::MissingDomainSet)?;
+    domain_set.validate()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +590,64 @@ mod tests {
         assert!(ds.validate().is_ok());
         // The default Height needs none.
         assert!(DomainSet::new("m").validate().is_ok());
+    }
+
+    /// §7.2.4 Requirement Coverages4 — coverage CRS must be the datastore
+    /// CRS; a claim must PROVABLY match (Geom5's rule: a claim against an
+    /// anonymous datastore CRS is the ambiguity the requirement forbids).
+    #[test]
+    fn req_core_coverage_crs_matches_datastore() {
+        use crate::metadata::ResourceMetadata;
+        let mut record = ResourceMetadata::new("Elevation", "Terrain Elevation", "Gridded DEM");
+        record.domain_set = Some(DomainSet::new("m"));
+        let epsg4326 = ("EPSG".to_owned(), "4326".to_owned());
+        let lower = ("epsg".to_owned(), "4326".to_owned());
+        let nad83 = ("EPSG".to_owned(), "4269".to_owned());
+
+        let ok = validate_coverage_instance(Some(&record), None, Some(&epsg4326));
+        assert!(ok.is_ok(), "no claim: association via datastore");
+        assert!(validate_coverage_instance(Some(&record), Some(&lower), Some(&epsg4326)).is_ok());
+        assert!(matches!(
+            validate_coverage_instance(Some(&record), Some(&nad83), Some(&epsg4326)),
+            Err(CoverageViolation::CoverageCrsMismatch { .. })
+        ));
+        assert!(matches!(
+            validate_coverage_instance(Some(&record), Some(&epsg4326), None),
+            Err(CoverageViolation::CoverageCrsMismatch { datastore, .. }) if datastore == "unidentified"
+        ));
+    }
+
+    /// §7.2.5 Requirement Coverages5 + §7.2.6 Coverages6 — every coverage
+    /// instance has resource metadata, and that record carries a domainSet.
+    #[test]
+    fn req_core_coverage_min_metadata_required() {
+        use crate::metadata::ResourceMetadata;
+        assert!(matches!(
+            validate_coverage_instance(None, None, None),
+            Err(CoverageViolation::MissingResourceMetadata)
+        ));
+        let bare = ResourceMetadata::new("Elevation", "Terrain Elevation", "Gridded DEM");
+        assert!(matches!(
+            validate_coverage_instance(Some(&bare), None, None),
+            Err(CoverageViolation::MissingDomainSet)
+        ));
+        let mut full = bare.clone();
+        full.domain_set = Some(DomainSet::new("m"));
+        assert!(validate_coverage_instance(Some(&full), None, None).is_ok());
+        // Delegation: an invalid record (empty title) surfaces as a
+        // Metadata violation through the coverage family.
+        let mut invalid = full.clone();
+        invalid.title = String::new();
+        assert!(matches!(
+            validate_coverage_instance(Some(&invalid), None, None),
+            Err(CoverageViolation::Metadata(_))
+        ));
+        // Delegation: an invalid domainSet (empty uom) surfaces too.
+        let mut bad_ds = full.clone();
+        bad_ds.domain_set = Some(DomainSet::new(""));
+        assert!(matches!(
+            validate_coverage_instance(Some(&bad_ds), None, None),
+            Err(CoverageViolation::EmptyUom)
+        ));
     }
 }
