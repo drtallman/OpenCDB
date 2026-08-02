@@ -69,15 +69,22 @@ impl fmt::Display for TilingSchemeId {
     }
 }
 
-/// A violation of a SHALL requirement in the tiling module (spec §7.10–§7.11).
+/// A violation of a SHALL requirement of the tiling module (spec
+/// §7.10–§7.11), or a hard rejection from its closed vocabularies (e.g. an
+/// unknown tiling-scheme identifier at parse time). SHOULD-level findings
+/// are [`TilingWarning`]s — the Recommendation Tiling1 preference for the
+/// extension schemes surfaces there, never here.
 ///
 /// Intentionally not `Eq`: a later task adds a variant carrying an `f64`
 /// bound, which precludes a total-equality derive.
 #[derive(Debug, Error, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TilingViolation {
-    /// A tiling-scheme identifier outside the closed vocabulary
-    /// (Recommendation Tiling1, `/rec/core/tiling-extension`).
+    /// A parse-time vocabulary rejection: the identifier set is closed by
+    /// the standard's two extension schemes (the vocabulary of
+    /// `/rec/core/tiling-extension`), and this value names neither. The
+    /// recommendation aspect — a datastore preferring an extension scheme —
+    /// is [`TilingWarning::NonExtensionScheme`]'s job.
     #[error(
         "tiling scheme {value:?} is not CDB1GlobalGrid or GNOSISGlobalGrid (/rec/core/tiling-extension)"
     )]
