@@ -133,7 +133,7 @@ the validator, not hard errors.)
 | Metadata7 | temporal intervals ABNF incl. half-bounded `../` forms | parser tests: bounded, `../end`, `start/..`, invalid |
 | Metadata8 | one UoM for measurements: M, FT, K, MI; element named `uom` | enum + serde field-name test |
 | Global elements table | mandatory: ID, title, description, contactPoint, created, language; optional: update, temporal, accessRights, license | builder validation + XML/JSON round-trips via quick-xml/serde |
-| Resource metadata table | mandatory: ID, type(=dataset), title, description; conditional/optional per table (incl. the Geom4 conditional `uom: Option<UnitOfMeasure>`, added in Phase 7); CharacterSetCode default utf8 | same pattern |
+| Resource metadata table | mandatory: ID, type(=dataset), title, description; conditional/optional per table (incl. the Geom4 conditional `uom: Option<UnitOfMeasure>`, added in Phase 7, and the Coverages6 conditional `domain_set: Option<DomainSet>` / wire `domainSet`, added in Phase 8); CharacterSetCode default utf8 | same pattern |
 
 ### Phase 6 — CRS (`/req/core/crs/*`), mandatory
 | Req | Rule | Tests |
@@ -170,10 +170,10 @@ and Geom2's table holds by construction. Approved design record:
 ### Phase 8 — Coverages (`/req/core/coverage-*`), optional
 | Req | Rule | Tests |
 |---|---|---|
-| Coverages1-3 | module conformance rules | validator wiring |
-| Coverages4 | coverage CRS = datastore CRS | mismatch → error |
-| Coverages5 | resource metadata present per Phase 5 | missing → error |
-| Coverages6 | domainSet: uom (mandatory), precision=1, scale=1, offset=0, data_null, grid_cell_encoding=value-is-center (corner variant requires which-corner), field_type=Height, quantity_definition | defaults test; corner-without-which-corner → error; scale/offset apply to values but never to data_null |
+| Coverages1-3 | module conformance rules | realized as the free `coverage::validate_coverage_instance` fn + `DomainSet::validate` + module-doc conformance statements (design-level, per CRS2/Geom1) |
+| Coverages4 | coverage CRS = datastore CRS | Geom5-style provable-match → `CoverageCrsMismatch` (shared `crs::authority_ids_match`); a claim against an anonymous datastore CRS ⇒ mismatch ("unidentified") |
+| Coverages5 | resource metadata present per Phase 5 | missing → `MissingResourceMetadata`; realized on `ResourceMetadata` (delegates to Metadata via `#[from]`) |
+| Coverages6 | domainSet: uom (mandatory), precision=1, scale=1, offset=0, data_null, grid_cell_encoding=value-is-center (corner variant requires which-corner), field_type=Height, quantity_definition | realized on `ResourceMetadata.domain_set` (§7.9.4.2 conditional element, 2nd after Geom4); defaults test; corner-without-which-corner → error; scale/offset apply to values but never to data_null |
 | Rec 7/8 | tiled coverages follow tiling module + one tiling extension | integration test once Phase 9 lands |
 
 ### Phase 9 — Tiling: abstract module + CDB1GlobalGrid, optional
@@ -340,4 +340,23 @@ for Phase 9).
   by construction (members carry no CRS, spec-absent combos unrepresentable).
   The Geom4 m-value UoM rides on the new `ResourceMetadata.uom`. Design record:
   `docs/superpowers/specs/2026-08-01-geometry-module-design.md`.
-- Next: Phase 8 (coverages).
+- Phase 8 done (commits `phase-8(coverage)` ×4, `phase-8(metadata)`, after a
+  `refactor(crs)` that extracted the shared `authority_ids_match` and a `docs`
+  prep commit), 166 tests (153 unit + 12 integration + 1 doc) — the second
+  optional class, shipped as `0.3.0`. `coverage`: `DomainSet` (the eight §7.2.6
+  domainSet elements A–H with spec defaults — precision/scale 1, offset 0,
+  value-is-center, field_type Height), `GridCellEncoding`/`GridCorner` (closed
+  sets, spec wire spellings), `decode_value` making §7.2.6.2 executable
+  (scale/offset touch values but never `data_null`), `DomainSet::validate`, and
+  the free `validate_coverage_instance` fn (Coverages4/5/6, Geom5-style
+  provable-match CRS rule via `crs::authority_ids_match`). `CoverageViolation`
+  has nine variants and, with `CoverageWarning::UomLooksLikeUri` (the §7.2.6.1
+  SHOULD), coverage is the first OPTIONAL class carrying warnings (geometry had
+  violations only). The Coverages6-A `uom` is the third distinct uom — the
+  three-uom table: `GlobalMetadata.uom` (M/FT/K/MI enum) / `ResourceMetadata.uom`
+  (Geom4, same enum) / free-form UCUM-style `DomainSet.uom` string. Coverages5/6
+  ride on the new `ResourceMetadata.domain_set` (wire `domainSet`, the second
+  §7.9.4.2 conditional element after Geom4's `uom`); Coverages7/8 (tiled-coverage
+  recommendations) defer to Phase 9. Design record:
+  `docs/superpowers/specs/2026-08-02-coverages-module-design.md`.
+- Next: Phase 9 (tiling + CDB1GlobalGrid).
