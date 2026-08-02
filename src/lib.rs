@@ -35,7 +35,7 @@ pub mod metadata;
 pub mod naming;
 pub mod profiles;
 
-pub use coverage::{CoverageViolation, DomainSet, GridCellEncoding, GridCorner};
+pub use coverage::{CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner};
 pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
 pub use error::CdbError;
 pub use geometry::{

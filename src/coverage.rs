@@ -5,7 +5,7 @@
 //! Abstract Specification Topic 6 / ISO 19123 (Coverages2) and on the CRS
 //! and Metadata core modules. This module is metadata + rules only — no
 //! raster decoding (encodings are application-profile business).
-//! `validate_coverage_instance` and `DomainSet::validate` are the
+//! `validate_coverage_instance` and [`DomainSet::validate`] are the
 //! module's rule enforcement (Coverages1/Coverages3), the same
 //! design-level conformance pattern as CRS2 and Geom1.
 //!
@@ -34,6 +34,50 @@ pub enum CoverageViolation {
         "grid corner {value:?} is not lower-left-corner|upper-left-corner|lower-right-corner|upper-right-corner (violates /req/core/coverage-domainSet F)"
     )]
     UnknownGridCorner { value: String },
+    /// Requirement Coverages6-A (§7.2.6.1): `uom` is the one mandatory
+    /// domainSet element, so an empty code violates the requirement.
+    #[error(
+        "domainSet uom is empty; it is the one mandatory element (violates /req/core/coverage-domainSet A, §7.2.6.1)"
+    )]
+    EmptyUom,
+    /// Requirement Coverages6-F (§7.2.6.3): a value-is-corner encoding
+    /// REQUIRES a `which_corner` element naming the corner.
+    #[error(
+        "grid_cell_encoding is value-is-corner but no which_corner element is specified (violates /req/core/coverage-domainSet F)"
+    )]
+    CornerWithoutWhichCorner,
+    /// Requirement Coverages6-H (§7.2.6.5): any `field_type` other than
+    /// "Height" REQUIRES a `quantity_definition`.
+    #[error(
+        "field_type {field_type:?} is not Height, so quantity_definition is required (violates /req/core/coverage-domainSet H, §7.2.6.5)"
+    )]
+    MissingQuantityDefinition { field_type: String },
+}
+
+/// A SHOULD-level finding of the coverages module (§7.2). Unlike
+/// [`CoverageViolation`], a warning never fails validation — it is a
+/// recommendation a profile may surface in a conformance report. It is
+/// deliberately NOT an `Error`: a SHOULD finding must not masquerade as a
+/// SHALL error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CoverageWarning {
+    /// §7.2.6.1 Recommendation: the domainSet `uom` SHOULD be a plain
+    /// UCUM-style code rather than a URN/URI, so it resolves in a
+    /// disconnected environment.
+    UomLooksLikeUri { uom: String },
+}
+
+/// Displays each warning with its recommendation text and spec clause.
+impl fmt::Display for CoverageWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CoverageWarning::UomLooksLikeUri { uom } => write!(
+                f,
+                "domainSet uom {uom:?} looks like a URN/URI; a plain UCUM-style code is recommended for disconnected use (§7.2.6.1)"
+            ),
+        }
+    }
 }
 
 /// How a value is assigned to a grid cell (Coverages6-F, §7.2.6.3).
@@ -248,6 +292,61 @@ impl DomainSet {
             Some(raw * self.scale + self.offset)
         }
     }
+
+    /// Validates this domainSet against the SHALL requirements of Coverages6
+    /// (§7.2.6), first-violation-wins in this order:
+    ///
+    /// 1. Coverages6-A (§7.2.6.1): `uom` is the one mandatory element, so an
+    ///    ASCII-whitespace-only code is [`EmptyUom`].
+    /// 2. Coverages6-F (§7.2.6.3): a value-is-corner `grid_cell_encoding`
+    ///    REQUIRES a `which_corner`, else [`CornerWithoutWhichCorner`].
+    /// 3. Coverages6-H (§7.2.6.5): any `field_type` other than the spec
+    ///    default `"Height"` (matched case-sensitively — that is the spec's
+    ///    exact spelling) REQUIRES a `quantity_definition`, else
+    ///    [`MissingQuantityDefinition`].
+    ///
+    /// [`EmptyUom`]: CoverageViolation::EmptyUom
+    /// [`CornerWithoutWhichCorner`]: CoverageViolation::CornerWithoutWhichCorner
+    /// [`MissingQuantityDefinition`]: CoverageViolation::MissingQuantityDefinition
+    pub fn validate(&self) -> Result<(), CoverageViolation> {
+        if self.uom.trim().is_empty() {
+            return Err(CoverageViolation::EmptyUom);
+        }
+        if self.grid_cell_encoding == GridCellEncoding::ValueIsCorner && self.which_corner.is_none()
+        {
+            return Err(CoverageViolation::CornerWithoutWhichCorner);
+        }
+        if self.field_type != "Height" && self.quantity_definition.is_none() {
+            return Err(CoverageViolation::MissingQuantityDefinition {
+                field_type: self.field_type.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The SHOULD-level findings for this domainSet (§7.2). Currently one:
+    /// a `uom` that looks like a URN/URI ([`UomLooksLikeUri`]) — its trimmed
+    /// code begins (ASCII case-insensitively) with `http://`, `https://`, or
+    /// `urn:`.
+    ///
+    /// NOTE: §7.2.6.5 both discourages and permits a URI for
+    /// `quantity_definition`, so this warning deliberately applies to `uom`
+    /// only — never to `quantity_definition`.
+    ///
+    /// [`UomLooksLikeUri`]: CoverageWarning::UomLooksLikeUri
+    pub fn warnings(&self) -> Vec<CoverageWarning> {
+        let mut warnings = Vec::new();
+        let lower = self.uom.trim().to_ascii_lowercase();
+        if ["http://", "https://", "urn:"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+        {
+            warnings.push(CoverageWarning::UomLooksLikeUri {
+                uom: self.uom.clone(),
+            });
+        }
+        warnings
+    }
 }
 
 #[cfg(test)]
@@ -347,5 +446,75 @@ mod tests {
         let mut no_null = DomainSet::new("m");
         no_null.scale = 2.0;
         assert_eq!(no_null.decode_value(-32767.0), Some(-65534.0));
+    }
+
+    /// §7.2.6.1 Requirement Coverages6-A — uom is the one mandatory
+    /// domainSet element; UCUM-style codes validate.
+    #[test]
+    fn req_core_coverage_domainset_uom_mandatory() {
+        for bad in ["", "   ", "\t"] {
+            assert!(matches!(
+                DomainSet::new(bad).validate(),
+                Err(CoverageViolation::EmptyUom)
+            ));
+        }
+        for good in ["Cel", "mbar", "m", "[degF]"] {
+            assert!(DomainSet::new(good).validate().is_ok());
+        }
+    }
+
+    /// §7.2.6.1 Recommendation — the uom SHOULD NOT be a URN or URI
+    /// (disconnected environments); a warning, never an error.
+    #[test]
+    fn rec_core_coverage_uom_uri_discouraged() {
+        for uri in [
+            "http://example.com/uom/m",
+            "HTTPS://x.org/cel",
+            "urn:ogc:def:uom:m",
+        ] {
+            let ds = DomainSet::new(uri);
+            assert!(matches!(
+                ds.warnings().as_slice(),
+                [CoverageWarning::UomLooksLikeUri { .. }]
+            ));
+            assert!(ds.validate().is_ok(), "SHOULD is not SHALL: {uri}");
+        }
+        assert!(DomainSet::new("Cel").warnings().is_empty());
+        // Warnings display and cite the clause.
+        let w = &DomainSet::new("urn:x").warnings()[0];
+        assert!(w.to_string().contains("7.2.6.1"));
+    }
+
+    /// §7.2.6 Requirement Coverages6-F — value-is-corner REQUIRES a
+    /// which_corner element naming one of the four corners.
+    #[test]
+    fn req_core_coverage_domainset_corner_requires_which_corner() {
+        let mut ds = DomainSet::new("m");
+        ds.grid_cell_encoding = GridCellEncoding::ValueIsCorner;
+        assert!(matches!(
+            ds.validate(),
+            Err(CoverageViolation::CornerWithoutWhichCorner)
+        ));
+        ds.which_corner = Some(GridCorner::LowerLeft);
+        assert!(ds.validate().is_ok());
+        // center/area encodings need no corner.
+        assert!(DomainSet::new("m").validate().is_ok());
+    }
+
+    /// §7.2.6.5 Requirement Coverages6-H — quantity_definition is required
+    /// iff field_type is anything other than "Height".
+    #[test]
+    fn req_core_coverage_domainset_quantity_definition_conditional() {
+        let mut ds = DomainSet::new("Cel");
+        ds.field_type = "temperature".to_owned();
+        assert!(matches!(
+            ds.validate(),
+            Err(CoverageViolation::MissingQuantityDefinition { field_type }) if field_type == "temperature"
+        ));
+        ds.quantity_definition =
+            Some("Air temperature is the bulk temperature of the air".to_owned());
+        assert!(ds.validate().is_ok());
+        // The default Height needs none.
+        assert!(DomainSet::new("m").validate().is_ok());
     }
 }
