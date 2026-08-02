@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::crs::{StorageCrs, authority_ids_match};
-use crate::metadata::{Bbox, MetadataViolation, ResourceMetadata};
+use crate::metadata::{Bbox, GlobalMetadata, MetadataViolation, ResourceMetadata};
 
 /// The tiling-scheme extensions the spec defines — exactly two: the CDB 1.x
 /// global grid and the GNOSIS global grid. Closed: the core admits no other.
@@ -208,6 +208,19 @@ impl TilingScheme {
                 north: 90.0,
             },
         }
+    }
+
+    /// Requires a tiled datastore's global metadata to carry a tiling-scheme
+    /// definition (Requirement Tiling8, `/req/core/tiling-tilingscheme-definition`,
+    /// §7.10.2.5): a tiled datastore SHALL declare its scheme on the global
+    /// record. Returns the borrowed [`TilingScheme`], or
+    /// [`TilingViolation::MissingTilingScheme`] when the `tilingScheme` element
+    /// is absent.
+    pub fn require(global: &GlobalMetadata) -> Result<&TilingScheme, TilingViolation> {
+        global
+            .tiling_scheme
+            .as_ref()
+            .ok_or(TilingViolation::MissingTilingScheme)
     }
 
     /// Enforces Requirements Tiling5/6/7 against the datastore storage CRS,
@@ -470,5 +483,29 @@ mod tests {
             validate_tileset_metadata(&invalid),
             Err(TilingViolation::Metadata(_))
         ));
+    }
+
+    /// §7.10.2.5 Requirement Tiling8 — a tiled datastore must carry the
+    /// scheme definition in its global metadata.
+    #[test]
+    fn req_core_tiling_tilingscheme_required_when_tiled() {
+        let mut global = crate::metadata::GlobalMetadata::builder()
+            .id("G")
+            .title("T")
+            .description("D")
+            .contact_point("ops@example.com")
+            .language(crate::metadata::LanguageTag::new("en").unwrap())
+            .standard(crate::metadata::MetadataStandard::Dcat)
+            .encoding(crate::metadata::MetadataEncoding::Json)
+            .uom(crate::metadata::UnitOfMeasure::Meters)
+            .created(crate::metadata::temporal::parse_datetime("2026-08-02T00:00:00Z").unwrap())
+            .build()
+            .unwrap();
+        assert!(matches!(
+            TilingScheme::require(&global),
+            Err(TilingViolation::MissingTilingScheme)
+        ));
+        global.tiling_scheme = Some(TilingScheme::cdb1_global_grid());
+        assert_eq!(TilingScheme::require(&global).unwrap().id, "CDB1GlobalGrid");
     }
 }

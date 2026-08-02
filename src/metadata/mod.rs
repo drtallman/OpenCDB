@@ -23,6 +23,7 @@ use crate::coverage::DomainSet;
 use crate::hierarchy::{DatastoreLayout, GLOBAL_METADATA_DIR};
 use crate::links::{Link, LinkViolation};
 use crate::media_types::MediaType;
+use crate::tiling::TilingScheme;
 
 pub use temporal::Temporal;
 
@@ -362,7 +363,7 @@ pub fn encoding_violations<'a>(
 /// Global metadata for an entire CDB datastore instance (§7.9.4.1 table),
 /// plus the datastore-wide declarations of Requirements Metadata2
 /// (standard), Metadata5 (encoding), and Metadata8 (`uom`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalMetadata {
     #[serde(rename = "ID")]
     pub id: String,
@@ -395,6 +396,16 @@ pub struct GlobalMetadata {
     pub access_rights: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    /// Tiling-scheme definition for a tiled datastore — the conditional
+    /// element introduced by Requirement Tiling8
+    /// (/req/core/tiling-tilingscheme-definition, §7.10.2.5); wire name
+    /// `tilingScheme`. Untiled datastores omit it.
+    #[serde(
+        rename = "tilingScheme",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tiling_scheme: Option<TilingScheme>,
 }
 
 impl GlobalMetadata {
@@ -619,6 +630,7 @@ impl GlobalMetadataBuilder {
             temporal: self.temporal,
             access_rights: self.access_rights,
             license: self.license,
+            tiling_scheme: None,
         })
     }
 }
@@ -1243,5 +1255,29 @@ mod tests {
         let xml = record.to_xml_string().unwrap();
         let back = ResourceMetadata::from_xml_str(&xml).unwrap();
         assert_eq!(back.domain_set, Some(ds));
+    }
+
+    /// §7.10.2.5 Requirement Tiling8 /req/core/tiling-tilingscheme-definition
+    /// — the tiling-scheme definition rides the global metadata record (the
+    /// conditional element the tiling module introduces; third use of the
+    /// §7.9.4.2 mechanism, first on the global table).
+    #[test]
+    fn req_core_tiling_tilingscheme_global_roundtrip() {
+        use crate::tiling::TilingScheme;
+        let tmp = tempdir().unwrap();
+        let layout = DatastoreLayout::create(tmp.path()).unwrap();
+        let mut metadata = sample_global(MetadataEncoding::Json);
+        assert_eq!(metadata.tiling_scheme, None);
+        let json = metadata.to_json_string().unwrap();
+        assert!(!json.contains("tilingScheme"));
+
+        metadata.tiling_scheme = Some(TilingScheme::cdb1_global_grid());
+        metadata.write_to(&layout).unwrap();
+        let back = GlobalMetadata::read_from(&layout).unwrap();
+        assert_eq!(back.tiling_scheme, Some(TilingScheme::cdb1_global_grid()));
+
+        let xml = metadata.to_xml_string().unwrap();
+        let back = GlobalMetadata::from_xml_str(&xml).unwrap();
+        assert_eq!(back.tiling_scheme, Some(TilingScheme::cdb1_global_grid()));
     }
 }
