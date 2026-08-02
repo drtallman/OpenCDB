@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+use crate::coverage::DomainSet;
 use crate::hierarchy::{DatastoreLayout, GLOBAL_METADATA_DIR};
 use crate::links::{Link, LinkViolation};
 use crate::media_types::MediaType;
@@ -700,6 +701,11 @@ pub struct ResourceMetadata {
     /// Requirement Metadata8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uom: Option<UnitOfMeasure>,
+    /// domainSet metadata for a coverage instance — the conditional
+    /// element introduced by Requirement Coverages6
+    /// (/req/core/coverage-domainSet, §7.2.6); wire name `domainSet`.
+    #[serde(rename = "domainSet", default, skip_serializing_if = "Option::is_none")]
+    pub domain_set: Option<DomainSet>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Extent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -735,6 +741,7 @@ impl ResourceMetadata {
             license: None,
             rights: None,
             uom: None,
+            domain_set: None,
             extent: None,
             associations: Vec::new(),
             character_set: CharacterSet::Utf8,
@@ -1204,5 +1211,37 @@ mod tests {
         let xml = record.to_xml_string().unwrap();
         let back = ResourceMetadata::from_xml_str(&xml).unwrap();
         assert_eq!(back.uom, Some(UnitOfMeasure::Meters));
+    }
+
+    /// §7.2.6 Requirement Coverages6 + §7.9.4.2 — a coverage instance's
+    /// domainSet rides on its resource metadata record (the conditional
+    /// element the coverages module introduces, like Geom4's uom).
+    #[test]
+    fn req_core_coverage_domainset_resource_roundtrip() {
+        use crate::coverage::{DomainSet, GridCellEncoding, GridCorner};
+
+        let mut record = ResourceMetadata::new("Elevation", "Terrain Elevation", "Gridded DEM");
+        assert_eq!(record.domain_set, None);
+        let json = record.to_json_string().unwrap();
+        assert!(
+            !json.contains("domainSet"),
+            "absent domainSet must not serialize: {json}"
+        );
+
+        let mut ds = DomainSet::new("m");
+        ds.data_null = Some(-32767.0);
+        ds.grid_cell_encoding = GridCellEncoding::ValueIsCorner;
+        ds.which_corner = Some(GridCorner::LowerLeft);
+        record.domain_set = Some(ds.clone());
+
+        let json = record.to_json_string().unwrap();
+        assert!(json.contains("\"domainSet\""), "wire name: {json}");
+        assert!(json.contains("value-is-corner") && json.contains("lower-left-corner"));
+        let back = ResourceMetadata::from_json_str(&json).unwrap();
+        assert_eq!(back.domain_set, Some(ds.clone()));
+
+        let xml = record.to_xml_string().unwrap();
+        let back = ResourceMetadata::from_xml_str(&xml).unwrap();
+        assert_eq!(back.domain_set, Some(ds));
     }
 }
