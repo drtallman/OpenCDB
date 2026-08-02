@@ -323,14 +323,14 @@ impl DomainSet {
     /// Validates this domainSet against the SHALL requirements of Coverages6
     /// (§7.2.6), first-violation-wins in this order:
     ///
-    /// 1. Coverages6-A (§7.2.6.1): `uom` is the one mandatory element, so an
-    ///    ASCII-whitespace-only code is [`EmptyUom`].
+    /// 1. Coverages6-A (§7.2.6.1): `uom` is the one mandatory element, so a
+    ///    whitespace-only code is [`EmptyUom`].
     /// 2. Coverages6-F (§7.2.6.3): a value-is-corner `grid_cell_encoding`
     ///    REQUIRES a `which_corner`, else [`CornerWithoutWhichCorner`].
     /// 3. Coverages6-H (§7.2.6.5): any `field_type` other than the spec
-    ///    default `"Height"` (matched case-sensitively — that is the spec's
-    ///    exact spelling) REQUIRES a `quantity_definition`, else
-    ///    [`MissingQuantityDefinition`].
+    ///    default `"Height"` (matched exactly — case- AND whitespace-sensitive,
+    ///    so `" Height "` is not `"Height"` — the spec's exact spelling)
+    ///    REQUIRES a `quantity_definition`, else [`MissingQuantityDefinition`].
     ///
     /// [`EmptyUom`]: CoverageViolation::EmptyUom
     /// [`CornerWithoutWhichCorner`]: CoverageViolation::CornerWithoutWhichCorner
