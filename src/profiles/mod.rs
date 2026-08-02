@@ -10,6 +10,7 @@
 
 pub mod simulation;
 
+pub use crate::tiling::TilingSchemeId;
 pub use simulation::SimulationProfile;
 
 use std::fmt;
@@ -107,41 +108,6 @@ impl StorageTechnology {
 }
 
 impl fmt::Display for StorageTechnology {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// The tiling-scheme extensions the spec defines — exactly two: the CDB 1.x
-/// global grid and the GNOSIS global grid. Closed: the core admits no other.
-///
-/// A `parse` (with the canonical wire spelling) is deliberately deferred to
-/// Phase 9, which implements the tiling requirements class; [`Self::as_str`]
-/// here is only a display label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TilingSchemeId {
-    Cdb1GlobalGrid,
-    GnosisGlobalGrid,
-}
-
-impl TilingSchemeId {
-    /// Both defined tiling schemes, in declaration order.
-    pub const ALL: [TilingSchemeId; 2] = [
-        TilingSchemeId::Cdb1GlobalGrid,
-        TilingSchemeId::GnosisGlobalGrid,
-    ];
-
-    /// A human-readable label for the scheme. (Not the wire form; parsing the
-    /// canonical spelling arrives with the tiling class in Phase 9.)
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TilingSchemeId::Cdb1GlobalGrid => "CDB1GlobalGrid",
-            TilingSchemeId::GnosisGlobalGrid => "GNOSISGlobalGrid",
-        }
-    }
-}
-
-impl fmt::Display for TilingSchemeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }

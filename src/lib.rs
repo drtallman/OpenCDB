@@ -34,6 +34,7 @@ pub mod media_types;
 pub mod metadata;
 pub mod naming;
 pub mod profiles;
+pub mod tiling;
 
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
@@ -46,3 +47,4 @@ pub use geometry::{
     MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
 };
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
+pub use tiling::{TilingSchemeId, TilingViolation, TilingWarning};

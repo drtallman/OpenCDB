@@ -9,6 +9,7 @@ use crate::hierarchy::HierarchyError;
 use crate::links::LinkViolation;
 use crate::metadata::MetadataError;
 use crate::naming::NamingViolation;
+use crate::tiling::TilingViolation;
 
 /// Top-level error for the `rusty_cdb` API.
 #[derive(Debug, Error)]
@@ -35,4 +36,7 @@ pub enum CdbError {
     /// A coverages requirements violation (/req/core/coverages-, §7.2).
     #[error(transparent)]
     Coverage(#[from] CoverageViolation),
+    /// A tiling requirements violation (/req/core/tiling-*, §7.10–§7.11).
+    #[error(transparent)]
+    Tiling(#[from] TilingViolation),
 }
