@@ -10,7 +10,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::crs::StorageCrs;
+use crate::crs::{StorageCrs, authority_ids_match};
 use crate::metadata::{GlobalMetadata, ResourceMetadata, UnitOfMeasure};
 
 /// A violation of a SHALL requirement of the geometry module (§7.6).
@@ -645,7 +645,7 @@ impl CdbGeometry {
     /// CRS, so a claim is a [`GeometryViolation::ForeignCrs`] when the
     /// datastore CRS differs from it or is unidentified (rendered
     /// `"unidentified"`). Authority and code are compared ASCII
-    /// case-insensitively via `crs_ids_match`.
+    /// case-insensitively via `authority_ids_match`.
     ///
     /// Geom5-B/Geom6-B (`/req/core/geometry-collection-srs`) hold by
     /// construction: a [`CdbGeometry`] value carries no per-member CRS, so a
@@ -662,7 +662,7 @@ impl CdbGeometry {
     ) -> Result<(), GeometryViolation> {
         if let Some(claim) = source_crs {
             match &ctx.datastore_crs {
-                Some(ds) if crs_ids_match(ds, claim) => {}
+                Some(ds) if authority_ids_match(ds, claim) => {}
                 other => {
                     return Err(GeometryViolation::ForeignCrs {
                         declared: format!("{}:{}", claim.0, claim.1),
@@ -739,13 +739,6 @@ impl GeometryContext {
             m_uom: resource.and_then(|r| r.uom),
         }
     }
-}
-
-/// ASCII case-insensitive equality of two CRS `(authority, code)` identifiers
-/// (Requirement Geom5, `/req/core/geometry-coordinates`): `EPSG:4326` and
-/// `epsg:4326` identify the same CRS. Both components must match.
-fn crs_ids_match(a: &(String, String), b: &(String, String)) -> bool {
-    a.0.eq_ignore_ascii_case(&b.0) && a.1.eq_ignore_ascii_case(&b.1)
 }
 
 /// Wraps a planar geo-types `Point` directly as [`CdbGeometry::Point`].

@@ -345,6 +345,13 @@ impl StorageCrs {
     }
 }
 
+/// Compares two CRS authority identities (authority, code) ASCII
+/// case-insensitively on both components. Shared by the geometry (Geom5)
+/// and coverage (Coverages4) CRS-association checks.
+pub(crate) fn authority_ids_match(a: &(String, String), b: &(String, String)) -> bool {
+    a.0.eq_ignore_ascii_case(&b.0) && a.1.eq_ignore_ascii_case(&b.1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,5 +583,18 @@ VERTCRS["EGM2008 height",
     fn crs_error_converts_to_cdb_error() {
         let error: crate::CdbError = CrsError::from(CrsViolation::MissingEpoch).into();
         assert!(matches!(error, crate::CdbError::Crs(_)));
+    }
+
+    /// Shared CRS-authority identity comparison used by the geometry
+    /// (Geom5) and coverage (Coverages4) modules: ASCII case-insensitive
+    /// on both the authority and the code.
+    #[test]
+    fn authority_ids_match_is_ascii_case_insensitive() {
+        let a = ("EPSG".to_owned(), "4326".to_owned());
+        let b = ("epsg".to_owned(), "4326".to_owned());
+        let c = ("EPSG".to_owned(), "4269".to_owned());
+        assert!(authority_ids_match(&a, &b));
+        assert!(authority_ids_match(&a, &a));
+        assert!(!authority_ids_match(&a, &c));
     }
 }
