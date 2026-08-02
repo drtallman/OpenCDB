@@ -47,4 +47,6 @@ pub use geometry::{
     MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
 };
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
-pub use tiling::{TilingScheme, TilingSchemeId, TilingViolation, TilingWarning};
+pub use tiling::{
+    TilingScheme, TilingSchemeId, TilingViolation, TilingWarning, validate_tileset_metadata,
+};

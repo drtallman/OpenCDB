@@ -6,7 +6,7 @@
 //! depends on OGC Abstract Specification Topic 22 (Tiling2,
 //! `/req/core/tiling-topic22` — the class listing's `tiling-model` slug is
 //! the same rule) and on the CRS and Metadata core modules.
-//! [`TilingScheme::validate`] and `validate_tileset_metadata` are the
+//! [`TilingScheme::validate`] and [`validate_tileset_metadata`] are the
 //! module's rule enforcement (Tiling1/Tiling3) — the design-level
 //! conformance pattern of CRS2 and Geom1.
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::crs::{StorageCrs, authority_ids_match};
-use crate::metadata::{Bbox, MetadataViolation};
+use crate::metadata::{Bbox, MetadataViolation, ResourceMetadata};
 
 /// The tiling-scheme extensions the spec defines — exactly two: the CDB 1.x
 /// global grid and the GNOSIS global grid. Closed: the core admits no other.
@@ -116,6 +116,14 @@ pub enum TilingViolation {
         "tiled datastore's global metadata has no tilingScheme element (violates /req/core/tiling-tilingscheme-definition)"
     )]
     MissingTilingScheme,
+    /// Requirement Tiling10 (`/req/core/tiling-tileset-metadata-elements`): a
+    /// tileset's metadata record carries no Keywords element, which the
+    /// standard makes mandatory for tilesets beyond the §7.9.4.2 baseline (ID,
+    /// Title, Description).
+    #[error(
+        "tileset metadata has no Keywords element (violates /req/core/tiling-tileset-metadata-elements)"
+    )]
+    MissingTilesetKeywords,
     /// A metadata violation surfaced while validating tileset metadata; the
     /// tiling module depends on the Metadata core module.
     #[error(transparent)]
@@ -288,6 +296,22 @@ impl TilingScheme {
     }
 }
 
+/// Validates a tileset's metadata record (Requirements Tiling9/Tiling10,
+/// `/req/core/tiling-tileset-metadata-standard` and
+/// `/req/core/tiling-tileset-metadata-elements`): the record itself must be
+/// valid resource metadata (Tiling9 conformance to the declared standard
+/// holds by construction — tileset metadata rides the same record scheme
+/// and encoding as every other resource), and the Keywords element is
+/// mandatory for tilesets (ID, Title, Description are already mandatory in
+/// the §7.9.4.2 baseline).
+pub fn validate_tileset_metadata(record: &ResourceMetadata) -> Result<(), TilingViolation> {
+    record.validate()?;
+    if record.keywords.is_empty() {
+        return Err(TilingViolation::MissingTilesetKeywords);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +447,28 @@ mod tests {
         );
         assert!(scheme.validate(&wgs84()).is_ok());
         assert!(scheme.warnings().is_empty());
+    }
+
+    /// §7.10.2.6 Requirements Tiling9/Tiling10 — a tileset's metadata is a
+    /// resource-metadata record (standard/encoding conformance by
+    /// construction) with Keywords mandatory beyond the §7.9.4.2 baseline.
+    #[test]
+    fn req_core_tiling_tileset_metadata_elements() {
+        use crate::metadata::ResourceMetadata;
+        let mut record =
+            ResourceMetadata::new("1", "RoadNetwork", "The CDB road and highway network");
+        assert!(matches!(
+            validate_tileset_metadata(&record),
+            Err(TilingViolation::MissingTilesetKeywords)
+        ));
+        record.keywords = vec!["roads".into(), "streets".into(), "highways".into()];
+        assert!(validate_tileset_metadata(&record).is_ok());
+        // Delegation: an invalid record surfaces as a Metadata violation.
+        let mut invalid = record.clone();
+        invalid.title = String::new();
+        assert!(matches!(
+            validate_tileset_metadata(&invalid),
+            Err(TilingViolation::Metadata(_))
+        ));
     }
 }
