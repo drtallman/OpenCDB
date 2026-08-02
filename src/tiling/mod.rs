@@ -6,7 +6,7 @@
 //! depends on OGC Abstract Specification Topic 22 (Tiling2,
 //! `/req/core/tiling-topic22` — the class listing's `tiling-model` slug is
 //! the same rule) and on the CRS and Metadata core modules.
-//! `TilingScheme::validate` and `validate_tileset_metadata` are the
+//! [`TilingScheme::validate`] and `validate_tileset_metadata` are the
 //! module's rule enforcement (Tiling1/Tiling3) — the design-level
 //! conformance pattern of CRS2 and Geom1.
 //!
@@ -18,9 +18,11 @@ pub mod cdb1_grid;
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::metadata::MetadataViolation;
+use crate::crs::{StorageCrs, authority_ids_match};
+use crate::metadata::{Bbox, MetadataViolation};
 
 /// The tiling-scheme extensions the spec defines — exactly two: the CDB 1.x
 /// global grid and the GNOSIS global grid. Closed: the core admits no other.
@@ -89,6 +91,31 @@ pub enum TilingViolation {
         "tiling scheme {value:?} is not CDB1GlobalGrid or GNOSISGlobalGrid (/rec/core/tiling-extension)"
     )]
     UnknownTilingScheme { value: String },
+    /// Requirement Tiling5 (`/req/core/tiling-tilingscheme-crs`): the scheme's
+    /// declared CRS does not provably match the datastore storage CRS.
+    #[error(
+        "tiling scheme declares CRS {declared} but the datastore CRS is {datastore} (violates /req/core/tiling-tilingscheme-crs)"
+    )]
+    SchemeCrsMismatch { declared: String, datastore: String },
+    /// Requirement Tiling6 (`/req/core/tiling-tilingscheme-uom`): the scheme's
+    /// unit of measure is not the storage CRS's coordinate unit.
+    #[error(
+        "tiling scheme uom {scheme:?} does not match the CRS coordinate unit {crs_unit:?} (violates /req/core/tiling-tilingscheme-uom)"
+    )]
+    SchemeUomMismatch { scheme: String, crs_unit: String },
+    /// Requirement Tiling7 (`/req/core/tiling-tilingscheme-extent`): the
+    /// scheme's extent does not cover the entire earth.
+    #[error(
+        "tiling scheme extent {extent} does not cover the entire earth (violates /req/core/tiling-tilingscheme-extent)"
+    )]
+    IncompleteExtent { extent: String },
+    /// The tiled datastore's global metadata carries no tiling-scheme
+    /// definition at all (the Requirement Tiling4 identity, and with it the
+    /// whole `/req/core/tiling-tilingscheme-definition` record, is absent).
+    #[error(
+        "tiled datastore's global metadata has no tilingScheme element (violates /req/core/tiling-tilingscheme-definition)"
+    )]
+    MissingTilingScheme,
     /// A metadata violation surfaced while validating tileset metadata; the
     /// tiling module depends on the Metadata core module.
     #[error(transparent)]
@@ -118,10 +145,156 @@ impl fmt::Display for TilingWarning {
     }
 }
 
+/// A tiling scheme's definition record: the identity and geospatial framing a
+/// tiled datastore declares in its global metadata (spec §7.10.2.4,
+/// Requirements Tiling4–Tiling8). The abstract module fixes what a scheme must
+/// state; the two concrete extensions (§7.11 CDB1GlobalGrid, §7.12
+/// GNOSISGlobalGrid) supply the values.
+///
+/// Two of the abstract requirements hold here by construction (decision 2 of
+/// the module's design): Tiling4 — a scheme has an identity — because [`id`]
+/// is a mandatory field, and Tiling8 — the conformant schemes are exactly the
+/// two extensions — because [`TilingSchemeId`] is the closed identity set and
+/// [`Self::cdb1_global_grid`] is the canonical CDB1GlobalGrid definition.
+/// [`Self::validate`] enforces the remaining SHALLs (Tiling5/6/7) against the
+/// datastore storage CRS; [`Self::warnings`] carries the Recommendation
+/// Tiling1 preference for an extension scheme.
+///
+/// [`id`]: Self::id
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TilingScheme {
+    /// The scheme identifier (Requirement Tiling4). The two conformant
+    /// spellings are `CDB1GlobalGrid` and `GNOSISGlobalGrid`
+    /// ([`TilingSchemeId`]); any other value is permitted but draws a
+    /// [`TilingWarning::NonExtensionScheme`] (Recommendation Tiling1).
+    pub id: String,
+    /// The scheme's CRS as an `authority:code` identifier (e.g. `EPSG:4326`),
+    /// which must provably match the datastore storage CRS (Requirement
+    /// Tiling5).
+    pub crs: String,
+    /// The unit of measure of the scheme's COORDINATE axes — the storage CRS's
+    /// coordinate unit (Requirement Tiling6): decimal degrees for EPSG:4326.
+    /// This is never a mensuration unit. A CDB datastore keeps four distinct
+    /// units — this coordinate unit, the metadata measurement `uom`
+    /// (Metadata8), the vertical-CRS length unit (VCRS3), and any dataset
+    /// value unit (Geom4) — and only the coordinate unit belongs here.
+    pub uom: String,
+    /// The geographic extent the scheme covers, which must span the entire
+    /// earth with no gaps (Requirement Tiling7).
+    pub extent: Bbox,
+}
+
+impl TilingScheme {
+    /// The canonical CDB1GlobalGrid definition (spec §7.11.3.3, TCE3): an
+    /// EPSG:4326 grid measured in decimal degrees over the whole earth. It
+    /// validates against a WGS-84 storage CRS and draws no warnings.
+    pub fn cdb1_global_grid() -> TilingScheme {
+        TilingScheme {
+            id: TilingSchemeId::Cdb1GlobalGrid.as_str().to_owned(),
+            crs: "EPSG:4326".to_owned(),
+            uom: "degree".to_owned(),
+            extent: Bbox {
+                west: -180.0,
+                south: -90.0,
+                east: 180.0,
+                north: 90.0,
+            },
+        }
+    }
+
+    /// Enforces Requirements Tiling5/6/7 against the datastore storage CRS,
+    /// first-violation-wins in specification order:
+    ///
+    /// - **Tiling5** (`/req/core/tiling-tilingscheme-crs`): the scheme CRS,
+    ///   split on its first `:` into (authority, code), must provably match
+    ///   the storage CRS's authority identity (ASCII case-insensitively). A
+    ///   scheme CRS lacking a `:` or with an empty side, or a storage CRS with
+    ///   no discoverable authority, cannot prove a match and so is a mismatch.
+    /// - **Tiling6** (`/req/core/tiling-tilingscheme-uom`): [`Self::uom`] must
+    ///   equal the storage CRS's coordinate unit name (ASCII case-insensitive);
+    ///   an undiscoverable unit is a mismatch.
+    /// - **Tiling7** (`/req/core/tiling-tilingscheme-extent`): [`Self::extent`]
+    ///   must be exactly the whole earth (west −180, south −90, east 180,
+    ///   north 90).
+    pub fn validate(&self, storage_crs: &StorageCrs) -> Result<(), TilingViolation> {
+        // Tiling5: the scheme CRS provably matches the storage CRS.
+        let datastore_authority = storage_crs.authority();
+        let provable_match = match (self.crs.split_once(':'), &datastore_authority) {
+            (Some((authority, code)), Some(datastore))
+                if !authority.is_empty() && !code.is_empty() =>
+            {
+                authority_ids_match(&(authority.to_owned(), code.to_owned()), datastore)
+            }
+            _ => false,
+        };
+        if !provable_match {
+            return Err(TilingViolation::SchemeCrsMismatch {
+                declared: self.crs.clone(),
+                datastore: match &datastore_authority {
+                    Some((authority, code)) => format!("{authority}:{code}"),
+                    None => "unidentified".to_owned(),
+                },
+            });
+        }
+
+        // Tiling6: the scheme UoM is the storage CRS's coordinate unit.
+        match crate::crs::wkt2::coordinate_units(storage_crs.horizontal())
+            .into_iter()
+            .next()
+        {
+            Some(unit) if unit.name.eq_ignore_ascii_case(&self.uom) => {}
+            Some(unit) => {
+                return Err(TilingViolation::SchemeUomMismatch {
+                    scheme: self.uom.clone(),
+                    crs_unit: unit.name,
+                });
+            }
+            None => {
+                return Err(TilingViolation::SchemeUomMismatch {
+                    scheme: self.uom.clone(),
+                    crs_unit: "unidentified".to_owned(),
+                });
+            }
+        }
+
+        // Tiling7: the extent covers the entire earth, exactly.
+        let whole_earth = self.extent.west == -180.0
+            && self.extent.south == -90.0
+            && self.extent.east == 180.0
+            && self.extent.north == 90.0;
+        if !whole_earth {
+            return Err(TilingViolation::IncompleteExtent {
+                extent: format!(
+                    "({},{},{},{})",
+                    self.extent.west, self.extent.south, self.extent.east, self.extent.north
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// SHOULD-level findings: Recommendation Tiling1
+    /// (`/rec/core/tiling-extension`) prefers one of the two specified
+    /// extension schemes. A custom [`Self::id`] yields one
+    /// [`TilingWarning::NonExtensionScheme`]; either extension yields none.
+    pub fn warnings(&self) -> Vec<TilingWarning> {
+        match TilingSchemeId::parse(&self.id) {
+            Ok(_) => Vec::new(),
+            Err(_) => vec![TilingWarning::NonExtensionScheme {
+                id: self.id.clone(),
+            }],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crs::StorageCrs;
     use crate::error::CdbError;
+    use crate::metadata::Bbox;
+    use crate::profiles::simulation::WGS84_2D_WKT;
 
     /// Recommendation Tiling1 /rec/core/tiling-extension — the scheme ids
     /// have fixed wire spellings; parse is exact and case-sensitive.
@@ -152,5 +325,103 @@ mod tests {
     fn tiling_violation_converts_to_cdb_error() {
         let err: CdbError = TilingViolation::UnknownTilingScheme { value: "x".into() }.into();
         assert!(matches!(err, CdbError::Tiling(_)));
+    }
+
+    fn wgs84() -> StorageCrs {
+        StorageCrs::from_wkt(WGS84_2D_WKT).unwrap()
+    }
+
+    /// §7.10.2.4.2 Requirement Tiling5 /req/core/tiling-tilingscheme-crs —
+    /// the scheme CRS must provably match the datastore storage CRS.
+    #[test]
+    fn req_core_tiling_tilingscheme_crs_matches_storage() {
+        let crs = wgs84();
+        let mut scheme = TilingScheme::cdb1_global_grid();
+        assert!(scheme.validate(&crs).is_ok());
+        scheme.crs = "epsg:4326".to_owned(); // case-insensitive match
+        assert!(scheme.validate(&crs).is_ok());
+        scheme.crs = "EPSG:4269".to_owned();
+        assert!(matches!(
+            scheme.validate(&crs),
+            Err(TilingViolation::SchemeCrsMismatch { .. })
+        ));
+        scheme.crs = "not-an-authority".to_owned(); // malformed
+        assert!(matches!(
+            scheme.validate(&crs),
+            Err(TilingViolation::SchemeCrsMismatch { .. })
+        ));
+    }
+
+    /// §7.10.2.4.3 Requirement Tiling6 /req/core/tiling-tilingscheme-uom —
+    /// the scheme UoM is the CRS's coordinate unit (decimal degrees for
+    /// EPSG:4326); never mensuration.
+    #[test]
+    fn req_core_tiling_tilingscheme_uom_from_crs() {
+        let crs = wgs84();
+        let mut scheme = TilingScheme::cdb1_global_grid();
+        scheme.uom = "DEGREE".to_owned(); // ASCII case-insensitive
+        assert!(scheme.validate(&crs).is_ok());
+        scheme.uom = "metre".to_owned();
+        assert!(matches!(
+            scheme.validate(&crs),
+            Err(TilingViolation::SchemeUomMismatch { crs_unit, .. }) if crs_unit == "degree"
+        ));
+    }
+
+    /// §7.10.2.4.4 Requirement Tiling7 /req/core/tiling-tilingscheme-extent
+    /// — the scheme extent covers the entire earth, no gaps.
+    #[test]
+    fn req_core_tiling_tilingscheme_extent_whole_earth() {
+        let crs = wgs84();
+        let mut scheme = TilingScheme::cdb1_global_grid();
+        scheme.extent = Bbox {
+            west: -180.0,
+            south: -60.0,
+            east: 180.0,
+            north: 60.0,
+        };
+        assert!(matches!(
+            scheme.validate(&crs),
+            Err(TilingViolation::IncompleteExtent { .. })
+        ));
+    }
+
+    /// §7.10.2.7 Recommendation Tiling1 /rec/core/tiling-extension — the
+    /// scheme SHOULD be one of the two specified extensions; a custom
+    /// scheme warns but never errors (SHOULD is not SHALL).
+    #[test]
+    fn rec_core_tiling_extension_scheme_recommended() {
+        let crs = wgs84();
+        let mut scheme = TilingScheme::cdb1_global_grid();
+        assert!(scheme.warnings().is_empty());
+        scheme.id = "GNOSISGlobalGrid".to_owned();
+        assert!(scheme.warnings().is_empty());
+        scheme.id = "MyCustomGrid".to_owned();
+        assert!(matches!(
+            scheme.warnings().as_slice(),
+            [TilingWarning::NonExtensionScheme { .. }]
+        ));
+        assert!(scheme.validate(&crs).is_ok());
+    }
+
+    /// §7.10.2.5 Requirement Tiling8 + §7.11.3.3 TCE3 — the canonical
+    /// CDB1GlobalGrid definition: EPSG:4326, degrees, whole earth.
+    #[test]
+    fn tiling_scheme_cdb1_preset_validates() {
+        let scheme = TilingScheme::cdb1_global_grid();
+        assert_eq!(scheme.id, "CDB1GlobalGrid");
+        assert_eq!(scheme.crs, "EPSG:4326");
+        assert_eq!(scheme.uom, "degree");
+        assert_eq!(
+            (
+                scheme.extent.west,
+                scheme.extent.south,
+                scheme.extent.east,
+                scheme.extent.north
+            ),
+            (-180.0, -90.0, 180.0, 90.0)
+        );
+        assert!(scheme.validate(&wgs84()).is_ok());
+        assert!(scheme.warnings().is_empty());
     }
 }
