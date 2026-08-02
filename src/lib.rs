@@ -23,6 +23,7 @@
 //! # Ok(()) }
 //! ```
 
+pub mod coverage;
 pub mod crs;
 pub mod datastore;
 pub mod error;
@@ -34,6 +35,7 @@ pub mod metadata;
 pub mod naming;
 pub mod profiles;
 
+pub use coverage::{CoverageViolation, GridCellEncoding, GridCorner};
 pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
 pub use error::CdbError;
 pub use geometry::{

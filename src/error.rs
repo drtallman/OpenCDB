@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::coverage::CoverageViolation;
 use crate::crs::CrsError;
 use crate::geometry::GeometryViolation;
 use crate::hierarchy::HierarchyError;
@@ -31,4 +32,7 @@ pub enum CdbError {
     /// A geometry requirements violation (/req/core/geometry, §7.6).
     #[error(transparent)]
     Geometry(#[from] GeometryViolation),
+    /// A coverages requirements violation (/req/core/coverages-, §7.2).
+    #[error(transparent)]
+    Coverage(#[from] CoverageViolation),
 }
