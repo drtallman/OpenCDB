@@ -104,10 +104,12 @@ impl TileAddress {
 }
 
 /// The CDB1GlobalGrid tiling scheme (spec §7.11): the CDB 1.x-compatible
-/// global grid whose raster sizing and tile addressing this type computes. A
-/// unit struct — its operations are level/geocell arithmetic with no
-/// per-instance state; tile addressing and zone math accrue in later tasks,
-/// with [`Self::raster_size`] the first.
+/// global grid whose raster sizing, tile addressing, and zone coalescence this
+/// type computes. A unit struct — its operations are level/geocell arithmetic
+/// with no per-instance state: [`Self::raster_size`] and [`Self::matrix_size`]
+/// size the pyramid, [`Self::address`] / [`Self::tile_at`] resolve tiles,
+/// [`Self::tile_extent`] gives their geographic bounds, and [`Self::parent`] /
+/// [`Self::children`] walk between Levels of Detail.
 pub struct Cdb1GlobalGrid;
 
 impl Cdb1GlobalGrid {
@@ -183,7 +185,8 @@ impl Cdb1GlobalGrid {
     /// variable-width tiling): how many nominal columns the row's geocell band
     /// aggregates into each tile — 1 away from the poles, up to 12 abutting
     /// them. Returns [`TilingViolation::TileOutOfRange`] if `row` is outside
-    /// the LoD's matrix height.
+    /// the LoD's matrix height. Only the row is checked here, so that
+    /// violation carries `col: 0` as a not-applicable sentinel.
     pub fn coalescence_factor(lod: Lod, row: u64) -> Result<u32, TilingViolation> {
         let (_, height) = Self::matrix_size(lod);
         if row >= height {

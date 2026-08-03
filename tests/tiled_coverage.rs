@@ -48,6 +48,10 @@ fn rec_core_coverage_tiling_abstract_and_extension() {
 
     // Coverage-instance validation passes with the datastore CRS.
     let identity = crs.authority();
+    assert!(
+        identity.is_some(),
+        "simulation storage CRS must carry an authority identity"
+    );
     let back = datastore
         .read_resource_metadata("/Tiles/metadata/Elevation.json")
         .unwrap();

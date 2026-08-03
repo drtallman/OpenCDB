@@ -79,8 +79,8 @@ impl fmt::Display for TilingSchemeId {
 /// are [`TilingWarning`]s — the Recommendation Tiling1 preference for the
 /// extension schemes surfaces there, never here.
 ///
-/// Intentionally not `Eq`: a later task adds a variant carrying an `f64`
-/// bound, which precludes a total-equality derive.
+/// Intentionally not `Eq`: the [`Self::CoordinateOutOfRange`] variant carries
+/// `f64` fields, which preclude a total-equality derive.
 #[derive(Debug, Error, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum TilingViolation {
@@ -112,8 +112,10 @@ pub enum TilingViolation {
     )]
     IncompleteExtent { extent: String },
     /// The tiled datastore's global metadata carries no tiling-scheme
-    /// definition at all (the Requirement Tiling4 identity, and with it the
-    /// whole `/req/core/tiling-tilingscheme-definition` record, is absent).
+    /// definition at all: Requirement Tiling8
+    /// (`/req/core/tiling-tilingscheme-definition`) requires the scheme
+    /// definition to be present in the global CDB metadata, and here the
+    /// `tilingScheme` element is absent.
     #[error(
         "tiled datastore's global metadata has no tilingScheme element (violates /req/core/tiling-tilingscheme-definition)"
     )]
@@ -134,10 +136,11 @@ pub enum TilingViolation {
         "LoD {lod} is outside the CDB1GlobalGrid range -10..=23 (violates /req/core/tiling-extension-tile-tessellate A)"
     )]
     LodOutOfRange { lod: i8 },
-    /// Requirements TCE6/TCE7-B (`/req/core/tiling-extension-tile-tessellate`,
-    /// §7.11.3.5–§7.11.3.6): a tile address (row, col) lies outside the
-    /// CDB1GlobalGrid tile-matrix for its Level of Detail. The matrix is
-    /// 360×180 at LoD ≤ 0 and 360·2ⁿ × 180·2ⁿ at LoD n ≥ 1.
+    /// Requirements TCE6 (`/req/core/tiling-extension-lod-0`) and TCE7-B
+    /// (`/req/core/tiling-extension-tile-tessellate`), §7.11.3.5–§7.11.3.6: a
+    /// tile address (row, col) lies outside the CDB1GlobalGrid tile-matrix for
+    /// its Level of Detail. The matrix is 360×180 at LoD ≤ 0 (the TCE6
+    /// geocell matrix) and 360·2ⁿ × 180·2ⁿ at LoD n ≥ 1 (TCE7-B subdivision).
     #[error(
         "tile (row {row}, col {col}) is outside the LoD {lod} CDB1GlobalGrid matrix (violates /req/core/tiling-extension-tile-tessellate)"
     )]
@@ -150,13 +153,13 @@ pub enum TilingViolation {
         "column {col} is not a multiple of the coalescence factor {factor} for its row (violates the 2DTMS variable-width tiling rule, TCE2)"
     )]
     MisalignedColumn { col: u64, factor: u32 },
-    /// Requirement TCE4 (`/req/core/tiling-extension-tile-tessellate`,
+    /// Requirement TCE4 (`/req/core/tiling-extension-uom`,
     /// §7.11.3.4): a coordinate handed to the addressing math must be a finite
     /// decimal-degree point on the earth — latitude in [−90, 90], longitude in
     /// [−180, 180], neither NaN. This is the `f64`-bearing variant the enum's
     /// no-`Eq` derive was reserved for.
     #[error(
-        "coordinate (lat {lat}, lon {lon}) is not a finite decimal-degree point within [-90,90]×[-180,180] (violates /req/core/tiling-extension coordinate validation, TCE4)"
+        "coordinate (lat {lat}, lon {lon}) is not a finite decimal-degree point within [-90,90]×[-180,180] (violates /req/core/tiling-extension-uom)"
     )]
     CoordinateOutOfRange { lat: f64, lon: f64 },
     /// A metadata violation surfaced while validating tileset metadata; the
@@ -195,13 +198,17 @@ impl fmt::Display for TilingWarning {
 /// GNOSISGlobalGrid) supply the values.
 ///
 /// Two of the abstract requirements hold here by construction (decision 2 of
-/// the module's design): Tiling4 — a scheme has an identity — because [`id`]
-/// is a mandatory field, and Tiling8 — the conformant schemes are exactly the
-/// two extensions — because [`TilingSchemeId`] is the closed identity set and
-/// [`Self::cdb1_global_grid`] is the canonical CDB1GlobalGrid definition.
-/// [`Self::validate`] enforces the remaining SHALLs (Tiling5/6/7) against the
-/// datastore storage CRS; [`Self::warnings`] carries the Recommendation
-/// Tiling1 preference for an extension scheme.
+/// the module's design). Tiling4 (`/req/core/tiling-tilingscheme-consistent`)
+/// — a CDB tiling conforms to the same tiling-scheme definition
+/// datastore-wide — holds because there is exactly one `tilingScheme` element
+/// on the one global metadata record, so every tiled layer reads back the same
+/// definition. Tiling8's (`/req/core/tiling-tilingscheme-definition`)
+/// conforms-to-the-declared-standard aspect holds because that element rides
+/// the global record's declared encoding. [`Self::require`] enforces Tiling8's
+/// presence and [`Self::validate`] the remaining SHALLs (Tiling5/6/7) against
+/// the datastore storage CRS. The preference for one of the two extension
+/// schemes is Recommendation Tiling1, surfaced by [`Self::warnings`] — never a
+/// violation, because [`id`] is an open `String` on purpose.
 ///
 /// [`id`]: Self::id
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

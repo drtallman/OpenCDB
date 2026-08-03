@@ -180,7 +180,7 @@ and Geom2's table holds by construction. Approved design record:
 | Req | Rule | Realization |
 |---|---|---|
 | Tiling1-3 | tiled content follows this module | module-doc conformance statements + the validators `TilingScheme::validate` (method) and the free `validate_tileset_metadata` — the design-level pattern of CRS2/Geom1 |
-| Tiling4 | a scheme has an identity | by construction — `TilingScheme.id` is a mandatory field, `TilingSchemeId` the closed two-extension identity set |
+| Tiling4 | same `TilingScheme` definition used datastore-wide (`/req/core/tiling-tilingscheme-consistent`) | by construction — one `tilingScheme` element on the one global record (datastore-wide consistency) |
 | Tiling5 | scheme CRS provably matches storage CRS | `TilingScheme::validate` → `SchemeCrsMismatch` (shared `crs::authority_ids_match`; an anonymous datastore CRS ⇒ "unidentified" mismatch) |
 | Tiling6 | scheme UoM = CRS coordinate unit (decimal degrees for 4326) | `validate` → `SchemeUomMismatch` (ASCII case-insensitive; the coordinate unit, never a mensuration unit) |
 | Tiling7 | extent covers entire earth, no gaps | `validate` → `IncompleteExtent`; whole earth = `Bbox` (west −180, south −90, east 180, north 90) |
