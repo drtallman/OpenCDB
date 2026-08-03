@@ -16,6 +16,8 @@
 
 pub mod cdb1_grid;
 
+pub use cdb1_grid::{Cdb1GlobalGrid, Lod};
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -124,6 +126,14 @@ pub enum TilingViolation {
         "tileset metadata has no Keywords element (violates /req/core/tiling-tileset-metadata-elements)"
     )]
     MissingTilesetKeywords,
+    /// Requirement TCE7-A (`/req/core/tiling-extension-tile-tessellate`,
+    /// §7.11.3.6): a CDB1GlobalGrid Level of Detail must lie within the closed
+    /// range −10..=23 ([`cdb1_grid::LOD_MIN`]..=[`cdb1_grid::LOD_MAX`]). The
+    /// first CDB1GlobalGrid-family variant.
+    #[error(
+        "LoD {lod} is outside the CDB1GlobalGrid range -10..=23 (violates /req/core/tiling-extension-tile-tessellate A)"
+    )]
+    LodOutOfRange { lod: i8 },
     /// A metadata violation surfaced while validating tileset metadata; the
     /// tiling module depends on the Metadata core module.
     #[error(transparent)]
