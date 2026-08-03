@@ -132,7 +132,7 @@ the validator, not hard errors.)
 | Metadata6 | datetimes UTC, RFC 3339 §5.6 | accept `2026-07-14T00:00:00Z`, reject naive/offset-local |
 | Metadata7 | temporal intervals ABNF incl. half-bounded `../` forms | parser tests: bounded, `../end`, `start/..`, invalid |
 | Metadata8 | one UoM for measurements: M, FT, K, MI; element named `uom` | enum + serde field-name test |
-| Global elements table | mandatory: ID, title, description, contactPoint, created, language; optional: update, temporal, accessRights, license | builder validation + XML/JSON round-trips via quick-xml/serde |
+| Global elements table | mandatory: ID, title, description, contactPoint, created, language; optional: update, temporal, accessRights, license; conditional `tiling_scheme` / wire `tilingScheme` (Tiling8, added in Phase 9 — the first conditional element on the global table) | builder validation + XML/JSON round-trips via quick-xml/serde |
 | Resource metadata table | mandatory: ID, type(=dataset), title, description; conditional/optional per table (incl. the Geom4 conditional `uom: Option<UnitOfMeasure>`, added in Phase 7, and the Coverages6 conditional `domain_set: Option<DomainSet>` / wire `domainSet`, added in Phase 8); CharacterSetCode default utf8 | same pattern |
 
 ### Phase 6 — CRS (`/req/core/crs/*`), mandatory
@@ -174,24 +174,31 @@ and Geom2's table holds by construction. Approved design record:
 | Coverages4 | coverage CRS = datastore CRS | Geom5-style provable-match → `CoverageCrsMismatch` (shared `crs::authority_ids_match`); a claim against an anonymous datastore CRS ⇒ mismatch ("unidentified") |
 | Coverages5 | resource metadata present per Phase 5 | missing → `MissingResourceMetadata`; realized on `ResourceMetadata` (delegates to Metadata via `#[from]`) |
 | Coverages6 | domainSet: uom (mandatory), precision=1, scale=1, offset=0, data_null, grid_cell_encoding=value-is-center (corner variant requires which-corner), field_type=Height, quantity_definition | realized on `ResourceMetadata.domain_set` (§7.9.4.2 conditional element, 2nd after Geom4); defaults test; corner-without-which-corner → error; scale/offset apply to values but never to data_null |
-| Rec 7/8 | tiled coverages follow tiling module + one tiling extension | integration test once Phase 9 lands |
+| Rec 7/8 | tiled coverages follow tiling module + one tiling extension | realized by `tests/tiled_coverage.rs` (`rec_core_coverage_tiling_abstract_and_extension`), added in Phase 9 |
 
-### Phase 9 — Tiling: abstract module + CDB1GlobalGrid, optional
-| Req | Rule | Tests |
+### Phase 9 — Tiling: abstract module (§7.10) + CDB1GlobalGrid (§7.11), optional (done, as built)
+| Req | Rule | Realization |
 |---|---|---|
-| Tiling1-3 | tiled content follows this module | wiring |
-| Tiling4 | one TilingScheme per datastore | second scheme → error |
-| Tiling5 | scheme CRS = storage CRS | mismatch → error |
-| Tiling6 | scheme UoM = CRS UoM (e.g. decimal degrees for 4326) | unit test |
-| Tiling7 | extent covers entire earth, no gaps | scheme bbox == (-90,-180,90,180) |
-| Tiling8/9 | scheme definition + tileset metadata in global metadata, per declared standard | round-trip |
-| Tiling10 | tileset metadata ⊇ {ID, Title, Description, Keywords} | builder validation |
-| TCE1-2 (CDB1) | conforms to 2DTMS CDB1GlobalGrid | structural tests below |
-| TCE3 | EPSG:4326, axis order lat,lon | constructor pins it |
-| TCE4 | all tile origins/extents in decimal degrees | bbox type is degrees-only |
-| TCE6 | LoD 0 = 1°×1° geocells, matrix 360×180 | `tile_extent(lod0, r, c)`; count test |
-| TCE7 | LoD range -10..=23; LoD ≤0 tiles = one geocell; LoD≥1 quad subdivision; tiles 1024×1024 from LoD 0 up | subdivision math: parent/child round-trips, lat/lon → tile index → bbox → contains point; negative LoDs keep geocell extent with reduced raster size |
-| Zones/coalescence | CDB 1.x zone table drives matrix width per latitude row | width(lat) table tests at zone boundaries (e.g. ±50°, ±70°, ±75°, ±80°, ±89°) |
+| Tiling1-3 | tiled content follows this module | module-doc conformance statements + the validators `TilingScheme::validate` (method) and the free `validate_tileset_metadata` — the design-level pattern of CRS2/Geom1 |
+| Tiling4 | a scheme has an identity | by construction — `TilingScheme.id` is a mandatory field, `TilingSchemeId` the closed two-extension identity set |
+| Tiling5 | scheme CRS provably matches storage CRS | `TilingScheme::validate` → `SchemeCrsMismatch` (shared `crs::authority_ids_match`; an anonymous datastore CRS ⇒ "unidentified" mismatch) |
+| Tiling6 | scheme UoM = CRS coordinate unit (decimal degrees for 4326) | `validate` → `SchemeUomMismatch` (ASCII case-insensitive; the coordinate unit, never a mensuration unit) |
+| Tiling7 | extent covers entire earth, no gaps | `validate` → `IncompleteExtent`; whole earth = `Bbox` (west −180, south −90, east 180, north 90) |
+| Tiling8 | scheme definition in global metadata | `TilingScheme::require(&GlobalMetadata)` (associated fn) → `MissingTilingScheme`; realized as the conditional `GlobalMetadata.tiling_scheme` / wire `tilingScheme` — the third §7.9.4.2-style conditional element (after Geom4 `uom`, Coverages6 `domainSet`) and the *first* on the global table |
+| Tiling9/10 | tileset metadata per declared standard ⊇ {ID, Title, Description, Keywords} | free `validate_tileset_metadata`: Tiling9 standard/encoding conformance by construction (rides the resource-metadata record), Tiling10 → `MissingTilesetKeywords`; TCE5's own metadata box is absent from the document, so tileset duties live here |
+| TCE1-3 (CDB1) | 2DTMS CDB1GlobalGrid; EPSG:4326, axis order lat,lon | `TilingScheme::cdb1_global_grid` preset; addressing per OGC 2DTMS |
+| TCE4 | tile origins/extents in decimal degrees; coordinates validated | `Bbox` is degrees-only; `tile_at` → `CoordinateOutOfRange` on non-finite / out-of-[−90,90]×[−180,180] — the `f64`-bearing variant the enum's dropped `Eq` derive was reserved for |
+| TCE6 | LoD 0 = 1°×1° geocells, matrix 360×180, NW origin | `matrix_size` / `tile_extent`; row 0 = northernmost, col 0 = −180° |
+| TCE7 | LoD −10..=23; LoD ≤0 = one geocell (raster halves 512…1); LoD≥1 quad subdivision; tiles 1024×1024 from LoD 0 up | `Lod` (validated), `raster_size`, `parent` / `children` — negative LoDs single-chain over the same extent, quadtree from LoD 0; parent/child round-trips + point containment |
+| Zones/coalescence | CDB 1.x zone table drives matrix width per latitude row | `ZONE_BANDS` = the |lat|-band const `[(50,1),(70,2),(75,3),(80,4),(89,6),(90,12)]`, matched by a row's equator-most integer latitude with row-exact boundaries (tests at ±50/70/75/80/89°); `coalescence_factor`, and the `MisalignedColumn` column-alignment rule |
+
+**Binding tile-addressing convention (Task 6 ruling).** Tiles are half-open
+cells `[south, north) × [west, east)`: column `= ⌊(lon+180)/h⌋` (west-inclusive)
+and row `= ⌈(90−lat)/h⌉ − 1` (south-inclusive) — symmetric — with ±90°/±180°
+edges clamped to the last in-range row/column (`h = 1.0` at LoD ≤ 0, `(1/2)ⁿ` at
+LoD n ≥ 1). This supersedes the earlier prose floor row formula, which disagreed
+with the containment test at grid-aligned latitudes; the ceiling−1 form is the
+shipped, reviewer-verified convention (incl. the lat = 90 clamp).
 
 ### Phase 10 — GNOSISGlobalGrid extension, optional
 - Level 0 = 2 rows × 4 cols of 90°×90° tiles (TCE6-G).
@@ -201,6 +208,12 @@ and Geom2's table holds by construction. Approved design record:
 - Levels 0..=28; (level,row,col) packs into a single u64 key — pack/unpack
   round-trip property test.
 - Coalescence factors recomputed per tile matrix (contrast test vs CDB1 grid).
+- Note (from Phase 9): `TilingSchemeId` already lives in `tiling::mod`
+  (relocated out of `profiles`, which now re-exports it), so this extension
+  only adds the `gnosis_grid` submodule alongside `cdb1_grid`. Whether to factor
+  a shared grid trait over `Cdb1GlobalGrid` and the GNOSIS grid is deferred to
+  here on purpose — the rule of two: with a second concrete grid in hand,
+  extract the common addressing surface only if it earns its keep.
 
 ### Phase 11 — Topology (`/req/core/topology-*`), optional
 | Req | Rule | Tests |
@@ -359,4 +372,29 @@ for Phase 9).
   §7.9.4.2 conditional element after Geom4's `uom`); Coverages7/8 (tiled-coverage
   recommendations) defer to Phase 9. Design record:
   `docs/superpowers/specs/2026-08-02-coverages-module-design.md`.
-- Next: Phase 9 (tiling + CDB1GlobalGrid).
+- Phase 9 done (commits `phase-9(tiling)` ×6 incl. one review fix,
+  `phase-9(metadata)`, `phase-9(conformance)`), 183 tests (169 unit + 13
+  integration + 1 doc) — the third optional phase, bringing two requirements
+  classes (the abstract Tiling module §7.10 and the CDB1GlobalGrid extension
+  §7.11), shipped as `0.4.0`. `tiling::mod` (§7.10): relocated `TilingSchemeId`
+  (the closed two-extension set + `parse`; `profiles` re-exports it),
+  `TilingScheme` (the `cdb1_global_grid` preset; `validate` enforces Tiling5
+  provable-match CRS / Tiling6 CRS-unit uom / Tiling7 whole-earth, `warnings`
+  carries Rec Tiling1, `require` enforces Tiling8), and the free
+  `validate_tileset_metadata` (Tiling9/10, Keywords mandatory). `TilingViolation`
+  has 11 variants (incl. the `f64`-bearing `CoordinateOutOfRange`, for which the
+  enum forgoes `Eq`) plus one `TilingWarning`. `tiling::cdb1_grid` (§7.11): `Lod`
+  (−10..=23), `TileAddress` (validated, u64, north-origin per 2DTMS), and
+  `Cdb1GlobalGrid` matrix/raster sizes, the CDB 1.x zone table
+  `[(50,1),(70,2),(75,3),(80,4),(89,6),(90,12)]`, coalescence, and
+  `address`/`tile_at`/`tile_extent`/`parent`/`children` (see the binding
+  half-open tile-addressing convention recorded in §4). Tiling8 rides the new
+  conditional `GlobalMetadata.tiling_scheme` (wire `tilingScheme`) — the third
+  §7.9.4.2-style conditional element and the first on the global table;
+  embedding the `f64`-bearing `TilingScheme` (via `Bbox`) there also costs
+  `GlobalMetadata` its `Eq` derive, following the `ResourceMetadata`/`domainSet`
+  precedent. The
+  Coverages Rec7/8 reservation closes via the `tests/tiled_coverage.rs`
+  integration test. Design record:
+  `docs/superpowers/specs/2026-08-02-tiling-module-design.md`.
+- Next: Phase 10 (GNOSISGlobalGrid).
