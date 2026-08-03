@@ -16,7 +16,7 @@
 
 pub mod cdb1_grid;
 
-pub use cdb1_grid::{Cdb1GlobalGrid, Lod};
+pub use cdb1_grid::{Cdb1GlobalGrid, Lod, TileAddress};
 
 use std::fmt;
 
@@ -134,6 +134,31 @@ pub enum TilingViolation {
         "LoD {lod} is outside the CDB1GlobalGrid range -10..=23 (violates /req/core/tiling-extension-tile-tessellate A)"
     )]
     LodOutOfRange { lod: i8 },
+    /// Requirements TCE6/TCE7-B (`/req/core/tiling-extension-tile-tessellate`,
+    /// §7.11.3.5–§7.11.3.6): a tile address (row, col) lies outside the
+    /// CDB1GlobalGrid tile-matrix for its Level of Detail. The matrix is
+    /// 360×180 at LoD ≤ 0 and 360·2ⁿ × 180·2ⁿ at LoD n ≥ 1.
+    #[error(
+        "tile (row {row}, col {col}) is outside the LoD {lod} CDB1GlobalGrid matrix (violates /req/core/tiling-extension-tile-tessellate)"
+    )]
+    TileOutOfRange { lod: i8, row: u64, col: u64 },
+    /// The 2DTMS variable-width (coalesced-column) tiling rule (Requirement
+    /// TCE2, §7.11): a column index must be a multiple of its row's
+    /// coalescence factor. Polar rows aggregate `factor` nominal columns into
+    /// one tile, so only aligned column indices name a real tile.
+    #[error(
+        "column {col} is not a multiple of the coalescence factor {factor} for its row (violates the 2DTMS variable-width tiling rule, TCE2)"
+    )]
+    MisalignedColumn { col: u64, factor: u32 },
+    /// Requirement TCE4 (`/req/core/tiling-extension-tile-tessellate`,
+    /// §7.11.3.4): a coordinate handed to the addressing math must be a finite
+    /// decimal-degree point on the earth — latitude in [−90, 90], longitude in
+    /// [−180, 180], neither NaN. This is the `f64`-bearing variant the enum's
+    /// no-`Eq` derive was reserved for.
+    #[error(
+        "coordinate (lat {lat}, lon {lon}) is not a finite decimal-degree point within [-90,90]×[-180,180] (violates /req/core/tiling-extension coordinate validation, TCE4)"
+    )]
+    CoordinateOutOfRange { lat: f64, lon: f64 },
     /// A metadata violation surfaced while validating tileset metadata; the
     /// tiling module depends on the Metadata core module.
     #[error(transparent)]
