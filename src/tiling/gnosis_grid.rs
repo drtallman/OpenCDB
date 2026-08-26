@@ -21,6 +21,7 @@
 //! TCE1–TCE4 slugs collide with §7.11's, so docs here always say "§7.12"
 //! beside a TCE number.
 
+use crate::metadata::Bbox;
 use crate::tiling::TilingViolation;
 
 /// The finest GNOSISGlobalGrid zoom level (Requirement TCE2-B, §7.12.3.2):
@@ -60,6 +61,167 @@ impl GnosisLevel {
     }
 }
 
+/// A GNOSISGlobalGrid tile address: a zoom level plus a `(row, col)` index
+/// into that level's nominal tile-matrix (Requirement TCE6, §7.12.3.5),
+/// numbered from the north-west corner per the registered TileMatrixSet
+/// (`pointOfOrigin [90, −180]`, `cornerOfOrigin topLeft`) — `row` 0 is the
+/// northernmost band, `col` 0 begins at longitude −180°.
+///
+/// The fields are private and every `GnosisTileAddress` is produced only by
+/// [`GnosisGlobalGrid::address`], [`GnosisGlobalGrid::tile_at`], or
+/// [`GnosisTileAddress::from_key`], so the type carries an invariant:
+/// `row`/`col` are in range for `level`, and `col` is aligned to its row's
+/// coalescence factor. [`GnosisGlobalGrid::parent`] and
+/// [`GnosisGlobalGrid::children`] preserve it. Read the parts back with
+/// [`Self::level`], [`Self::row`], and [`Self::col`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GnosisTileAddress {
+    level: GnosisLevel,
+    row: u64,
+    col: u64,
+}
+
+impl GnosisTileAddress {
+    /// The address's zoom level.
+    pub fn level(self) -> GnosisLevel {
+        self.level
+    }
+
+    /// The address's row index, counted from the northernmost band (row 0).
+    pub fn row(self) -> u64 {
+        self.row
+    }
+
+    /// The address's column index, counted from longitude −180° (col 0); a
+    /// multiple of the row's coalescence factor by construction.
+    pub fn col(self) -> u64 {
+        self.col
+    }
+}
+
+/// The GNOSISGlobalGrid tiling scheme (spec §7.12): the 2DTMS-registered
+/// variable-width global grid whose tile addressing and per-matrix
+/// coalescence this type computes. A unit struct — its operations are level
+/// arithmetic with no per-instance state: [`Self::matrix_size`] sizes the
+/// pyramid, [`Self::address`] / [`Self::tile_at`] resolve tiles,
+/// [`Self::tile_extent`] gives their geographic bounds, and
+/// [`Self::parent`] / [`Self::children`] walk between zoom levels. The
+/// surface deliberately parallels [`Cdb1GlobalGrid`](super::Cdb1GlobalGrid)
+/// where semantics match; there is no `raster_size` (every tile is
+/// [`TILE_SIZE_CELLS`] square) and no negative levels.
+pub struct GnosisGlobalGrid;
+
+impl GnosisGlobalGrid {
+    /// The nominal tile edge length in decimal degrees at `level`:
+    /// `90°/2ⁿ` (= 45/2ⁿ⁻¹, exactly representable in binary floating point
+    /// through n = 28). Nominal tiles are square; polar coalescence widens a
+    /// tile by aggregating whole nominal columns, never changing `h`.
+    fn h(level: GnosisLevel) -> f64 {
+        90.0 * (0.5f64).powi(i32::from(level.value()))
+    }
+
+    /// The nominal tile-matrix size `(width, height)` in tiles at `level`
+    /// (Requirement TCE6, §7.12.3.5): 4×2 of 90° tiles at level 0, each
+    /// finer level doubling both — `4·2ⁿ × 2·2ⁿ`. Width counts nominal
+    /// columns before coalescence.
+    pub fn matrix_size(level: GnosisLevel) -> (u64, u64) {
+        // level.value() ≤ 28, so the shift and products stay far below u64::MAX.
+        let factor = 1u64 << u32::from(level.value());
+        (4 * factor, 2 * factor)
+    }
+
+    /// The coalescence factor of nominal row `row` at `level` (the
+    /// registered TileMatrixSet's variableMatrixWidths, Requirement TCE2-B):
+    /// with pole distance `d = min(row, height − 1 − row)` and
+    /// `bit_length(d)` the bit count of `d`'s binary form
+    /// (`bit_length(0) = 0`), the factor is `2^max(0, n − bit_length(d))` —
+    /// `2ⁿ` at the poles (so exactly 4 tiles touch each pole, each 90°
+    /// wide), halving with each doubling of pole distance, 1 in the
+    /// equatorial half. Verified verbatim against the registry's level 0–3
+    /// tables. Callers pass an in-range row.
+    fn factor_for_row(level: GnosisLevel, row: u64) -> u32 {
+        let (_, height) = Self::matrix_size(level);
+        let d = row.min(height - 1 - row);
+        let bit_length = 64 - d.leading_zeros();
+        let n = u32::from(level.value());
+        if bit_length >= n {
+            1
+        } else {
+            // n − bit_length ≤ 28: a valid, non-overflowing u32 shift.
+            1u32 << (n - bit_length)
+        }
+    }
+
+    /// The coalescence factor for `row` at `level` (2DTMS variable-width
+    /// tiling, Requirement TCE2, §7.12.3.2): how many nominal columns the
+    /// row aggregates into each tile — `2ⁿ` at the poles, re-adjusted at
+    /// every tile matrix (§7.12.4), unlike the CDB1GlobalGrid's constant
+    /// latitude bands. Returns [`TilingViolation::GnosisTileOutOfRange`] if
+    /// `row` is outside the level's matrix height; only the row is checked
+    /// here, so that violation carries `col: 0` as a not-applicable
+    /// sentinel.
+    pub fn coalescence_factor(level: GnosisLevel, row: u64) -> Result<u32, TilingViolation> {
+        let (_, height) = Self::matrix_size(level);
+        if row >= height {
+            return Err(TilingViolation::GnosisTileOutOfRange {
+                level: level.value(),
+                row,
+                col: 0,
+            });
+        }
+        Ok(Self::factor_for_row(level, row))
+    }
+
+    /// Builds a validated [`GnosisTileAddress`] from raw indices
+    /// (Requirements TCE6/TCE2-B, §7.12.3.5/§7.12.3.2): `row`/`col` must lie
+    /// within [`Self::matrix_size`] (else
+    /// [`TilingViolation::GnosisTileOutOfRange`]), and `col` must be a
+    /// multiple of the row's coalescence factor (else
+    /// [`TilingViolation::MisalignedColumn`]) — a misaligned column names no
+    /// real tile under the 2DTMS variable-width rule.
+    pub fn address(
+        level: GnosisLevel,
+        row: u64,
+        col: u64,
+    ) -> Result<GnosisTileAddress, TilingViolation> {
+        let (width, height) = Self::matrix_size(level);
+        if row >= height || col >= width {
+            return Err(TilingViolation::GnosisTileOutOfRange {
+                level: level.value(),
+                row,
+                col,
+            });
+        }
+        let factor = Self::factor_for_row(level, row);
+        if !col.is_multiple_of(u64::from(factor)) {
+            return Err(TilingViolation::MisalignedColumn { col, factor });
+        }
+        Ok(GnosisTileAddress { level, row, col })
+    }
+
+    /// The geographic extent of `addr` as a WGS-84 bounding box in decimal
+    /// degrees (Requirement TCE4, §7.12.3.4). North and south come from the
+    /// row (`north = 90 − row·h`, `south = north − h`); west from the
+    /// column (`west = −180 + col·h`); and east spans the row's coalescence
+    /// factor (`east = west + factor·h`), so a polar tile is `factor`
+    /// nominal columns — always 90° — wide. Because every factor divides
+    /// the matrix width, the eastmost tile of a row ends exactly on +180°.
+    pub fn tile_extent(addr: GnosisTileAddress) -> Bbox {
+        let h = Self::h(addr.level);
+        let factor = Self::factor_for_row(addr.level, addr.row);
+        let north = 90.0 - (addr.row as f64) * h;
+        let south = north - h;
+        let west = -180.0 + (addr.col as f64) * h;
+        let east = west + f64::from(factor) * h;
+        Bbox {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +240,88 @@ mod tests {
                 Err(TilingViolation::GnosisLevelOutOfRange { level }) if level == bad
             ));
         }
+    }
+
+    fn level(v: u8) -> GnosisLevel {
+        GnosisLevel::new(v).unwrap()
+    }
+
+    /// §7.12.3.5 Requirement TCE6-A/B /req/core/tiling-extension-start-lod
+    /// — zoom level 0 ("tile matrix identifier 0") is a 2×4 grid of 90°×90°
+    /// tiles, no coalescence, north-west origin (the registry's
+    /// pointOfOrigin [90, −180], cornerOfOrigin topLeft).
+    #[test]
+    fn req_core_tiling_ext_gnosis_level0_start() {
+        assert_eq!(GnosisGlobalGrid::matrix_size(level(0)), (4, 2));
+        assert_eq!(
+            GnosisGlobalGrid::coalescence_factor(level(0), 0).unwrap(),
+            1
+        );
+        assert_eq!(
+            GnosisGlobalGrid::coalescence_factor(level(0), 1).unwrap(),
+            1
+        );
+        // Row 0 = northernmost, col 0 = −180°; each tile 90°×90°.
+        let t = GnosisGlobalGrid::address(level(0), 0, 0).unwrap();
+        assert_eq!((t.level(), t.row(), t.col()), (level(0), 0, 0));
+        let b = GnosisGlobalGrid::tile_extent(t);
+        assert_eq!(
+            (b.west, b.south, b.east, b.north),
+            (-180.0, 0.0, -90.0, 90.0)
+        );
+    }
+
+    /// §7.12.3.2 Requirement TCE2-B /req/core/tiling-extension-tms — the
+    /// OGC-registered GNOSISGlobalGrid definition, pinned verbatim: matrix
+    /// sizes and variableMatrixWidths for tile matrices 0–3 (registry JSON;
+    /// unlisted rows are factor 1), 256×256-cell tiles, highest matrix 28.
+    #[test]
+    fn req_core_tiling_ext_gnosis_registry_fixtures() {
+        assert_eq!(TILE_SIZE_CELLS, 256);
+        assert_eq!(LEVEL_MAX, 28);
+        assert_eq!(GnosisGlobalGrid::matrix_size(level(1)), (8, 4));
+        assert_eq!(GnosisGlobalGrid::matrix_size(level(2)), (16, 8));
+        assert_eq!(GnosisGlobalGrid::matrix_size(level(3)), (32, 16));
+        let tables: [(u8, &[(u64, u32)]); 3] = [
+            (1, &[(0, 2), (1, 1), (2, 1), (3, 2)]),
+            (2, &[(0, 4), (1, 2), (2, 1), (5, 1), (6, 2), (7, 4)]),
+            (
+                3,
+                &[
+                    (0, 8),
+                    (1, 4),
+                    (2, 2),
+                    (3, 2),
+                    (4, 1),
+                    (11, 1),
+                    (12, 2),
+                    (13, 2),
+                    (14, 4),
+                    (15, 8),
+                ],
+            ),
+        ];
+        for (lvl, rows) in tables {
+            for &(row, want) in rows {
+                assert_eq!(
+                    GnosisGlobalGrid::coalescence_factor(level(lvl), row).unwrap(),
+                    want,
+                    "level {lvl} row {row}"
+                );
+            }
+        }
+        // Bounds and alignment are enforced.
+        assert!(matches!(
+            GnosisGlobalGrid::coalescence_factor(level(0), 2),
+            Err(TilingViolation::GnosisTileOutOfRange { .. })
+        ));
+        assert!(matches!(
+            GnosisGlobalGrid::address(level(1), 0, 1),
+            Err(TilingViolation::MisalignedColumn { col: 1, factor: 2 })
+        ));
+        assert!(matches!(
+            GnosisGlobalGrid::address(level(1), 4, 0),
+            Err(TilingViolation::GnosisTileOutOfRange { .. })
+        ));
     }
 }

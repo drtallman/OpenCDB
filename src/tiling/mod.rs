@@ -18,7 +18,7 @@ pub mod cdb1_grid;
 pub mod gnosis_grid;
 
 pub use cdb1_grid::{Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress};
-pub use gnosis_grid::GnosisLevel;
+pub use gnosis_grid::{GnosisGlobalGrid, GnosisLevel, GnosisTileAddress};
 
 use std::fmt;
 
