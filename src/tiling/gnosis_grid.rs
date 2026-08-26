@@ -251,6 +251,67 @@ impl GnosisGlobalGrid {
             north,
         }
     }
+
+    /// The tile that contains `addr` one zoom level coarser (Requirement
+    /// TCE6-C, §7.12.3.5), or `None` at level 0 where the pyramid bottoms
+    /// out: `(level − 1, row/2, col/2 snapped down to the parent row's
+    /// coalescence factor)` — the same shape as the CDB1GlobalGrid's
+    /// quadtree branch.
+    pub fn parent(addr: GnosisTileAddress) -> Option<GnosisTileAddress> {
+        let level_v = addr.level.value();
+        if level_v == 0 {
+            return None;
+        }
+        // level_v ≥ 1, so level_v − 1 is in range; `.ok()?` is a total,
+        // panic-free way to obtain the coarser level.
+        let parent_level = GnosisLevel::new(level_v - 1).ok()?;
+        let row = addr.row / 2;
+        let parent_factor = Self::factor_for_row(parent_level, row);
+        let half = addr.col / 2;
+        let col = half - (half % u64::from(parent_factor));
+        Some(GnosisTileAddress {
+            level: parent_level,
+            row,
+            col,
+        })
+    }
+
+    /// The tiles one zoom level finer that partition `addr` (Requirement
+    /// TCE6-C, §7.12.3.5), or empty at [`LEVEL_MAX`]. Uniform factor-driven
+    /// enumeration: for each child row `2·row` and `2·row + 1`, step
+    /// columns by that child row's own coalescence factor across the
+    /// parent's doubled span `[2·col, 2·col + 2·factor)`. The 3-way pole
+    /// split falls out of the formula — a polar parent's polar child has
+    /// double the parent's factor (1 tile, never split longitude-wise) and
+    /// its equator-ward row keeps it (2 tiles), so polar parents yield 3
+    /// children and all others 4; every child is aligned by construction.
+    pub fn children(addr: GnosisTileAddress) -> Vec<GnosisTileAddress> {
+        let level_v = addr.level.value();
+        if level_v == LEVEL_MAX {
+            return Vec::new();
+        }
+        // level_v < LEVEL_MAX, so level_v + 1 is in range; an Err is
+        // impossible and an empty child set is the safe, panic-free fallback.
+        let child_level = match GnosisLevel::new(level_v + 1) {
+            Ok(l) => l,
+            Err(_) => return Vec::new(),
+        };
+        let factor = u64::from(Self::factor_for_row(addr.level, addr.row));
+        let mut children = Vec::new();
+        for child_row in [addr.row * 2, addr.row * 2 + 1] {
+            let step = u64::from(Self::factor_for_row(child_level, child_row));
+            let mut col = addr.col * 2;
+            while col < addr.col * 2 + 2 * factor {
+                children.push(GnosisTileAddress {
+                    level: child_level,
+                    row: child_row,
+                    col,
+                });
+                col += step;
+            }
+        }
+        children
+    }
 }
 
 #[cfg(test)]
@@ -386,5 +447,93 @@ mod tests {
         let polar = GnosisGlobalGrid::tile_at(89.0, 50.0, level(2)).unwrap();
         assert_eq!(polar.row(), 0);
         assert_eq!(polar.col() % 4, 0);
+    }
+
+    /// §7.12.3.5 Requirement TCE6-C /req/core/tiling-extension-start-lod —
+    /// tile splitting per the 2DTMS GNOSISGlobalGrid annexes: pole-touching
+    /// tiles split 3-way (the polar child is never split longitude-wise),
+    /// all others 4-way; children exactly tile the parent; parent inverts
+    /// children; the chain ends at levels 0 and 28.
+    #[test]
+    fn req_core_tiling_ext_gnosis_splitting() {
+        // A north-polar parent → 3 children; the polar child stays 90° wide.
+        let polar = GnosisGlobalGrid::address(level(1), 0, 0).unwrap();
+        let kids = GnosisGlobalGrid::children(polar);
+        assert_eq!(kids.len(), 3);
+        let pb = GnosisGlobalGrid::tile_extent(polar);
+        let mut area = 0.0;
+        for k in &kids {
+            assert_eq!(GnosisGlobalGrid::parent(*k), Some(polar));
+            let kb = GnosisGlobalGrid::tile_extent(*k);
+            assert!(
+                kb.west >= pb.west
+                    && kb.east <= pb.east
+                    && kb.south >= pb.south
+                    && kb.north <= pb.north
+            );
+            area += (kb.east - kb.west) * (kb.north - kb.south);
+        }
+        assert!((area - (pb.east - pb.west) * (pb.north - pb.south)).abs() < 1e-9);
+        let polar_child = kids.iter().find(|k| k.row() == 0).unwrap();
+        let pcb = GnosisGlobalGrid::tile_extent(*polar_child);
+        assert_eq!((pcb.east - pcb.west, pcb.north), (90.0, 90.0));
+        // The south pole mirrors.
+        let south = GnosisGlobalGrid::address(level(1), 3, 0).unwrap();
+        assert_eq!(GnosisGlobalGrid::children(south).len(), 3);
+        // A non-pole tile quad-splits, and the children invert.
+        let mid = GnosisGlobalGrid::address(level(1), 1, 2).unwrap();
+        let kids = GnosisGlobalGrid::children(mid);
+        assert_eq!(kids.len(), 4);
+        for k in kids {
+            assert_eq!(GnosisGlobalGrid::parent(k), Some(mid));
+        }
+        // The chain ends at the range limits.
+        assert_eq!(
+            GnosisGlobalGrid::parent(GnosisGlobalGrid::address(level(0), 0, 0).unwrap()),
+            None
+        );
+        assert!(
+            GnosisGlobalGrid::children(GnosisGlobalGrid::tile_at(0.0, 0.0, level(28)).unwrap())
+                .is_empty()
+        );
+    }
+
+    /// §7.12.2 (binding via TCE2-B) — exactly 4 real tiles touch each pole
+    /// at every level, each 90° wide.
+    #[test]
+    fn req_core_tiling_ext_gnosis_four_pole_tiles() {
+        for lvl in [1u8, 2, 3, 4] {
+            let (width, height) = GnosisGlobalGrid::matrix_size(level(lvl));
+            for row in [0, height - 1] {
+                let f = GnosisGlobalGrid::coalescence_factor(level(lvl), row).unwrap();
+                assert_eq!(width / u64::from(f), 4, "level {lvl} row {row}");
+                let t = GnosisGlobalGrid::address(level(lvl), row, 0).unwrap();
+                let b = GnosisGlobalGrid::tile_extent(t);
+                assert_eq!(b.east - b.west, 90.0);
+            }
+        }
+    }
+
+    /// §7.12.4 (binding via TCE2-B) — GNOSIS coalescence factors re-adjust
+    /// at each tile matrix, unlike the CDB1GlobalGrid's per-latitude-band
+    /// constancy: the polar row's factor is 2ⁿ at level n while a CDB1
+    /// polar geocell holds factor 12 down its pyramid.
+    #[test]
+    fn req_core_tiling_ext_gnosis_coalescence_readjusts() {
+        for (lvl, want) in [(1u8, 2u32), (2, 4), (3, 8), (4, 16)] {
+            assert_eq!(
+                GnosisGlobalGrid::coalescence_factor(level(lvl), 0).unwrap(),
+                want
+            );
+        }
+        use crate::tiling::cdb1_grid::{Cdb1GlobalGrid, Cdb1Lod};
+        for l in [0i8, 1, 3] {
+            let lod = Cdb1Lod::new(l).unwrap();
+            let t = Cdb1GlobalGrid::tile_at(89.5, 0.5, lod).unwrap();
+            assert_eq!(
+                Cdb1GlobalGrid::coalescence_factor(lod, t.row()).unwrap(),
+                12
+            );
+        }
     }
 }
