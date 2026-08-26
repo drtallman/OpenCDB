@@ -97,6 +97,35 @@ impl GnosisTileAddress {
     pub fn col(self) -> u64 {
         self.col
     }
+
+    /// Packs the address into a single 64-bit key — the §7.12.2 observation
+    /// that levels 0..=28 are exactly where "the matrix, row and column
+    /// identifiers can still fit together within a single 64-bit key":
+    /// `level` in the top 5 bits (bits 59..64), `row` in the next 29
+    /// (30..59), `col` in the low 30 (0..30) — 5 + 29 + 30 = 64, exactly
+    /// full at level 28 (height 2³⁰⁄₂ = 2²⁹, width 2³⁰). The invariant
+    /// (`row < 2·2ⁿ ≤ 2²⁹`, `col < 4·2ⁿ ≤ 2³⁰`) keeps the fields disjoint,
+    /// and numeric key order is (level, row, col) lexicographic order. The
+    /// bit layout is this crate's convention; the spec fixes only that the
+    /// three fit.
+    pub fn key(self) -> u64 {
+        (u64::from(self.level.value()) << 59) | (self.row << 30) | self.col
+    }
+
+    /// Unpacks a 64-bit key back into a validated address — the inverse of
+    /// [`Self::key`]. Rejects encodings naming no real tile with the same
+    /// violations as [`GnosisGlobalGrid::address`]:
+    /// [`TilingViolation::GnosisLevelOutOfRange`] for level bits above 28,
+    /// [`TilingViolation::GnosisTileOutOfRange`] for an out-of-matrix
+    /// row/col, and [`TilingViolation::MisalignedColumn`] for a column not
+    /// aligned to its row's coalescence factor.
+    pub fn from_key(key: u64) -> Result<GnosisTileAddress, TilingViolation> {
+        // key >> 59 ≤ 31: the cast to u8 is exact.
+        let level = GnosisLevel::new((key >> 59) as u8)?;
+        let row = (key >> 30) & ((1u64 << 29) - 1);
+        let col = key & ((1u64 << 30) - 1);
+        GnosisGlobalGrid::address(level, row, col)
+    }
 }
 
 /// The GNOSISGlobalGrid tiling scheme (spec §7.12): the 2DTMS-registered
@@ -535,5 +564,53 @@ mod tests {
                 12
             );
         }
+    }
+
+    /// §7.12.2 (binding via TCE2-B) — "the matrix, row and column
+    /// identifiers can still fit together within a single 64-bit key":
+    /// 5 + 29 + 30 bits, exactly full at level 28. Round-trips, numeric key
+    /// order = (level, row, col) order, invalid encodings rejected.
+    #[test]
+    fn req_core_tiling_ext_gnosis_key_roundtrip() {
+        let mut prev_level_origin = None;
+        for lvl in [0u8, 1, 4, 28] {
+            let (width, height) = GnosisGlobalGrid::matrix_size(level(lvl));
+            let f_top = GnosisGlobalGrid::coalescence_factor(level(lvl), 0).unwrap();
+            let f_bot = GnosisGlobalGrid::coalescence_factor(level(lvl), height - 1).unwrap();
+            let corners = [
+                (0, 0),
+                (0, width - u64::from(f_top)),
+                (height - 1, 0),
+                (height - 1, width - u64::from(f_bot)),
+                (height / 2, 0),
+            ];
+            for (row, col) in corners {
+                let addr = GnosisGlobalGrid::address(level(lvl), row, col).unwrap();
+                let key = addr.key();
+                assert_eq!(GnosisTileAddress::from_key(key).unwrap(), addr);
+                if let Some(origin) = prev_level_origin {
+                    assert!(key > origin, "level bits dominate the ordering");
+                }
+            }
+            prev_level_origin = Some(GnosisGlobalGrid::address(level(lvl), 0, 0).unwrap().key());
+        }
+        // Within a level the order is (row, col) lexicographic.
+        let a = GnosisGlobalGrid::address(level(2), 1, 0).unwrap().key();
+        let b = GnosisGlobalGrid::address(level(2), 1, 2).unwrap().key();
+        let c = GnosisGlobalGrid::address(level(2), 2, 0).unwrap().key();
+        assert!(a < b && b < c);
+        // Invalid encodings are rejected with the addressing violations.
+        assert!(matches!(
+            GnosisTileAddress::from_key(29u64 << 59),
+            Err(TilingViolation::GnosisLevelOutOfRange { level: 29 })
+        ));
+        assert!(matches!(
+            GnosisTileAddress::from_key(2u64 << 30), // level 0, row 2 ≥ height 2
+            Err(TilingViolation::GnosisTileOutOfRange { .. })
+        ));
+        assert!(matches!(
+            GnosisTileAddress::from_key((1u64 << 59) | 1), // level 1, row 0 has factor 2
+            Err(TilingViolation::MisalignedColumn { .. })
+        ));
     }
 }
