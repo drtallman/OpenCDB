@@ -15,8 +15,10 @@
 //! leading `/` are normalized here.
 
 pub mod cdb1_grid;
+pub mod gnosis_grid;
 
 pub use cdb1_grid::{Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress};
+pub use gnosis_grid::GnosisLevel;
 
 use std::fmt;
 
@@ -74,7 +76,7 @@ impl fmt::Display for TilingSchemeId {
 }
 
 /// A violation of a SHALL requirement of the tiling module (spec
-/// §7.10–§7.11), or a hard rejection from its closed vocabularies (e.g. an
+/// §7.10–§7.12), or a hard rejection from its closed vocabularies (e.g. an
 /// unknown tiling-scheme identifier at parse time). SHOULD-level findings
 /// are [`TilingWarning`]s — the Recommendation Tiling1 preference for the
 /// extension schemes surfaces there, never here.
@@ -136,6 +138,24 @@ pub enum TilingViolation {
         "LoD {lod} is outside the CDB1GlobalGrid range -10..=23 (violates /req/core/tiling-extension-tile-tessellate A)"
     )]
     Cdb1LodOutOfRange { lod: i8 },
+    /// Requirement TCE2-B (`/req/core/tiling-extension-tms`, §7.12.3.2): a
+    /// GNOSISGlobalGrid zoom level must be one of the registered
+    /// TileMatrixSet's tile matrices, 0..=28
+    /// ([`gnosis_grid::LEVEL_MAX`]). The first GNOSISGlobalGrid-family
+    /// variant; negative levels are unrepresentable (`u8`), so only the
+    /// upper bound can be violated.
+    #[error(
+        "zoom level {level} is outside the GNOSISGlobalGrid range 0..=28 (violates /req/core/tiling-extension-tms)"
+    )]
+    GnosisLevelOutOfRange { level: u8 },
+    /// Requirements TCE6 (`/req/core/tiling-extension-start-lod`, §7.12.3.5)
+    /// and TCE2-B (§7.12.3.2): a tile address (row, col) lies outside the
+    /// GNOSISGlobalGrid tile-matrix for its zoom level — the nominal matrix
+    /// is 4·2ⁿ × 2·2ⁿ at level n (2×4 of 90° tiles at level 0).
+    #[error(
+        "tile (row {row}, col {col}) is outside the level {level} GNOSISGlobalGrid matrix (violates /req/core/tiling-extension-start-lod)"
+    )]
+    GnosisTileOutOfRange { level: u8, row: u64, col: u64 },
     /// Requirements TCE6 (`/req/core/tiling-extension-lod-0`) and TCE7-B
     /// (`/req/core/tiling-extension-tile-tessellate`), §7.11.3.5–§7.11.3.6: a
     /// tile address (row, col) lies outside the CDB1GlobalGrid tile-matrix for
@@ -146,18 +166,22 @@ pub enum TilingViolation {
     )]
     TileOutOfRange { lod: i8, row: u64, col: u64 },
     /// The 2DTMS variable-width (coalesced-column) tiling rule (Requirement
-    /// TCE2, §7.11): a column index must be a multiple of its row's
-    /// coalescence factor. Polar rows aggregate `factor` nominal columns into
-    /// one tile, so only aligned column indices name a real tile.
+    /// TCE2 of both extensions, §7.11/§7.12): a column index must be a
+    /// multiple of its row's coalescence factor. Polar rows aggregate
+    /// `factor` nominal columns into one tile, so only aligned column
+    /// indices name a real tile. Both extension grids share this rule:
+    /// CDB1GlobalGrid factors come from the latitude-band zone table,
+    /// GNOSISGlobalGrid factors from its per-matrix formula.
     #[error(
         "column {col} is not a multiple of the coalescence factor {factor} for its row (violates the 2DTMS variable-width tiling rule, TCE2)"
     )]
     MisalignedColumn { col: u64, factor: u32 },
-    /// Requirement TCE4 (`/req/core/tiling-extension-uom`,
-    /// §7.11.3.4): a coordinate handed to the addressing math must be a finite
-    /// decimal-degree point on the earth — latitude in [−90, 90], longitude in
-    /// [−180, 180], neither NaN. This is the `f64`-bearing variant the enum's
-    /// no-`Eq` derive was reserved for.
+    /// Requirement TCE4 (`/req/core/tiling-extension-uom`, §7.11.3.4/§7.12.3.4
+    /// — the two extensions share the slug and the rule): a coordinate handed
+    /// to the addressing math must be a finite decimal-degree point on the
+    /// earth — latitude in [−90, 90], longitude in [−180, 180], neither NaN.
+    /// This is the `f64`-bearing variant the enum's no-`Eq` derive was
+    /// reserved for.
     #[error(
         "coordinate (lat {lat}, lon {lon}) is not a finite decimal-degree point within [-90,90]×[-180,180] (violates /req/core/tiling-extension-uom)"
     )]
