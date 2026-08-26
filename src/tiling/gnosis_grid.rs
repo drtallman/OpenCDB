@@ -160,7 +160,8 @@ impl GnosisGlobalGrid {
     }
 
     /// The coalescence factor of nominal row `row` at `level` (the
-    /// registered TileMatrixSet's variableMatrixWidths, Requirement TCE2-B):
+    /// registered TileMatrixSet's variableMatrixWidths, Requirement TCE2-B,
+    /// §7.12.3.2):
     /// with pole distance `d = min(row, height − 1 − row)` and
     /// `bit_length(d)` the bit count of `d`'s binary form
     /// (`bit_length(0) = 0`), the factor is `2^max(0, n − bit_length(d))` —
@@ -476,6 +477,9 @@ mod tests {
         let polar = GnosisGlobalGrid::tile_at(89.0, 50.0, level(2)).unwrap();
         assert_eq!(polar.row(), 0);
         assert_eq!(polar.col() % 4, 0);
+        // The snapped coalesced tile really contains the point (half-open).
+        let pb = GnosisGlobalGrid::tile_extent(polar);
+        assert!(pb.west <= 50.0 && 50.0 < pb.east && pb.south <= 89.0 && 89.0 < pb.north);
     }
 
     /// §7.12.3.5 Requirement TCE6-C /req/core/tiling-extension-start-lod —
