@@ -200,20 +200,25 @@ LoD n ≥ 1). This supersedes the earlier prose floor row formula, which disagre
 with the containment test at grid-aligned latitudes; the ceiling−1 form is the
 shipped, reviewer-verified convention (incl. the lat = 90 clamp).
 
-### Phase 10 — GNOSISGlobalGrid extension, optional
-- Level 0 = 2 rows × 4 cols of 90°×90° tiles (TCE6-G).
-- Quad-tree split, except pole-touching tiles split into 3 (no longitude split
-  at the pole) → exactly 4 tiles touch each pole at every level (test at
-  levels 1-4).
-- Levels 0..=28; (level,row,col) packs into a single u64 key — pack/unpack
-  round-trip property test.
-- Coalescence factors recomputed per tile matrix (contrast test vs CDB1 grid).
-- Note (from Phase 9): `TilingSchemeId` already lives in `tiling::mod`
-  (relocated out of `profiles`, which now re-exports it), so this extension
-  only adds the `gnosis_grid` submodule alongside `cdb1_grid`. Whether to factor
-  a shared grid trait over `Cdb1GlobalGrid` and the GNOSIS grid is deferred to
-  here on purpose — the rule of two: with a second concrete grid in hand,
-  extract the common addressing surface only if it earns its keep.
+### Phase 10 — GNOSISGlobalGrid extension, optional (done, as built)
+| Req | Rule | Realization |
+|---|---|---|
+| TCE1 (§7.12) | conformance with the module | module-doc conformance statements (the design-level pattern of CRS2/Geom1/Tiling1-3) |
+| TCE2 (§7.12) | conform to 2DTMS TileMatrixSet + VariableMatrixWidth and the registered GNOSISGlobalGrid definition | formula-driven grid: coalescence `2^max(0, n − bit_length(pole_distance))`, verified verbatim against the registry's level 0-3 `variableMatrixWidths` fixtures; `GnosisLevel` (0..=28, `u8` — negatives unrepresentable) → `GnosisLevelOutOfRange`; 256×256 tiles (`gnosis_grid::TILE_SIZE_CELLS`, registry-pinned — §7.12 states no raster rule itself) |
+| TCE3 (§7.12) | EPSG:4326, axis order lat,lon | `TilingScheme::gnosis_global_grid()` preset; `tile_at(lat, lon, level)` parameter order |
+| TCE4 (§7.12) | origins/extents/bboxes in decimal degrees | degrees-only `Bbox` extents; `tile_at` validation reuses `CoordinateOutOfRange` (the two extensions share the `-uom` slug) |
+| TCE5 (§7.12) | metadata box MISSING from the draft (again) | tileset metadata duties covered via Tiling9/10; doc-noted |
+| TCE6 (§7.12) | level 0 = 2×4 grid of 90°×90° tiles; splitting per the 2DTMS annexes | `matrix_size` (4·2ⁿ × 2·2ⁿ); `parent`/`children` with uniform factor-driven enumeration — the 3-way pole split falls out of the formula (3 children at poles, 4 elsewhere; 4 tiles always touch each pole, each 90° wide, tested at levels 1-4) |
+| u64 keys (§7.12.2, via TCE2-B) | (level,row,col) in one 64-bit key | `GnosisTileAddress::key`/`from_key`: level<<59 \| row<<30 \| col — 5+29+30 = exactly 64 at level 28; numeric order = (level,row,col) order |
+
+Phase 10 also resolved the two decisions deferred from Phase 9 (recorded in
+`docs/superpowers/specs/2026-08-26-gnosis-grid-design.md`): **no shared grid
+trait** — the two grids are deliberately parallel surfaces by convention
+(rule of two: no generic consumer exists) — and the **symmetric rename**
+`Lod` → `Cdb1Lod`, `TileAddress` → `Cdb1TileAddress`, `LodOutOfRange` →
+`Cdb1LodOutOfRange` (breaking, 0.5.0), with GNOSIS types prefixed
+`GnosisLevel`/`GnosisTileAddress`. The same half-open tile-addressing
+convention (§4 Phase 9 note) binds both grids.
 
 ### Phase 11 — Topology (`/req/core/topology-*`), optional
 | Req | Rule | Tests |
@@ -397,4 +402,18 @@ for Phase 9).
   Coverages Rec7/8 reservation closes via the `tests/tiled_coverage.rs`
   integration test. Design record:
   `docs/superpowers/specs/2026-08-02-tiling-module-design.md`.
-- Next: Phase 10 (GNOSISGlobalGrid).
+- Phase 10 done (commits `phase-10(tiling)` ×7), 192 tests (178 unit + 13
+  integration + 1 doc) — the fourth optional phase, completing the tiling
+  extensions, shipped as `0.5.0`. `tiling::gnosis_grid` (§7.12): the
+  registered variable-width TMS as closed-form math (factor
+  `2^max(0, n − bit_length(d))`, registry levels 0-3 pinned as fixtures),
+  `GnosisLevel` (0..=28), `GnosisTileAddress` (+ 64-bit key pair), and
+  `GnosisGlobalGrid` paralleling `Cdb1GlobalGrid`'s surface minus
+  `raster_size` (256×256 constant, registry-pinned) with 3-way pole
+  splitting emerging from uniform factor-driven child enumeration. The
+  deferred rule-of-two (no trait) and naming (symmetric `Cdb1`/`Gnosis`
+  prefixes; breaking) decisions are resolved per the design record
+  `docs/superpowers/specs/2026-08-26-gnosis-grid-design.md`; the parked
+  Tiling4 field-doc citation is fixed. Facade wiring of the tiling classes
+  and any GNOSIS-declaring profile remain 14b scope.
+- Next: Phase 11 (Topology).
