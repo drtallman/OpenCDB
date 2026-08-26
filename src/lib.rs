@@ -48,6 +48,6 @@ pub use geometry::{
 };
 pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
 pub use tiling::{
-    Cdb1GlobalGrid, Lod, TileAddress, TilingScheme, TilingSchemeId, TilingViolation, TilingWarning,
-    validate_tileset_metadata,
+    Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress, TilingScheme, TilingSchemeId, TilingViolation,
+    TilingWarning, validate_tileset_metadata,
 };

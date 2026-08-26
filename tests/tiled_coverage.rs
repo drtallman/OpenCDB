@@ -7,7 +7,7 @@
 
 use rusty_cdb::coverage::{DomainSet, validate_coverage_instance};
 use rusty_cdb::metadata::ResourceMetadata;
-use rusty_cdb::tiling::{Cdb1GlobalGrid, Lod, TilingScheme, validate_tileset_metadata};
+use rusty_cdb::tiling::{Cdb1GlobalGrid, Cdb1Lod, TilingScheme, validate_tileset_metadata};
 use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
 /// §7.2.7 Rec Coverages7 /req/core/coverage-tiling-abstract and §7.2.8
@@ -59,7 +59,7 @@ fn rec_core_coverage_tiling_abstract_and_extension() {
 
     // Grid addressing over the coverage's area (one geocell at LoD 0 and
     // its quad at LoD 1).
-    let t0 = Cdb1GlobalGrid::tile_at(37.25, -122.75, Lod::new(0).unwrap()).unwrap();
+    let t0 = Cdb1GlobalGrid::tile_at(37.25, -122.75, Cdb1Lod::new(0).unwrap()).unwrap();
     let b0 = Cdb1GlobalGrid::tile_extent(t0);
     assert!(b0.west <= -122.75 && -122.75 < b0.east);
     assert_eq!(Cdb1GlobalGrid::children(t0).len(), 4);

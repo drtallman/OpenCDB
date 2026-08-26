@@ -16,7 +16,7 @@
 
 pub mod cdb1_grid;
 
-pub use cdb1_grid::{Cdb1GlobalGrid, Lod, TileAddress};
+pub use cdb1_grid::{Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress};
 
 use std::fmt;
 
@@ -135,7 +135,7 @@ pub enum TilingViolation {
     #[error(
         "LoD {lod} is outside the CDB1GlobalGrid range -10..=23 (violates /req/core/tiling-extension-tile-tessellate A)"
     )]
-    LodOutOfRange { lod: i8 },
+    Cdb1LodOutOfRange { lod: i8 },
     /// Requirements TCE6 (`/req/core/tiling-extension-lod-0`) and TCE7-B
     /// (`/req/core/tiling-extension-tile-tessellate`), §7.11.3.5–§7.11.3.6: a
     /// tile address (row, col) lies outside the CDB1GlobalGrid tile-matrix for

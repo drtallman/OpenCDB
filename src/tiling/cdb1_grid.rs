@@ -43,20 +43,20 @@ pub const TILE_SIZE_CELLS: u32 = 1024;
 /// A CDB1GlobalGrid Level of Detail: a validated integer in the closed range
 /// [`LOD_MIN`]..=[`LOD_MAX`] (−10..=23, Requirement TCE7-A, §7.11.3.6).
 /// Non-negative levels subdivide a geocell; negative levels coarsen it. The
-/// only constructor, [`Lod::new`], rejects out-of-range values, so every `Lod`
+/// only constructor, [`Cdb1Lod::new`], rejects out-of-range values, so every `Cdb1Lod`
 /// value is in range by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Lod(i8);
+pub struct Cdb1Lod(i8);
 
-impl Lod {
+impl Cdb1Lod {
     /// Constructs a Level of Detail, enforcing Requirement TCE7-A: `value`
     /// must lie in [`LOD_MIN`]..=[`LOD_MAX`] (−10..=23). Returns
-    /// [`TilingViolation::LodOutOfRange`] for any value outside that range.
-    pub fn new(value: i8) -> Result<Lod, TilingViolation> {
+    /// [`TilingViolation::Cdb1LodOutOfRange`] for any value outside that range.
+    pub fn new(value: i8) -> Result<Cdb1Lod, TilingViolation> {
         if (LOD_MIN..=LOD_MAX).contains(&value) {
-            Ok(Lod(value))
+            Ok(Cdb1Lod(value))
         } else {
-            Err(TilingViolation::LodOutOfRange { lod: value })
+            Err(TilingViolation::Cdb1LodOutOfRange { lod: value })
         }
     }
 
@@ -72,22 +72,22 @@ impl Lod {
 /// numbered from the north-west corner per OGC 2DTMS — `row` 0 is the
 /// northernmost band, `col` 0 begins at longitude −180°.
 ///
-/// The fields are private and every `TileAddress` is produced only by
+/// The fields are private and every `Cdb1TileAddress` is produced only by
 /// [`Cdb1GlobalGrid::address`] or [`Cdb1GlobalGrid::tile_at`], so the type
 /// carries an invariant: `row`/`col` are in range for `lod`, and `col` is
 /// aligned to its row's coalescence factor. [`Cdb1GlobalGrid::parent`] and
 /// [`Cdb1GlobalGrid::children`] preserve it. Read the parts back with
 /// [`Self::lod`], [`Self::row`], and [`Self::col`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TileAddress {
-    lod: Lod,
+pub struct Cdb1TileAddress {
+    lod: Cdb1Lod,
     row: u64,
     col: u64,
 }
 
-impl TileAddress {
+impl Cdb1TileAddress {
     /// The address's Level of Detail.
-    pub fn lod(self) -> Lod {
+    pub fn lod(self) -> Cdb1Lod {
         self.lod
     }
 
@@ -118,7 +118,7 @@ impl Cdb1GlobalGrid {
     /// [`TILE_SIZE_CELLS`] (1024) cells square; each negative LoD keeps the
     /// whole-geocell extent while halving the cell count — 512 at −1, 256 at
     /// −2, … 1 at −10 ([`LOD_MIN`]).
-    pub fn raster_size(lod: Lod) -> u32 {
+    pub fn raster_size(lod: Cdb1Lod) -> u32 {
         let value = lod.value();
         if value >= 0 {
             TILE_SIZE_CELLS
@@ -134,7 +134,7 @@ impl Cdb1GlobalGrid {
     /// `h = (1/2)ⁿ` at LoD n ≥ 1 (exact in binary floating point for
     /// n ≤ 23). Nominal tiles are square; latitude coalescence widens a tile
     /// by aggregating whole nominal columns, never changing `h`.
-    fn h(lod: Lod) -> f64 {
+    fn h(lod: Cdb1Lod) -> f64 {
         let n = lod.value();
         if n <= 0 {
             1.0
@@ -151,7 +151,7 @@ impl Cdb1GlobalGrid {
     /// factor is the first [`ZONE_BANDS`] entry whose bound exceeds `a`; a
     /// geocell abutting the pole (`a = 89`) falls through to the polar factor
     /// 12. Callers pass an in-range row, so `a ≤ 89` and a band always matches.
-    fn zone_width_for_row(lod: Lod, row: u64) -> u32 {
+    fn zone_width_for_row(lod: Cdb1Lod, row: u64) -> u32 {
         // row·h ∈ [0, 180) for an in-range row, so g ∈ [0, 179]; the cast is
         // exact and cannot truncate meaningfully.
         let g = ((row as f64) * Self::h(lod)).floor() as i64;
@@ -171,7 +171,7 @@ impl Cdb1GlobalGrid {
     /// level quadruples it to `360·2ⁿ × 180·2ⁿ`; every LoD ≤ 0 keeps the
     /// 360×180 geocell matrix (negative levels coarsen a geocell's raster, not
     /// the tiling). Width counts nominal columns before coalescence.
-    pub fn matrix_size(lod: Lod) -> (u64, u64) {
+    pub fn matrix_size(lod: Cdb1Lod) -> (u64, u64) {
         let n = lod.value();
         if n <= 0 {
             (360, 180)
@@ -187,7 +187,7 @@ impl Cdb1GlobalGrid {
     /// them. Returns [`TilingViolation::TileOutOfRange`] if `row` is outside
     /// the LoD's matrix height. Only the row is checked here, so that
     /// violation carries `col: 0` as a not-applicable sentinel.
-    pub fn coalescence_factor(lod: Lod, row: u64) -> Result<u32, TilingViolation> {
+    pub fn coalescence_factor(lod: Cdb1Lod, row: u64) -> Result<u32, TilingViolation> {
         let (_, height) = Self::matrix_size(lod);
         if row >= height {
             return Err(TilingViolation::TileOutOfRange {
@@ -199,13 +199,13 @@ impl Cdb1GlobalGrid {
         Ok(Self::zone_width_for_row(lod, row))
     }
 
-    /// Builds a validated [`TileAddress`] from raw indices (Requirements
+    /// Builds a validated [`Cdb1TileAddress`] from raw indices (Requirements
     /// TCE6/TCE7): `row`/`col` must lie within [`Self::matrix_size`]
     /// (else [`TilingViolation::TileOutOfRange`]), and `col` must be a multiple
     /// of the row's coalescence factor (else
     /// [`TilingViolation::MisalignedColumn`]) — a misaligned column names no
     /// real tile under the 2DTMS variable-width rule.
-    pub fn address(lod: Lod, row: u64, col: u64) -> Result<TileAddress, TilingViolation> {
+    pub fn address(lod: Cdb1Lod, row: u64, col: u64) -> Result<Cdb1TileAddress, TilingViolation> {
         let (width, height) = Self::matrix_size(lod);
         if row >= height || col >= width {
             return Err(TilingViolation::TileOutOfRange {
@@ -218,7 +218,7 @@ impl Cdb1GlobalGrid {
         if !col.is_multiple_of(u64::from(factor)) {
             return Err(TilingViolation::MisalignedColumn { col, factor });
         }
-        Ok(TileAddress { lod, row, col })
+        Ok(Cdb1TileAddress { lod, row, col })
     }
 
     /// The tile at `lod` containing the decimal-degree point `(lat, lon)`
@@ -228,7 +228,7 @@ impl Cdb1GlobalGrid {
     /// whose half-open extent `[west, east) × [south, north)` contains it; the
     /// resulting nominal column is snapped down to the row's coalescence
     /// factor so the address names the real (possibly widened) tile.
-    pub fn tile_at(lat: f64, lon: f64, lod: Lod) -> Result<TileAddress, TilingViolation> {
+    pub fn tile_at(lat: f64, lon: f64, lod: Cdb1Lod) -> Result<Cdb1TileAddress, TilingViolation> {
         if lat.is_nan() || lon.is_nan() || lat.abs() > 90.0 || lon.abs() > 180.0 {
             return Err(TilingViolation::CoordinateOutOfRange { lat, lon });
         }
@@ -248,7 +248,7 @@ impl Cdb1GlobalGrid {
         let col_nominal = (((lon + 180.0) / h).floor() as u64).min(width - 1);
         let factor = Self::zone_width_for_row(lod, row);
         let col = col_nominal - (col_nominal % u64::from(factor));
-        Ok(TileAddress { lod, row, col })
+        Ok(Cdb1TileAddress { lod, row, col })
     }
 
     /// The geographic extent of `addr` as a WGS-84 bounding box (Requirements
@@ -257,7 +257,7 @@ impl Cdb1GlobalGrid {
     /// east spans the row's coalescence factor (`east = west + factor·h`), so a
     /// polar tile is `factor` nominal columns wide. Because every factor
     /// divides 360, the eastmost tile of a row ends exactly on +180°.
-    pub fn tile_extent(addr: TileAddress) -> Bbox {
+    pub fn tile_extent(addr: Cdb1TileAddress) -> Bbox {
         let h = Self::h(addr.lod);
         let factor = Self::zone_width_for_row(addr.lod, addr.row);
         let north = 90.0 - (addr.row as f64) * h;
@@ -278,16 +278,16 @@ impl Cdb1GlobalGrid {
     /// parent keeps the same `(row, col)` one level up. From LoD 1 the scheme
     /// is a quadtree: the parent halves the row, halves the column, then snaps
     /// the column down to the parent row's coalescence factor.
-    pub fn parent(addr: TileAddress) -> Option<TileAddress> {
+    pub fn parent(addr: Cdb1TileAddress) -> Option<Cdb1TileAddress> {
         let lod_v = addr.lod.value();
         if lod_v == LOD_MIN {
             return None;
         }
         // lod_v > LOD_MIN, so lod_v − 1 is in range; `.ok()?` is a total,
-        // panic-free way to obtain the coarser Lod.
-        let parent_lod = Lod::new(lod_v - 1).ok()?;
+        // panic-free way to obtain the coarser Cdb1Lod.
+        let parent_lod = Cdb1Lod::new(lod_v - 1).ok()?;
         if lod_v <= 0 {
-            Some(TileAddress {
+            Some(Cdb1TileAddress {
                 lod: parent_lod,
                 row: addr.row,
                 col: addr.col,
@@ -297,7 +297,7 @@ impl Cdb1GlobalGrid {
             let parent_factor = Self::zone_width_for_row(parent_lod, row);
             let half = addr.col / 2;
             let col = half - (half % u64::from(parent_factor));
-            Some(TileAddress {
+            Some(Cdb1TileAddress {
                 lod: parent_lod,
                 row,
                 col,
@@ -313,19 +313,19 @@ impl Cdb1GlobalGrid {
     /// `(2·row + 1, 2·col)`, `(2·row + 1, 2·col + factor)` — where `factor` is
     /// the coalescence factor of `addr`'s row (identical for the children,
     /// which share the same geocell).
-    pub fn children(addr: TileAddress) -> Vec<TileAddress> {
+    pub fn children(addr: Cdb1TileAddress) -> Vec<Cdb1TileAddress> {
         let lod_v = addr.lod.value();
         if lod_v == LOD_MAX {
             return Vec::new();
         }
         // lod_v < LOD_MAX, so lod_v + 1 is in range; an Err is impossible and
         // an empty child set is the safe, panic-free fallback.
-        let child_lod = match Lod::new(lod_v + 1) {
+        let child_lod = match Cdb1Lod::new(lod_v + 1) {
             Ok(lod) => lod,
             Err(_) => return Vec::new(),
         };
         if lod_v < 0 {
-            vec![TileAddress {
+            vec![Cdb1TileAddress {
                 lod: child_lod,
                 row: addr.row,
                 col: addr.col,
@@ -335,22 +335,22 @@ impl Cdb1GlobalGrid {
             let r0 = addr.row * 2;
             let c0 = addr.col * 2;
             vec![
-                TileAddress {
+                Cdb1TileAddress {
                     lod: child_lod,
                     row: r0,
                     col: c0,
                 },
-                TileAddress {
+                Cdb1TileAddress {
                     lod: child_lod,
                     row: r0,
                     col: c0 + factor,
                 },
-                TileAddress {
+                Cdb1TileAddress {
                     lod: child_lod,
                     row: r0 + 1,
                     col: c0,
                 },
-                TileAddress {
+                Cdb1TileAddress {
                     lod: child_lod,
                     row: r0 + 1,
                     col: c0 + factor,
@@ -368,13 +368,13 @@ mod tests {
     /// §7.11.3.6 Requirement TCE7-A — LoD range −10..=23.
     #[test]
     fn req_core_tiling_ext_lod_range() {
-        assert!(Lod::new(-10).is_ok());
-        assert!(Lod::new(0).is_ok());
-        assert!(Lod::new(23).is_ok());
+        assert!(Cdb1Lod::new(-10).is_ok());
+        assert!(Cdb1Lod::new(0).is_ok());
+        assert!(Cdb1Lod::new(23).is_ok());
         for bad in [-11i8, 24, i8::MIN, i8::MAX] {
             assert!(matches!(
-                Lod::new(bad),
-                Err(TilingViolation::LodOutOfRange { lod }) if lod == bad
+                Cdb1Lod::new(bad),
+                Err(TilingViolation::Cdb1LodOutOfRange { lod }) if lod == bad
             ));
         }
     }
@@ -383,15 +383,15 @@ mod tests {
     /// LoD 0 up; negative LoDs keep the geocell extent with halved cells.
     #[test]
     fn req_core_tiling_ext_raster_sizes() {
-        assert_eq!(Cdb1GlobalGrid::raster_size(Lod::new(0).unwrap()), 1024);
-        assert_eq!(Cdb1GlobalGrid::raster_size(Lod::new(23).unwrap()), 1024);
-        assert_eq!(Cdb1GlobalGrid::raster_size(Lod::new(-1).unwrap()), 512);
-        assert_eq!(Cdb1GlobalGrid::raster_size(Lod::new(-4).unwrap()), 64);
-        assert_eq!(Cdb1GlobalGrid::raster_size(Lod::new(-10).unwrap()), 1);
+        assert_eq!(Cdb1GlobalGrid::raster_size(Cdb1Lod::new(0).unwrap()), 1024);
+        assert_eq!(Cdb1GlobalGrid::raster_size(Cdb1Lod::new(23).unwrap()), 1024);
+        assert_eq!(Cdb1GlobalGrid::raster_size(Cdb1Lod::new(-1).unwrap()), 512);
+        assert_eq!(Cdb1GlobalGrid::raster_size(Cdb1Lod::new(-4).unwrap()), 64);
+        assert_eq!(Cdb1GlobalGrid::raster_size(Cdb1Lod::new(-10).unwrap()), 1);
     }
 
-    fn lod(v: i8) -> Lod {
-        Lod::new(v).unwrap()
+    fn lod(v: i8) -> Cdb1Lod {
+        Cdb1Lod::new(v).unwrap()
     }
 
     /// §7.11.3.5 Requirement TCE6 — LoD 0 is the 1°×1° Geocell matrix,
