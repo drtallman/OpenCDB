@@ -199,6 +199,37 @@ impl GnosisGlobalGrid {
         Ok(GnosisTileAddress { level, row, col })
     }
 
+    /// The tile at `level` containing the decimal-degree point `(lat, lon)`
+    /// (Requirements TCE3/TCE4, §7.12.3.3–§7.12.3.4; the parameter order is
+    /// the scheme's latitude,longitude axis order). The coordinate must be
+    /// finite with latitude in [−90, 90] and longitude in [−180, 180], else
+    /// [`TilingViolation::CoordinateOutOfRange`]. The point falls in the
+    /// tile whose half-open extent `[south, north) × [west, east)` contains
+    /// it — the binding tile-addressing convention shared with the
+    /// CDB1GlobalGrid: `row = ⌈(90−lat)/h⌉ − 1` (south-inclusive),
+    /// `col = ⌊(lon+180)/h⌋` (west-inclusive), ±90°/±180° edges clamped to
+    /// the last in-range row/column — with the nominal column snapped down
+    /// to the row's coalescence factor so the address names the real
+    /// (possibly widened) tile.
+    pub fn tile_at(
+        lat: f64,
+        lon: f64,
+        level: GnosisLevel,
+    ) -> Result<GnosisTileAddress, TilingViolation> {
+        if lat.is_nan() || lon.is_nan() || lat.abs() > 90.0 || lon.abs() > 180.0 {
+            return Err(TilingViolation::CoordinateOutOfRange { lat, lon });
+        }
+        let h = Self::h(level);
+        let (width, height) = Self::matrix_size(level);
+        let row = (((90.0 - lat) / h).ceil() - 1.0)
+            .max(0.0)
+            .min((height - 1) as f64) as u64;
+        let col_nominal = (((lon + 180.0) / h).floor() as u64).min(width - 1);
+        let factor = Self::factor_for_row(level, row);
+        let col = col_nominal - (col_nominal % u64::from(factor));
+        Ok(GnosisTileAddress { level, row, col })
+    }
+
     /// The geographic extent of `addr` as a WGS-84 bounding box in decimal
     /// degrees (Requirement TCE4, §7.12.3.4). North and south come from the
     /// row (`north = 90 − row·h`, `south = north − h`); west from the
@@ -323,5 +354,37 @@ mod tests {
             GnosisGlobalGrid::address(level(1), 4, 0),
             Err(TilingViolation::GnosisTileOutOfRange { .. })
         ));
+    }
+
+    /// §7.12.3.3 Requirement TCE3 /req/core/tiling-extension-crs +
+    /// §7.12.3.4 Requirement TCE4 /req/core/tiling-extension-uom —
+    /// EPSG:4326 with axis order latitude,longitude, everything in decimal
+    /// degrees; coordinates validated; ±90°/±180° edges clamp inward; a
+    /// point lies inside its tile's half-open extent.
+    #[test]
+    fn req_core_tiling_ext_gnosis_crs_uom_coordinates() {
+        for (lat, lon) in [(90.5, 0.0), (0.0, -180.5), (f64::NAN, 0.0), (0.0, f64::NAN)] {
+            assert!(matches!(
+                GnosisGlobalGrid::tile_at(lat, lon, level(2)),
+                Err(TilingViolation::CoordinateOutOfRange { .. })
+            ));
+        }
+        // Point round-trip at several levels (half-open containment).
+        for lvl in [0u8, 1, 2, 5] {
+            let t = GnosisGlobalGrid::tile_at(37.25, -122.75, level(lvl)).unwrap();
+            let b = GnosisGlobalGrid::tile_extent(t);
+            assert!(b.west <= -122.75 && -122.75 < b.east && b.south <= 37.25 && 37.25 < b.north);
+        }
+        // Edges clamp inward.
+        let south = GnosisGlobalGrid::tile_at(-90.0, 0.0, level(1)).unwrap();
+        assert_eq!(south.row(), 3);
+        let east = GnosisGlobalGrid::tile_at(0.0, 180.0, level(1)).unwrap();
+        assert_eq!(GnosisGlobalGrid::tile_extent(east).east, 180.0);
+        let north = GnosisGlobalGrid::tile_at(90.0, -180.0, level(1)).unwrap();
+        assert_eq!((north.row(), north.col()), (0, 0));
+        // A nominal column inside a coalesced polar tile snaps west.
+        let polar = GnosisGlobalGrid::tile_at(89.0, 50.0, level(2)).unwrap();
+        assert_eq!(polar.row(), 0);
+        assert_eq!(polar.col() % 4, 0);
     }
 }
