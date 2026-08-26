@@ -13,6 +13,13 @@
 //! Draft quirks (keyed on meaning): the requirements-class URI is mislabeled
 //! `/req/core/geometry-` in the document (copy-paste); slugs missing their
 //! leading `/` are normalized here.
+//!
+//! The two extension grids ([`cdb1_grid`] §7.11, [`gnosis_grid`] §7.12) are
+//! deliberately parallel surfaces — the same method names and shapes where
+//! semantics match (`matrix_size`, `coalescence_factor`, `address`,
+//! `tile_at`, `tile_extent`, `parent`, `children`) — with no shared trait:
+//! nothing consumes a grid generically (a rule-of-two decision recorded in
+//! the Phase 10 design), so an abstraction waits for a real consumer.
 
 pub mod cdb1_grid;
 pub mod gnosis_grid;
@@ -237,7 +244,7 @@ impl fmt::Display for TilingWarning {
 /// [`id`]: Self::id
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TilingScheme {
-    /// The scheme identifier (Requirement Tiling4). The two conformant
+    /// The scheme identifier. The two conformant
     /// spellings are `CDB1GlobalGrid` and `GNOSISGlobalGrid`
     /// ([`TilingSchemeId`]); any other value is permitted but draws a
     /// [`TilingWarning::NonExtensionScheme`] (Recommendation Tiling1).
@@ -265,6 +272,24 @@ impl TilingScheme {
     pub fn cdb1_global_grid() -> TilingScheme {
         TilingScheme {
             id: TilingSchemeId::Cdb1GlobalGrid.as_str().to_owned(),
+            crs: "EPSG:4326".to_owned(),
+            uom: "degree".to_owned(),
+            extent: Bbox {
+                west: -180.0,
+                south: -90.0,
+                east: 180.0,
+                north: 90.0,
+            },
+        }
+    }
+
+    /// The canonical GNOSISGlobalGrid definition (spec §7.12.3.3, TCE3): an
+    /// EPSG:4326 grid — axis order latitude,longitude — measured in decimal
+    /// degrees over the whole earth. It validates against a WGS-84 storage
+    /// CRS and draws no warnings.
+    pub fn gnosis_global_grid() -> TilingScheme {
+        TilingScheme {
+            id: TilingSchemeId::GnosisGlobalGrid.as_str().to_owned(),
             crs: "EPSG:4326".to_owned(),
             uom: "degree".to_owned(),
             extent: Bbox {
@@ -513,6 +538,28 @@ mod tests {
     fn tiling_scheme_cdb1_preset_validates() {
         let scheme = TilingScheme::cdb1_global_grid();
         assert_eq!(scheme.id, "CDB1GlobalGrid");
+        assert_eq!(scheme.crs, "EPSG:4326");
+        assert_eq!(scheme.uom, "degree");
+        assert_eq!(
+            (
+                scheme.extent.west,
+                scheme.extent.south,
+                scheme.extent.east,
+                scheme.extent.north
+            ),
+            (-180.0, -90.0, 180.0, 90.0)
+        );
+        assert!(scheme.validate(&wgs84()).is_ok());
+        assert!(scheme.warnings().is_empty());
+    }
+
+    /// §7.10.2.5 Requirement Tiling8 + §7.12.3.3 TCE3 — the canonical
+    /// GNOSISGlobalGrid definition: EPSG:4326 (axis order
+    /// latitude,longitude), decimal degrees, whole earth.
+    #[test]
+    fn tiling_scheme_gnosis_preset_validates() {
+        let scheme = TilingScheme::gnosis_global_grid();
+        assert_eq!(scheme.id, "GNOSISGlobalGrid");
         assert_eq!(scheme.crs, "EPSG:4326");
         assert_eq!(scheme.uom, "degree");
         assert_eq!(
