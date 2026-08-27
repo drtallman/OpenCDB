@@ -54,5 +54,5 @@ pub use tiling::{
 };
 pub use topology::{
     DirectedEdge, DirectedNode, EdgeId, FaceId, NodeId, NodeSign, Orientation, SignedEdge,
-    TopoEdge, TopoFace, TopoNode, TopologyViolation,
+    TopoEdge, TopoFace, TopoGraph, TopoNode, TopologyViolation, WindingOrder,
 };

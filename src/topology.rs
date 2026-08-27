@@ -138,6 +138,19 @@ pub struct DirectedEdge {
     pub orientation: Orientation,
 }
 
+impl DirectedEdge {
+    /// Traversal endpoints (from, to) of this directed edge over `edge`:
+    /// `Forward` goes start→end, `Reverse` end→start. Branches on the
+    /// orientation, never on node equality — a loop edge's endpoints are
+    /// equal and would make equality-based derivation ambiguous.
+    fn endpoints(self, edge: &TopoEdge) -> (NodeId, NodeId) {
+        match self.orientation {
+            Orientation::Forward => (edge.start, edge.end),
+            Orientation::Reverse => (edge.end, edge.start),
+        }
+    }
+}
+
 /// The role a node plays for an underlying edge (ISO 19107 directed
 /// node, §7.13.1): `Start` renders "−", `End` renders "+".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +162,7 @@ pub enum NodeSign {
 }
 
 /// ISO 19107 directed node: a node and its sign with respect to an
-/// underlying edge (§7.13.1). Derived by `TopoFace::directed_nodes`;
+/// underlying edge (§7.13.1). Derived by [`TopoFace::directed_nodes`];
 /// never stored, so it can never disagree with the edge list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectedNode {
@@ -195,7 +208,7 @@ pub struct TopoEdge {
 /// 2-dimensional topological primitive (§7.13.5): an exterior boundary
 /// ring of directed edges — Face Topology Requirement 3's (and Rec
 /// Topology 1's) "list of directed nodes and directed edges", with the
-/// directed-node list derived by `TopoFace::directed_nodes` so the two
+/// directed-node list derived by [`TopoFace::directed_nodes`] so the two
 /// lists can never disagree. Islands/holes (interior boundaries,
 /// §7.13.5.6) carry no requirement box and are an application-profile
 /// duty — this core type models the exterior ring only.
@@ -203,6 +216,112 @@ pub struct TopoEdge {
 pub struct TopoFace {
     pub id: FaceId,
     pub boundary: Vec<DirectedEdge>,
+}
+
+impl TopoFace {
+    /// The ring as ISO directed nodes (Face Topology Requirement 3 and
+    /// Rec Topology 1's "list of directed nodes and directed edges",
+    /// §7.13.5.4/§7.13.4.6): per boundary step the traversal's (from,
+    /// to) pair signed relative to the step's *underlying edge* —
+    /// `Forward` yields (−start, +end), `Reverse` yields (+end, −start)
+    /// — 2k entries for a k-edge ring. Derived, never stored, so the two
+    /// lists can never disagree. Fallible because a `TopoFace` value can
+    /// be built before insertion: unknown edges error.
+    pub fn directed_nodes(
+        &self,
+        graph: &TopoGraph,
+    ) -> Result<Vec<DirectedNode>, TopologyViolation> {
+        let mut out = Vec::with_capacity(self.boundary.len() * 2);
+        for step in &self.boundary {
+            let edge = graph
+                .edge(step.edge)
+                .ok_or(TopologyViolation::UnknownEdgeId { id: step.edge })?;
+            let (from, to) = match step.orientation {
+                Orientation::Forward => (
+                    DirectedNode {
+                        node: edge.start,
+                        sign: NodeSign::Start,
+                    },
+                    DirectedNode {
+                        node: edge.end,
+                        sign: NodeSign::End,
+                    },
+                ),
+                Orientation::Reverse => (
+                    DirectedNode {
+                        node: edge.end,
+                        sign: NodeSign::End,
+                    },
+                    DirectedNode {
+                        node: edge.start,
+                        sign: NodeSign::Start,
+                    },
+                ),
+            };
+            out.push(from);
+            out.push(to);
+        }
+        Ok(out)
+    }
+}
+
+/// Winding order of generated faces (Face Topology Requirement 4,
+/// /req/core/topology-winding — box slug `-face-winding` — §7.13.5.5:
+/// "either clockwise or counterclockwise"; the core does not pick one).
+/// Declared on the dataset's resource metadata as the `windingOrder`
+/// conditional element (see the dataset validation added with the
+/// metadata tie-in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindingOrder {
+    /// "clockwise"
+    Clockwise,
+    /// "counterclockwise"
+    Counterclockwise,
+}
+
+impl WindingOrder {
+    /// Both winding orders, in §7.13.5.5's listing order.
+    pub const ALL: [WindingOrder; 2] = [WindingOrder::Clockwise, WindingOrder::Counterclockwise];
+
+    /// The wire spelling used on the `windingOrder` metadata element.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WindingOrder::Clockwise => "clockwise",
+            WindingOrder::Counterclockwise => "counterclockwise",
+        }
+    }
+
+    /// Parses a wire spelling; unknown values violate Face4.
+    pub fn parse(value: &str) -> Result<WindingOrder, TopologyViolation> {
+        WindingOrder::ALL
+            .into_iter()
+            .find(|winding| winding.as_str() == value)
+            .ok_or_else(|| TopologyViolation::UnknownWindingOrder {
+                value: value.to_owned(),
+            })
+    }
+}
+
+/// Serializes as the spec wire string (e.g. "clockwise").
+impl serde::Serialize for WindingOrder {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Deserializes from the spec wire string; unknown values error.
+impl<'de> serde::Deserialize<'de> for WindingOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        WindingOrder::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Displays as the spec wire string.
+impl fmt::Display for WindingOrder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A violation of a SHALL requirement of the topology module (§7.13).
@@ -324,6 +443,7 @@ pub enum TopologyViolation {
 pub struct TopoGraph {
     nodes: BTreeMap<NodeId, TopoNode>,
     edges: BTreeMap<EdgeId, TopoEdge>,
+    faces: BTreeMap<FaceId, TopoFace>,
     /// The directed-node view (Topo4): per node, incident edges marked
     /// [`SignedEdge::Leaving`] ("−") / [`SignedEdge::Entering`] ("+") in
     /// insertion order.
@@ -377,6 +497,64 @@ impl TopoGraph {
         self.next_edge_id = self.next_edge_id.max(edge.id.0.saturating_add(1));
         self.edges.insert(edge.id, edge);
         Ok(())
+    }
+
+    /// Inserts a face (Face Topology Requirements 2 and 3,
+    /// §7.13.5.3/§7.13.5.4): the identifier must be unique, every
+    /// boundary edge must exist, and the directed edges must form a
+    /// chained, closed, non-empty exterior ring — "exterior boundary
+    /// (aka polygon)" entails chaining and closure (meaning-keyed
+    /// reading, module docs).
+    pub fn insert_face(&mut self, face: TopoFace) -> Result<(), TopologyViolation> {
+        if self.faces.contains_key(&face.id) {
+            return Err(TopologyViolation::DuplicateFaceId { id: face.id });
+        }
+        if face.boundary.is_empty() {
+            return Err(TopologyViolation::FaceBoundaryEmpty { face: face.id });
+        }
+        let mut hops = Vec::with_capacity(face.boundary.len());
+        for step in &face.boundary {
+            let edge = self
+                .edges
+                .get(&step.edge)
+                .ok_or(TopologyViolation::UnknownEdgeId { id: step.edge })?;
+            hops.push(step.endpoints(edge));
+        }
+        for (step, pair) in hops.windows(2).enumerate() {
+            let &[(_, to), (from, _)] = pair else {
+                continue;
+            };
+            if to != from {
+                return Err(TopologyViolation::FaceBoundaryNotChained {
+                    face: face.id,
+                    step,
+                });
+            }
+        }
+        match (hops.first(), hops.last()) {
+            (Some(&(first_from, _)), Some(&(_, last_to))) if last_to == first_from => {}
+            (Some(_), Some(_)) => {
+                return Err(TopologyViolation::FaceBoundaryNotClosed { face: face.id });
+            }
+            _ => return Err(TopologyViolation::FaceBoundaryEmpty { face: face.id }),
+        }
+        self.faces.insert(face.id, face);
+        Ok(())
+    }
+
+    /// The face with `id`, if present.
+    pub fn face(&self, id: FaceId) -> Option<&TopoFace> {
+        self.faces.get(&id)
+    }
+
+    /// All faces in ascending id order.
+    pub fn faces(&self) -> impl Iterator<Item = &TopoFace> {
+        self.faces.values()
+    }
+
+    /// Number of faces.
+    pub fn face_count(&self) -> usize {
+        self.faces.len()
     }
 
     /// The node with `id`, if present.
@@ -679,5 +857,223 @@ mod tests {
         );
         let stored = graph.edge(EdgeId(1)).unwrap();
         assert_eq!((stored.start, stored.end), (NodeId(1), NodeId(1)));
+    }
+
+    /// Triangle fixture: nodes 1,2,3 and Forward edges 10:1→2, 11:2→3,
+    /// 12:3→1 — a chained, closed exterior boundary.
+    fn triangle_graph() -> TopoGraph {
+        let mut graph = TopoGraph::new();
+        for id in [1, 2, 3] {
+            graph
+                .insert_node(TopoNode {
+                    id: NodeId(id),
+                    position: None,
+                })
+                .unwrap();
+        }
+        for (id, start, end) in [(10, 1, 2), (11, 2, 3), (12, 3, 1)] {
+            graph
+                .insert_edge(TopoEdge {
+                    id: EdgeId(id),
+                    start: NodeId(start),
+                    end: NodeId(end),
+                    geometry: None,
+                })
+                .unwrap();
+        }
+        graph
+    }
+
+    fn forward(edge: u64) -> DirectedEdge {
+        DirectedEdge {
+            edge: EdgeId(edge),
+            orientation: Orientation::Forward,
+        }
+    }
+
+    /// Face Topology Requirement 2 /req/core/topology-faceID (§7.13.5.3;
+    /// table slug `-faceid`) — face identifiers are unique.
+    #[test]
+    fn req_core_topology_faceid_duplicate_insert_rejected() {
+        let mut graph = triangle_graph();
+        let boundary = vec![forward(10), forward(11), forward(12)];
+        graph
+            .insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: boundary.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            graph.insert_face(TopoFace {
+                id: FaceId(1),
+                boundary
+            }),
+            Err(TopologyViolation::DuplicateFaceId { id: FaceId(1) })
+        );
+        assert_eq!(graph.face_count(), 1);
+    }
+
+    /// Face Topology Requirement 3 /req/core/topology-face-structure
+    /// (§7.13.5.4; the box carries a `/rec/` prefix but is labeled a
+    /// Requirement with SHALL text) and Rec Topology 1
+    /// /rec/core/topology-face (§7.13.4.6, identical text) — a face is a
+    /// list of directed edges whose ISO directed-node list derives per
+    /// step: Forward yields (−start, +end), Reverse yields (+end,
+    /// −start).
+    #[test]
+    fn req_core_topology_face_structure_ring_chains_and_closes() {
+        let mut graph = TopoGraph::new();
+        for id in [1, 2, 3] {
+            graph
+                .insert_node(TopoNode {
+                    id: NodeId(id),
+                    position: None,
+                })
+                .unwrap();
+        }
+        // 10: 1→2 used Forward; 11: 3→2 used Reverse (traverses 2→3);
+        // 12: 3→1 used Forward.
+        for (id, start, end) in [(10, 1, 2), (11, 3, 2), (12, 3, 1)] {
+            graph
+                .insert_edge(TopoEdge {
+                    id: EdgeId(id),
+                    start: NodeId(start),
+                    end: NodeId(end),
+                    geometry: None,
+                })
+                .unwrap();
+        }
+        let face = TopoFace {
+            id: FaceId(1),
+            boundary: vec![
+                forward(10),
+                DirectedEdge {
+                    edge: EdgeId(11),
+                    orientation: Orientation::Reverse,
+                },
+                forward(12),
+            ],
+        };
+        let directed = face.directed_nodes(&graph).unwrap();
+        assert_eq!(
+            directed,
+            vec![
+                DirectedNode {
+                    node: NodeId(1),
+                    sign: NodeSign::Start
+                },
+                DirectedNode {
+                    node: NodeId(2),
+                    sign: NodeSign::End
+                },
+                DirectedNode {
+                    node: NodeId(2),
+                    sign: NodeSign::End
+                },
+                DirectedNode {
+                    node: NodeId(3),
+                    sign: NodeSign::Start
+                },
+                DirectedNode {
+                    node: NodeId(3),
+                    sign: NodeSign::Start
+                },
+                DirectedNode {
+                    node: NodeId(1),
+                    sign: NodeSign::End
+                },
+            ]
+        );
+        graph.insert_face(face).unwrap();
+        assert_eq!(graph.face_count(), 1);
+    }
+
+    /// Face Topology Requirement 3 (§7.13.5.4) — "exterior boundary (aka
+    /// polygon)" entails a chained, closed, non-empty ring (meaning-keyed
+    /// module doc note): violations are rejected at insert.
+    #[test]
+    fn req_core_topology_face_structure_rejects_broken_rings() {
+        let mut graph = triangle_graph();
+        assert_eq!(
+            graph.insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: Vec::new()
+            }),
+            Err(TopologyViolation::FaceBoundaryEmpty { face: FaceId(1) })
+        );
+        // Steps out of order: 1→2 then 3→1 does not chain at step 0.
+        assert_eq!(
+            graph.insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: vec![forward(10), forward(12), forward(11)],
+            }),
+            Err(TopologyViolation::FaceBoundaryNotChained {
+                face: FaceId(1),
+                step: 0
+            })
+        );
+        // A chained open path: 1→2→3 does not close back to 1.
+        assert_eq!(
+            graph.insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: vec![forward(10), forward(11)],
+            }),
+            Err(TopologyViolation::FaceBoundaryNotClosed { face: FaceId(1) })
+        );
+        assert_eq!(graph.face_count(), 0);
+    }
+
+    /// Face Topology Requirement 3 (§7.13.5.4) — a boundary step
+    /// referencing an edge absent from the graph is rejected, both at
+    /// insert and in the derived directed-node list.
+    #[test]
+    fn req_core_topology_face_structure_rejects_unknown_edge() {
+        let mut graph = triangle_graph();
+        assert_eq!(
+            graph.insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: vec![forward(10), forward(11), forward(99)],
+            }),
+            Err(TopologyViolation::UnknownEdgeId { id: EdgeId(99) })
+        );
+        let face = TopoFace {
+            id: FaceId(2),
+            boundary: vec![forward(99)],
+        };
+        assert!(matches!(
+            face.directed_nodes(&graph),
+            Err(TopologyViolation::UnknownEdgeId { id: EdgeId(99) })
+        ));
+    }
+
+    /// Face Topology Requirement 4 /req/core/topology-winding (class
+    /// table; the box says /rec/core/topology-face-winding — draft
+    /// quirk), §7.13.5.5 — winding order is clockwise or
+    /// counterclockwise with exact wire spellings; unknown values are
+    /// violations.
+    #[test]
+    fn req_core_topology_face_winding_wire_spellings() {
+        let expected = [
+            (WindingOrder::Clockwise, "clockwise"),
+            (WindingOrder::Counterclockwise, "counterclockwise"),
+        ];
+        assert_eq!(WindingOrder::ALL.len(), expected.len());
+        for (variant, wire) in expected {
+            assert_eq!(variant.as_str(), wire);
+            assert_eq!(variant.to_string(), wire);
+            assert_eq!(WindingOrder::parse(wire), Ok(variant));
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("{wire:?}"));
+            assert_eq!(
+                serde_json::from_str::<WindingOrder>(&json).unwrap(),
+                variant
+            );
+        }
+        assert_eq!(
+            WindingOrder::parse("widdershins"),
+            Err(TopologyViolation::UnknownWindingOrder {
+                value: "widdershins".to_owned(),
+            })
+        );
     }
 }
