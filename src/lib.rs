@@ -35,6 +35,7 @@ pub mod metadata;
 pub mod naming;
 pub mod profiles;
 pub mod tiling;
+pub mod topology;
 
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
@@ -50,4 +51,8 @@ pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
 pub use tiling::{
     Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress, GnosisGlobalGrid, GnosisLevel, GnosisTileAddress,
     TilingScheme, TilingSchemeId, TilingViolation, TilingWarning, validate_tileset_metadata,
+};
+pub use topology::{
+    DirectedEdge, DirectedNode, EdgeId, FaceId, NodeId, NodeSign, Orientation, SignedEdge,
+    TopoEdge, TopoFace, TopoNode, TopologyViolation,
 };

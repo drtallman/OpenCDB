@@ -10,6 +10,7 @@ use crate::links::LinkViolation;
 use crate::metadata::MetadataError;
 use crate::naming::NamingViolation;
 use crate::tiling::TilingViolation;
+use crate::topology::TopologyViolation;
 
 /// Top-level error for the `rusty_cdb` API.
 #[derive(Debug, Error)]
@@ -39,4 +40,7 @@ pub enum CdbError {
     /// A tiling requirements violation (/req/core/tiling-*, §7.10–§7.11).
     #[error(transparent)]
     Tiling(#[from] TilingViolation),
+    /// A topology requirements violation (/req/core/topology-*, §7.13).
+    #[error(transparent)]
+    Topology(#[from] TopologyViolation),
 }
