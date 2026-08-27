@@ -53,7 +53,7 @@ pub use tiling::{
     TilingScheme, TilingSchemeId, TilingViolation, TilingWarning, validate_tileset_metadata,
 };
 pub use topology::{
-    DirectedEdge, DirectedNode, EdgeId, FaceId, NodeId, NodeSign, Orientation, SignedEdge,
-    TopoEdge, TopoFace, TopoGraph, TopoNode, TopologyViolation, WindingOrder,
+    DirectedEdge, DirectedNode, EdgeClipOutcome, EdgeId, FaceId, NodeId, NodeSign, Orientation,
+    SignedEdge, TopoEdge, TopoFace, TopoGraph, TopoNode, TopologyViolation, WindingOrder,
     validate_topology_dataset,
 };

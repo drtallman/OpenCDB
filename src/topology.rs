@@ -43,9 +43,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use geo::Intersects;
+use geo_types::{Coord, Rect, coord};
 use thiserror::Error;
 
-use crate::metadata::{MetadataViolation, ResourceMetadata};
+use crate::metadata::{Bbox, MetadataViolation, ResourceMetadata};
 
 /// Unique node identifier (Requirement Topo2,
 /// /req/core/topology-nodeID, §7.13.4.2; the class table spells the slug
@@ -431,13 +433,167 @@ pub enum TopologyViolation {
     Metadata(#[from] MetadataViolation),
 }
 
+/// What [`TopoGraph::clip_edge_to_tile`] did (Requirement Topo6,
+/// §7.13.4.7). Part edge IDs appear in traversal order; `clip_nodes`
+/// holds one minted node per boundary crossing, also in traversal
+/// order. When `clip_nodes` is empty the edge did not cross the
+/// boundary and is untouched, reported whole in the matching bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeClipOutcome {
+    /// Parts inside the closed tile extent.
+    pub inside: Vec<EdgeId>,
+    /// Parts outside the tile extent.
+    pub outside: Vec<EdgeId>,
+    /// The artificial (virtual) nodes minted at boundary crossings.
+    pub clip_nodes: Vec<NodeId>,
+}
+
+/// An alternating containment run of the clip walk: `(inside?, coords)`.
+type Run = (bool, Vec<Coord<f64>>);
+
+/// The tile extent as a closed `geo` rectangle. `Rect::new` normalizes
+/// min/max; the extent was already validated `west < east && south <
+/// north`. `Rect: Intersects<Coord>` is exactly closed containment
+/// (`>= min && <= max`), the semantics Topo6's touch/crossing
+/// distinction is built on.
+fn tile_rect(tile: &Bbox) -> Rect<f64> {
+    Rect::new(
+        coord! { x: tile.west, y: tile.south },
+        coord! { x: tile.east, y: tile.north },
+    )
+}
+
+/// Appends `c` unless the run already ends with it — crossings that
+/// coincide with polyline vertices would otherwise duplicate
+/// coordinates.
+fn push_coord(run: &mut Vec<Coord<f64>>, c: Coord<f64>) {
+    if run.last() != Some(&c) {
+        run.push(c);
+    }
+}
+
+/// The Liang–Barsky slab interval of segment a→b against the closed
+/// tile: parameters `enter ≤ exit` (relative to [0, 1]) plus which
+/// boundary coordinate is pinned at each end (both at a corner). `None`
+/// when the segment misses the tile entirely.
+struct SlabHit {
+    enter: f64,
+    exit: f64,
+    enter_x_pin: Option<f64>,
+    enter_y_pin: Option<f64>,
+    exit_x_pin: Option<f64>,
+    exit_y_pin: Option<f64>,
+}
+
+fn slab_interval(tile: &Bbox, a: Coord<f64>, b: Coord<f64>) -> Option<SlabHit> {
+    let mut hit = SlabHit {
+        enter: 0.0,
+        exit: 1.0,
+        enter_x_pin: None,
+        enter_y_pin: None,
+        exit_x_pin: None,
+        exit_y_pin: None,
+    };
+    let dx = b.x - a.x;
+    if dx == 0.0 {
+        if a.x < tile.west || a.x > tile.east {
+            return None;
+        }
+    } else {
+        let (t_near, near_pin, t_far, far_pin) = if dx > 0.0 {
+            (
+                (tile.west - a.x) / dx,
+                tile.west,
+                (tile.east - a.x) / dx,
+                tile.east,
+            )
+        } else {
+            (
+                (tile.east - a.x) / dx,
+                tile.east,
+                (tile.west - a.x) / dx,
+                tile.west,
+            )
+        };
+        if t_near > hit.enter {
+            hit.enter = t_near;
+            hit.enter_x_pin = Some(near_pin);
+            hit.enter_y_pin = None;
+        } else if t_near == hit.enter {
+            hit.enter_x_pin = Some(near_pin);
+        }
+        if t_far < hit.exit {
+            hit.exit = t_far;
+            hit.exit_x_pin = Some(far_pin);
+            hit.exit_y_pin = None;
+        } else if t_far == hit.exit {
+            hit.exit_x_pin = Some(far_pin);
+        }
+    }
+    let dy = b.y - a.y;
+    if dy == 0.0 {
+        if a.y < tile.south || a.y > tile.north {
+            return None;
+        }
+    } else {
+        let (t_near, near_pin, t_far, far_pin) = if dy > 0.0 {
+            (
+                (tile.south - a.y) / dy,
+                tile.south,
+                (tile.north - a.y) / dy,
+                tile.north,
+            )
+        } else {
+            (
+                (tile.north - a.y) / dy,
+                tile.north,
+                (tile.south - a.y) / dy,
+                tile.south,
+            )
+        };
+        if t_near > hit.enter {
+            hit.enter = t_near;
+            hit.enter_y_pin = Some(near_pin);
+            hit.enter_x_pin = None;
+        } else if t_near == hit.enter {
+            hit.enter_y_pin = Some(near_pin);
+        }
+        if t_far < hit.exit {
+            hit.exit = t_far;
+            hit.exit_y_pin = Some(far_pin);
+            hit.exit_x_pin = None;
+        } else if t_far == hit.exit {
+            hit.exit_y_pin = Some(far_pin);
+        }
+    }
+    (hit.enter <= hit.exit).then_some(hit)
+}
+
+/// The crossing coordinate at parameter `t` along a→b, with any pinned
+/// boundary coordinate substituted *exactly* — the property Requirement
+/// Topo6's shared-identifier rule turns on: both grids' tile extents are
+/// dyadic rationals, adjacent tiles agree on the shared boundary
+/// bitwise, and pinning reproduces that exact value in the minted node.
+fn point_at(
+    a: Coord<f64>,
+    b: Coord<f64>,
+    t: f64,
+    x_pin: Option<f64>,
+    y_pin: Option<f64>,
+) -> Coord<f64> {
+    Coord {
+        x: x_pin.unwrap_or(a.x + t * (b.x - a.x)),
+        y: y_pin.unwrap_or(a.y + t * (b.y - a.y)),
+    }
+}
+
 /// A topologically structured vector dataset: the edge-node(-face) graph
 /// of §7.13.1, enforcing the module's SHALLs at insert time — duplicate
 /// identifiers are unrepresentable (Topo2/Topo3/Face2), every edge's
 /// endpoints must exist (Topo5), and the signed directed-node adjacency
 /// (Topo4) is maintained by the graph itself, so a wrong sign cannot be
-/// constructed. The only mutations are the `insert_*` methods and the
-/// Topo6 clip operation; there is no public delete API.
+/// constructed. The only mutations are the `insert_*` methods and
+/// [`TopoGraph::clip_edge_to_tile`]; there is no public delete API.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TopoGraph {
     nodes: BTreeMap<NodeId, TopoNode>,
@@ -592,6 +748,268 @@ impl TopoGraph {
     /// Number of edges.
     pub fn edge_count(&self) -> usize {
         self.edges.len()
+    }
+
+    /// Derives the polyline the clip operates on: the edge's own
+    /// geometry, else the straight segment between its endpoint node
+    /// positions (§7.13.1's "connected with no geometry" case). Where
+    /// geometry and node positions both exist they must agree
+    /// bit-exactly at the endpoints — this module's own minting keeps
+    /// them exact, so a mismatch means detached data no clip can split
+    /// coherently.
+    fn edge_polyline(&self, edge: &TopoEdge) -> Result<Vec<Coord<f64>>, TopologyViolation> {
+        let start_position = self.nodes.get(&edge.start).and_then(|node| node.position);
+        let end_position = self.nodes.get(&edge.end).and_then(|node| node.position);
+        match &edge.geometry {
+            Some(line) => {
+                let coords: Vec<Coord<f64>> = line.coords().copied().collect();
+                let (Some(&first), Some(&last)) = (coords.first(), coords.last()) else {
+                    return Err(TopologyViolation::EdgeHasNoGeometry { id: edge.id });
+                };
+                if coords.len() < 2 {
+                    return Err(TopologyViolation::EdgeHasNoGeometry { id: edge.id });
+                }
+                if let Some(position) = start_position
+                    && (position.x(), position.y()) != (first.x, first.y)
+                {
+                    return Err(TopologyViolation::EdgeGeometryEndpointMismatch { id: edge.id });
+                }
+                if let Some(position) = end_position
+                    && (position.x(), position.y()) != (last.x, last.y)
+                {
+                    return Err(TopologyViolation::EdgeGeometryEndpointMismatch { id: edge.id });
+                }
+                Ok(coords)
+            }
+            None => match (start_position, end_position) {
+                (Some(start), Some(end)) => Ok(vec![
+                    Coord {
+                        x: start.x(),
+                        y: start.y(),
+                    },
+                    Coord {
+                        x: end.x(),
+                        y: end.y(),
+                    },
+                ]),
+                _ => Err(TopologyViolation::EdgeHasNoGeometry { id: edge.id }),
+            },
+        }
+    }
+
+    /// Clips `edge_id` against a tile extent (Requirement Topo6,
+    /// /req/core/topology-clip — the class table's slug is `-edge-clip`
+    /// — §7.13.4.7).
+    ///
+    /// Containment is *closed* (boundary points are inside), so an
+    /// endpoint or vertex exactly on a boundary or corner is a touch,
+    /// not a crossing, and a run collinear along the boundary stays
+    /// inside — the §7.13.4.7 NOTE's corner cases, decided here and
+    /// tested. Each inside↔outside transition mints one artificial node
+    /// whose crossing has the boundary coordinate pinned exactly; the
+    /// edge is replaced by its parts (fresh IDs, sub-polylines chaining
+    /// original start → clip nodes → original end), keeping Topo5 for
+    /// every part and updating Topo4 adjacency. Because both shipped
+    /// grids' extents are dyadic and adjacent tiles agree bitwise on the
+    /// shared boundary, the minted node lies on the neighbour tile's
+    /// closed boundary too: clipping the outside parts there mints
+    /// nothing new — one NodeId shared by both tiles, answering the
+    /// NOTE's precision concern.
+    ///
+    /// No crossing → the graph is untouched and the outcome reports the
+    /// edge whole in its bucket. Errors (all pre-mutation): unknown
+    /// edge; [`TopologyViolation::EdgeInFace`] (§7.13.4.7 clips *edges*
+    /// only); [`TopologyViolation::EdgeHasNoGeometry`],
+    /// [`TopologyViolation::EdgeGeometryEndpointMismatch`],
+    /// [`TopologyViolation::InvalidClipExtent`] (operational
+    /// preconditions).
+    pub fn clip_edge_to_tile(
+        &mut self,
+        edge_id: EdgeId,
+        tile: Bbox,
+    ) -> Result<EdgeClipOutcome, TopologyViolation> {
+        if !(tile.west < tile.east && tile.south < tile.north) {
+            return Err(TopologyViolation::InvalidClipExtent {
+                west: tile.west,
+                south: tile.south,
+                east: tile.east,
+                north: tile.north,
+            });
+        }
+        let edge = self
+            .edges
+            .get(&edge_id)
+            .ok_or(TopologyViolation::UnknownEdgeId { id: edge_id })?;
+        if let Some(face) = self
+            .faces
+            .values()
+            .find(|face| face.boundary.iter().any(|step| step.edge == edge_id))
+        {
+            return Err(TopologyViolation::EdgeInFace {
+                edge: edge_id,
+                face: face.id,
+            });
+        }
+        let (orig_start, orig_end) = (edge.start, edge.end);
+        let pts = self.edge_polyline(edge)?;
+
+        let rect = tile_rect(&tile);
+        let Some(&first_pt) = pts.first() else {
+            return Err(TopologyViolation::EdgeHasNoGeometry { id: edge_id });
+        };
+        let mut state = rect.intersects(&first_pt);
+        let mut runs: Vec<Run> = Vec::new();
+        let mut crossings: Vec<Coord<f64>> = Vec::new();
+        let mut current = vec![first_pt];
+        for pair in pts.windows(2) {
+            let &[a, b] = pair else { continue };
+            let a_in = rect.intersects(&a);
+            let b_in = rect.intersects(&b);
+            debug_assert_eq!(a_in, state, "walk state desynced from containment");
+            match (a_in, b_in) {
+                (true, true) => push_coord(&mut current, b),
+                (true, false) => {
+                    // a lies in the closed box, so the segment exits at
+                    // the interval's far end (t = 0 when a is already on
+                    // the boundary). The total fallback cannot fire but
+                    // keeps the arithmetic panic-free.
+                    let c = match slab_interval(&tile, a, b) {
+                        Some(hit) => point_at(a, b, hit.exit, hit.exit_x_pin, hit.exit_y_pin),
+                        None => a,
+                    };
+                    push_coord(&mut current, c);
+                    runs.push((true, std::mem::take(&mut current)));
+                    crossings.push(c);
+                    push_coord(&mut current, c);
+                    push_coord(&mut current, b);
+                    state = false;
+                }
+                (false, true) => {
+                    let c = match slab_interval(&tile, a, b) {
+                        Some(hit) => point_at(a, b, hit.enter, hit.enter_x_pin, hit.enter_y_pin),
+                        None => b,
+                    };
+                    push_coord(&mut current, c);
+                    runs.push((false, std::mem::take(&mut current)));
+                    crossings.push(c);
+                    push_coord(&mut current, c);
+                    push_coord(&mut current, b);
+                    state = true;
+                }
+                (false, false) => {
+                    let through = slab_interval(&tile, a, b).and_then(|hit| {
+                        if hit.enter < hit.exit {
+                            let enter = point_at(a, b, hit.enter, hit.enter_x_pin, hit.enter_y_pin);
+                            let exit = point_at(a, b, hit.exit, hit.exit_x_pin, hit.exit_y_pin);
+                            (enter != exit).then_some((enter, exit))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((enter, exit)) = through {
+                        push_coord(&mut current, enter);
+                        runs.push((false, std::mem::take(&mut current)));
+                        crossings.push(enter);
+                        runs.push((true, vec![enter, exit]));
+                        crossings.push(exit);
+                        push_coord(&mut current, exit);
+                        push_coord(&mut current, b);
+                    } else {
+                        // Miss, or a single-point graze of the boundary:
+                        // a touch is not a crossing.
+                        push_coord(&mut current, b);
+                    }
+                }
+            }
+        }
+        runs.push((state, current));
+
+        // Touches are not crossings: a run holding fewer than two
+        // coordinates is a boundary touch (the polyline starts or ends
+        // on the boundary, or an outside polyline meets it at exactly
+        // one vertex). Drop it, cancel its crossings, and merge its
+        // equal-state neighbours.
+        while let Some(pos) = runs.iter().position(|(_, coords)| coords.len() < 2) {
+            runs.remove(pos);
+            if pos == 0 {
+                if !crossings.is_empty() {
+                    crossings.remove(0);
+                }
+            } else if pos == runs.len() {
+                crossings.pop();
+            } else {
+                crossings.remove(pos);
+                crossings.remove(pos - 1);
+                let (right_state, right_coords) = runs.remove(pos);
+                if let Some((left_state, left_coords)) = runs.get_mut(pos - 1) {
+                    debug_assert_eq!(
+                        *left_state, right_state,
+                        "merged neighbours must share containment state"
+                    );
+                    for coord in right_coords {
+                        push_coord(left_coords, coord);
+                    }
+                }
+            }
+        }
+        debug_assert_eq!(crossings.len(), runs.len().saturating_sub(1));
+
+        if runs.len() < 2 {
+            let inside = runs
+                .first()
+                .map(|(state, _)| *state)
+                .unwrap_or_else(|| rect.intersects(&first_pt));
+            return Ok(EdgeClipOutcome {
+                inside: if inside { vec![edge_id] } else { Vec::new() },
+                outside: if inside { Vec::new() } else { vec![edge_id] },
+                clip_nodes: Vec::new(),
+            });
+        }
+
+        // Replace the edge with its parts. Minted identifiers are fresh
+        // by construction (monotone counters), so these inserts cannot
+        // fail; `?` keeps the flow total without unwrap.
+        self.edges.remove(&edge_id);
+        for endpoint in [orig_start, orig_end] {
+            if let Some(adjacent) = self.adjacency.get_mut(&endpoint) {
+                adjacent.retain(|signed| signed.edge() != edge_id);
+            }
+        }
+        let mut clip_nodes = Vec::with_capacity(crossings.len());
+        for crossing in &crossings {
+            let id = NodeId(self.next_node_id);
+            self.insert_node(TopoNode {
+                id,
+                position: Some(geo_types::Point::new(crossing.x, crossing.y)),
+            })?;
+            clip_nodes.push(id);
+        }
+        let mut junctions = Vec::with_capacity(runs.len() + 1);
+        junctions.push(orig_start);
+        junctions.extend(clip_nodes.iter().copied());
+        junctions.push(orig_end);
+        let mut inside = Vec::new();
+        let mut outside = Vec::new();
+        for ((run_inside, coords), pair) in runs.into_iter().zip(junctions.windows(2)) {
+            let &[start, end] = pair else { continue };
+            let id = EdgeId(self.next_edge_id);
+            self.insert_edge(TopoEdge {
+                id,
+                start,
+                end,
+                geometry: Some(geo_types::LineString::from(coords)),
+            })?;
+            if run_inside {
+                inside.push(id);
+            } else {
+                outside.push(id);
+            }
+        }
+        Ok(EdgeClipOutcome {
+            inside,
+            outside,
+            clip_nodes,
+        })
     }
 }
 
@@ -1133,5 +1551,269 @@ mod tests {
             validate_topology_dataset(&graph, &invalid),
             Err(TopologyViolation::Metadata(_))
         ));
+    }
+
+    /// Requirement Topo6 /req/core/topology-clip (§7.13.4.7; the class
+    /// table's slug is `-edge-clip`) — an edge crossing a CDB1 tile
+    /// boundary is clipped and the minted node is shared: one NodeId, on
+    /// the boundary bit-exactly, referenced by the inside and outside
+    /// parts; clipping the outside part against the adjacent tile mints
+    /// nothing new because adjacent extents agree bitwise (dyadic
+    /// boundaries).
+    #[test]
+    fn req_core_topology_clip_two_tile_edge_shares_one_clip_node() {
+        use crate::tiling::{Cdb1GlobalGrid, Cdb1Lod};
+
+        let lod = Cdb1Lod::new(0).unwrap();
+        let tile_a = Cdb1GlobalGrid::tile_extent(Cdb1GlobalGrid::address(lod, 89, 180).unwrap());
+        let tile_b = Cdb1GlobalGrid::tile_extent(Cdb1GlobalGrid::address(lod, 89, 181).unwrap());
+        assert_eq!(
+            (tile_a.west, tile_a.south, tile_a.east, tile_a.north),
+            (0.0, 0.0, 1.0, 1.0)
+        );
+        assert_eq!(
+            tile_a.east, tile_b.west,
+            "adjacent CDB1 extents agree bitwise"
+        );
+
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(0.25, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.75, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile_a).unwrap();
+        assert_eq!(outcome.inside.len(), 1);
+        assert_eq!(outcome.outside.len(), 1);
+        assert_eq!(outcome.clip_nodes.len(), 1);
+        assert!(
+            graph.edge(EdgeId(1)).is_none(),
+            "the crossing edge is replaced by its parts"
+        );
+
+        let clip = outcome.clip_nodes[0];
+        let position = graph.node(clip).unwrap().position.unwrap();
+        assert_eq!(
+            position.x(),
+            tile_a.east,
+            "boundary coordinate pinned bit-exactly"
+        );
+        assert_eq!(position.x(), tile_b.west);
+        assert_eq!(position.y(), 0.5);
+
+        // Requirement Topo5: every part is a directed edge chaining the
+        // original nodes through the shared clip node ("artificial
+        // (virtual) nodes generated by processes that clip edges").
+        let inside = graph.edge(outcome.inside[0]).unwrap();
+        let outside = graph.edge(outcome.outside[0]).unwrap();
+        assert_eq!((inside.start, inside.end), (NodeId(1), clip));
+        assert_eq!((outside.start, outside.end), (clip, NodeId(2)));
+        // Requirement Topo4: the shared node's directed view sees both.
+        assert_eq!(
+            graph.directed_edges(clip),
+            [
+                SignedEdge::Entering(outcome.inside[0]),
+                SignedEdge::Leaving(outcome.outside[0])
+            ]
+        );
+
+        // The outside part lies in tile B; its west boundary passes
+        // through the shared node, so a second clip mints nothing.
+        let second = graph.clip_edge_to_tile(outcome.outside[0], tile_b).unwrap();
+        assert_eq!(second.clip_nodes, Vec::<NodeId>::new());
+        assert_eq!(second.inside, vec![outcome.outside[0]]);
+        assert!(second.outside.is_empty());
+        assert_eq!(graph.node(clip).unwrap().position.unwrap().x(), tile_b.west);
+    }
+
+    /// Requirement Topo6 (§7.13.4.7) — only a crossing edge is clipped:
+    /// a fully-inside or fully-outside edge is untouched and reported
+    /// whole in its bucket.
+    #[test]
+    fn req_core_topology_clip_non_crossing_edge_untouched() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        for (id, x, y) in [(1, 0.2, 0.2), (2, 0.8, 0.9), (3, 2.0, 2.0), (4, 3.0, 2.5)] {
+            graph
+                .insert_node(TopoNode {
+                    id: NodeId(id),
+                    position: Some(geo_types::Point::new(x, y)),
+                })
+                .unwrap();
+        }
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(2),
+                start: NodeId(3),
+                end: NodeId(4),
+                geometry: None,
+            })
+            .unwrap();
+
+        let inside = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            inside,
+            EdgeClipOutcome {
+                inside: vec![EdgeId(1)],
+                outside: Vec::new(),
+                clip_nodes: Vec::new(),
+            }
+        );
+        let outside = graph.clip_edge_to_tile(EdgeId(2), tile).unwrap();
+        assert_eq!(
+            outside,
+            EdgeClipOutcome {
+                inside: Vec::new(),
+                outside: vec![EdgeId(2)],
+                clip_nodes: Vec::new(),
+            }
+        );
+        assert_eq!(
+            graph.edge_count(),
+            2,
+            "no-crossing clips leave the graph untouched"
+        );
+    }
+
+    /// Requirement Topo6 (§7.13.4.7) preconditions — no derivable
+    /// polyline, detached geometry, an unknown edge, and a degenerate
+    /// extent are rejected before any mutation.
+    #[test]
+    fn req_core_topology_clip_preconditions_rejected() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: None,
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(0.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(1), tile),
+            Err(TopologyViolation::EdgeHasNoGeometry { id: EdgeId(1) })
+        );
+
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(3),
+                position: Some(geo_types::Point::new(0.3, 0.5)),
+            })
+            .unwrap();
+        let detached = geo_types::LineString::from(vec![(0.4, 0.5), (1.5, 0.5)]);
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(2),
+                start: NodeId(3),
+                end: NodeId(2),
+                geometry: Some(detached),
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(2), tile),
+            Err(TopologyViolation::EdgeGeometryEndpointMismatch { id: EdgeId(2) })
+        );
+
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(99), tile),
+            Err(TopologyViolation::UnknownEdgeId { id: EdgeId(99) })
+        );
+
+        let degenerate = Bbox {
+            west: 10.0,
+            south: 0.0,
+            east: -10.0,
+            north: 1.0,
+        };
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(2), degenerate),
+            Err(TopologyViolation::InvalidClipExtent {
+                west: 10.0,
+                south: 0.0,
+                east: -10.0,
+                north: 1.0,
+            })
+        );
+        assert_eq!(
+            graph.edge_count(),
+            2,
+            "failed clips leave the graph untouched"
+        );
+    }
+
+    /// Requirement Topo6 (§7.13.4.7) is titled "Clipping edges" — an
+    /// edge bounding a face is refused (face/polygon clipping is a
+    /// profile concern; silently invalidating a face is unacceptable).
+    #[test]
+    fn req_core_topology_clip_edge_bounding_a_face_rejected() {
+        let mut graph = triangle_graph();
+        graph
+            .insert_face(TopoFace {
+                id: FaceId(4),
+                boundary: vec![forward(10), forward(11), forward(12)],
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(
+                EdgeId(10),
+                Bbox {
+                    west: 0.0,
+                    south: 0.0,
+                    east: 1.0,
+                    north: 1.0
+                }
+            ),
+            Err(TopologyViolation::EdgeInFace {
+                edge: EdgeId(10),
+                face: FaceId(4)
+            })
+        );
     }
 }
