@@ -24,6 +24,7 @@ use crate::hierarchy::{DatastoreLayout, GLOBAL_METADATA_DIR};
 use crate::links::{Link, LinkViolation};
 use crate::media_types::MediaType;
 use crate::tiling::TilingScheme;
+use crate::topology::WindingOrder;
 
 pub use temporal::Temporal;
 
@@ -718,6 +719,17 @@ pub struct ResourceMetadata {
     /// (/req/core/coverage-domainSet, §7.2.6); wire name `domainSet`.
     #[serde(rename = "domainSet", default, skip_serializing_if = "Option::is_none")]
     pub domain_set: Option<DomainSet>,
+    /// Winding order of the dataset's generated faces — the conditional
+    /// element introduced by Face Topology Requirement 4
+    /// (/req/core/topology-winding; the box's slug is `-face-winding`,
+    /// §7.13.5.5); wire name `windingOrder`. Fourth use of the §7.9.4.2
+    /// conditional-element mechanism.
+    #[serde(
+        rename = "windingOrder",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub winding_order: Option<WindingOrder>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Extent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -754,6 +766,7 @@ impl ResourceMetadata {
             rights: None,
             uom: None,
             domain_set: None,
+            winding_order: None,
             extent: None,
             associations: Vec::new(),
             character_set: CharacterSet::Utf8,
@@ -1255,6 +1268,35 @@ mod tests {
         let xml = record.to_xml_string().unwrap();
         let back = ResourceMetadata::from_xml_str(&xml).unwrap();
         assert_eq!(back.domain_set, Some(ds));
+    }
+
+    /// §7.13.5.5 Face Topology Requirement 4 + §7.9.4.2 — a
+    /// topologically structured dataset's winding order rides on its
+    /// resource metadata record (the conditional element the topology
+    /// module introduces; fourth use of the §7.9.4.2 mechanism).
+    #[test]
+    fn req_core_topology_winding_resource_roundtrip() {
+        use crate::topology::WindingOrder;
+
+        let mut record =
+            ResourceMetadata::new("Roads", "Road Topology", "Topologically structured roads");
+        assert_eq!(record.winding_order, None);
+        let json = record.to_json_string().unwrap();
+        assert!(
+            !json.contains("windingOrder"),
+            "absent windingOrder must not serialize: {json}"
+        );
+
+        record.winding_order = Some(WindingOrder::Clockwise);
+        let json = record.to_json_string().unwrap();
+        assert!(json.contains("\"windingOrder\""), "wire name: {json}");
+        assert!(json.contains("clockwise"));
+        let back = ResourceMetadata::from_json_str(&json).unwrap();
+        assert_eq!(back.winding_order, Some(WindingOrder::Clockwise));
+
+        let xml = record.to_xml_string().unwrap();
+        let back = ResourceMetadata::from_xml_str(&xml).unwrap();
+        assert_eq!(back.winding_order, Some(WindingOrder::Clockwise));
     }
 
     /// §7.10.2.5 Requirement Tiling8 /req/core/tiling-tilingscheme-definition

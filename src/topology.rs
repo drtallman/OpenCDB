@@ -45,7 +45,7 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::metadata::MetadataViolation;
+use crate::metadata::{MetadataViolation, ResourceMetadata};
 
 /// Unique node identifier (Requirement Topo2,
 /// /req/core/topology-nodeID, §7.13.4.2; the class table spells the slug
@@ -269,8 +269,7 @@ impl TopoFace {
 /// /req/core/topology-winding — box slug `-face-winding` — §7.13.5.5:
 /// "either clockwise or counterclockwise"; the core does not pick one).
 /// Declared on the dataset's resource metadata as the `windingOrder`
-/// conditional element (see the dataset validation added with the
-/// metadata tie-in).
+/// conditional element; see [`validate_topology_dataset`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindingOrder {
     /// "clockwise"
@@ -594,6 +593,28 @@ impl TopoGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
+}
+
+/// Validates a topologically structured dataset against its resource
+/// metadata record.
+///
+/// 1. The record is validated by its own module (delegated through
+///    [`TopologyViolation::Metadata`], the same shape as
+///    [`crate::coverage::validate_coverage_instance`]).
+/// 2. Face Topology Requirement 4 (/req/core/topology-winding; box slug
+///    `-face-winding`, §7.13.5.5): once the graph contains faces, the
+///    record SHALL declare a `windingOrder`, else
+///    [`TopologyViolation::WindingOrderUndeclared`]. A declared winding
+///    with no faces is harmless; a face-less graph needs none.
+pub fn validate_topology_dataset(
+    graph: &TopoGraph,
+    record: &ResourceMetadata,
+) -> Result<(), TopologyViolation> {
+    record.validate()?;
+    if graph.face_count() > 0 && record.winding_order.is_none() {
+        return Err(TopologyViolation::WindingOrderUndeclared);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1075,5 +1096,42 @@ mod tests {
                 value: "widdershins".to_owned(),
             })
         );
+    }
+
+    /// Face Topology Requirement 4 (§7.13.5.5) — winding order SHALL be
+    /// documented in the metadata for the topologically structured
+    /// dataset: a graph with faces requires `windingOrder` on its
+    /// resource record; declared winding or a face-less graph passes;
+    /// the record's own metadata validation is delegated.
+    #[test]
+    fn req_core_topology_face_winding_required_when_faces_exist() {
+        use crate::metadata::ResourceMetadata;
+
+        let mut graph = triangle_graph();
+        graph
+            .insert_face(TopoFace {
+                id: FaceId(1),
+                boundary: vec![forward(10), forward(11), forward(12)],
+            })
+            .unwrap();
+        let mut record =
+            ResourceMetadata::new("Roads", "Road Topology", "Topologically structured roads");
+        assert_eq!(
+            validate_topology_dataset(&graph, &record),
+            Err(TopologyViolation::WindingOrderUndeclared)
+        );
+        record.winding_order = Some(WindingOrder::Counterclockwise);
+        assert_eq!(validate_topology_dataset(&graph, &record), Ok(()));
+
+        let faceless = triangle_graph();
+        let plain = ResourceMetadata::new("Rails", "Rail Topology", "Edge-node graph only");
+        assert_eq!(validate_topology_dataset(&faceless, &plain), Ok(()));
+
+        let mut invalid = ResourceMetadata::new("", "T", "D");
+        invalid.winding_order = Some(WindingOrder::Clockwise);
+        assert!(matches!(
+            validate_topology_dataset(&graph, &invalid),
+            Err(TopologyViolation::Metadata(_))
+        ));
     }
 }
