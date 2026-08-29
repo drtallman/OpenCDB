@@ -1816,4 +1816,351 @@ mod tests {
             })
         );
     }
+
+    /// §7.13.4.7 NOTE ("an edge that ends right at the corner of a
+    /// tile") — closed containment: an endpoint exactly on the tile
+    /// corner or boundary is a touch, not a crossing; nothing is minted
+    /// on either side of the boundary.
+    #[test]
+    fn req_core_topology_clip_endpoint_corner_touch_is_not_a_crossing() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        // Inside edge ending exactly at the (1, 1) corner.
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(0.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.0, 1.0)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: vec![EdgeId(1)],
+                outside: Vec::new(),
+                clip_nodes: Vec::new(),
+            }
+        );
+        // Edge starting exactly on the east boundary and leaving: the
+        // boundary point is the original node, so nothing is minted and
+        // the edge is whole in the outside bucket.
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(3),
+                position: Some(geo_types::Point::new(1.0, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(4),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(2),
+                start: NodeId(3),
+                end: NodeId(4),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(2), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: Vec::new(),
+                outside: vec![EdgeId(2)],
+                clip_nodes: Vec::new(),
+            }
+        );
+    }
+
+    /// §7.13.4.7 NOTE — a segment passing exactly through the tile
+    /// corner from outside to outside grazes the closed boundary at one
+    /// point: a touch, not a crossing.
+    #[test]
+    fn req_core_topology_clip_outside_graze_through_corner_mints_nothing() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(0.5, 1.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: Vec::new(),
+                outside: vec![EdgeId(1)],
+                clip_nodes: Vec::new(),
+            }
+        );
+    }
+
+    /// §7.13.4.7 — a polyline crossing the boundary exactly through one
+    /// of its interior vertices mints the clip node at that vertex's
+    /// coordinates.
+    #[test]
+    fn req_core_topology_clip_vertex_on_boundary_crossing_mints_at_vertex() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(0.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        let polyline = geo_types::LineString::from(vec![(0.5, 0.5), (1.0, 0.5), (1.5, 0.5)]);
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: Some(polyline),
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(outcome.clip_nodes.len(), 1);
+        let position = graph.node(outcome.clip_nodes[0]).unwrap().position.unwrap();
+        assert_eq!((position.x(), position.y()), (1.0, 0.5));
+    }
+
+    /// §7.13.4.7 (closed containment, module-doc'd decision) — a run
+    /// collinear along the boundary lies inside the closed tile: no
+    /// crossing, no nodes.
+    #[test]
+    fn req_core_topology_clip_collinear_boundary_run_stays_inside() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(1.0, 0.25)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.0, 0.75)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: vec![EdgeId(1)],
+                outside: Vec::new(),
+                clip_nodes: Vec::new(),
+            }
+        );
+    }
+
+    /// §7.13.4.7 — an edge crossing the same boundary repeatedly is
+    /// split at every crossing: parts alternate inside/outside with one
+    /// minted node per crossing, every crossing pinned to the boundary.
+    #[test]
+    fn req_core_topology_clip_zigzag_multi_crossing_alternates_parts() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(0.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(0.5, 0.25)),
+            })
+            .unwrap();
+        let polyline = geo_types::LineString::from(vec![(0.5, 0.5), (1.5, 0.5), (0.5, 0.25)]);
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: Some(polyline),
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(outcome.clip_nodes.len(), 2);
+        assert_eq!(outcome.inside.len(), 2);
+        assert_eq!(outcome.outside.len(), 1);
+        for id in &outcome.clip_nodes {
+            let position = graph.node(*id).unwrap().position.unwrap();
+            assert_eq!(
+                position.x(),
+                1.0,
+                "every crossing pins the east boundary exactly"
+            );
+        }
+        // Second crossing's y interpolates on the return segment:
+        // t = (1.0 − 1.5)/(0.5 − 1.5) = 0.5 → y = 0.5 + 0.5·(0.25 − 0.5)
+        // = 0.375, all dyadic and exact.
+        let second = graph.node(outcome.clip_nodes[1]).unwrap().position.unwrap();
+        assert_eq!(second.y(), 0.375);
+    }
+
+    /// Requirement Topo6 (§7.13.4.7) — the clip is grid-agnostic: a
+    /// GNOSISGlobalGrid level-0 extent (§7.12, the 2×4 grid of 90°
+    /// tiles) drives the same operation through the same `Bbox` surface.
+    #[test]
+    fn req_core_topology_clip_gnosis_extent_grid_agnostic() {
+        use crate::tiling::{GnosisGlobalGrid, GnosisLevel};
+
+        let level = GnosisLevel::new(0).unwrap();
+        let tile = GnosisGlobalGrid::tile_extent(GnosisGlobalGrid::address(level, 0, 1).unwrap());
+        assert_eq!(
+            (tile.west, tile.south, tile.east, tile.north),
+            (-90.0, 0.0, 0.0, 90.0)
+        );
+
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(-45.0, 45.0)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(45.0, 45.0)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(outcome.clip_nodes.len(), 1);
+        let position = graph.node(outcome.clip_nodes[0]).unwrap().position.unwrap();
+        assert_eq!((position.x(), position.y()), (0.0, 45.0));
+    }
+
+    /// §7.13.4.7 NOTE (precision) — geo's robust segment intersection is
+    /// the independent oracle: the minted node lies on both the segment
+    /// and the boundary line, and the pinned x is exact where the
+    /// generic formula may not be.
+    #[test]
+    fn req_core_topology_clip_oracle_geo_line_intersection_agrees() {
+        use geo::LineIntersection;
+        use geo::line_intersection::line_intersection;
+
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(0.25, 0.1)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.6, 0.85)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(outcome.clip_nodes.len(), 1);
+        let minted = graph.node(outcome.clip_nodes[0]).unwrap().position.unwrap();
+        assert_eq!(minted.x(), 1.0, "the boundary coordinate is pinned exactly");
+
+        let segment = geo_types::Line::new(coord! { x: 0.25, y: 0.1 }, coord! { x: 1.6, y: 0.85 });
+        let boundary = geo_types::Line::new(coord! { x: 1.0, y: 0.0 }, coord! { x: 1.0, y: 1.0 });
+        match line_intersection(segment, boundary) {
+            Some(LineIntersection::SinglePoint { intersection, .. }) => {
+                assert!((intersection.x - minted.x()).abs() < 1e-12);
+                assert!((intersection.y - minted.y()).abs() < 1e-12);
+            }
+            other => panic!("oracle disagrees with the clip: {other:?}"),
+        }
+    }
 }
