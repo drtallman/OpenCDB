@@ -373,6 +373,13 @@ pub enum TopologyViolation {
         "edge {id}'s geometry endpoints do not coincide with its start/end node positions; refusing to clip detached data (precondition of /req/core/topology-clip, §7.13.4.7)"
     )]
     EdgeGeometryEndpointMismatch { id: EdgeId },
+    /// Operational precondition of Requirement Topo6 (§7.13.4.7): every
+    /// polyline coordinate must be finite — NaN/infinite positions would
+    /// classify as "outside" and mint non-finite clip nodes.
+    #[error(
+        "edge {id}'s polyline contains a non-finite coordinate; cannot clip (precondition of /req/core/topology-clip, §7.13.4.7)"
+    )]
+    EdgeGeometryNotFinite { id: EdgeId },
     /// Operational precondition of Requirement Topo6 (§7.13.4.7): a tile
     /// extent needs `west < east` and `south < north` (degenerate and
     /// antimeridian-crossing boxes rejected; neither shipped grid
@@ -574,6 +581,10 @@ fn slab_interval(tile: &Bbox, a: Coord<f64>, b: Coord<f64>) -> Option<SlabHit> {
 /// Topo6's shared-identifier rule turns on: both grids' tile extents are
 /// dyadic rationals, adjacent tiles agree on the shared boundary
 /// bitwise, and pinning reproduces that exact value in the minted node.
+/// The unpinned axis is interpolated endpoint-exactly: at `t == 0`/`1`
+/// the crossing *is* the segment endpoint and is returned bitwise rather
+/// than recomputed, since an `a + 1.0·(b − a)` miss of ~1 ulp would mint
+/// an out-of-tile node and split a boundary touch into phantom parts.
 fn point_at(
     a: Coord<f64>,
     b: Coord<f64>,
@@ -581,9 +592,22 @@ fn point_at(
     x_pin: Option<f64>,
     y_pin: Option<f64>,
 ) -> Coord<f64> {
+    // Endpoint-exact lerp: at t == 0/1 the crossing IS the segment
+    // endpoint, and the interpolation formula must reproduce it bitwise —
+    // `a + 1.0·(b − a)` generally does not, and a 1-ulp miss here turns a
+    // boundary touch into a phantom split with an out-of-tile node.
+    let lerp = |pa: f64, pb: f64| {
+        if t == 0.0 {
+            pa
+        } else if t == 1.0 {
+            pb
+        } else {
+            pa + t * (pb - pa)
+        }
+    };
     Coord {
-        x: x_pin.unwrap_or(a.x + t * (b.x - a.x)),
-        y: y_pin.unwrap_or(a.y + t * (b.y - a.y)),
+        x: x_pin.unwrap_or_else(|| lerp(a.x, b.x)),
+        y: y_pin.unwrap_or_else(|| lerp(a.y, b.y)),
     }
 }
 
@@ -760,7 +784,7 @@ impl TopoGraph {
     fn edge_polyline(&self, edge: &TopoEdge) -> Result<Vec<Coord<f64>>, TopologyViolation> {
         let start_position = self.nodes.get(&edge.start).and_then(|node| node.position);
         let end_position = self.nodes.get(&edge.end).and_then(|node| node.position);
-        match &edge.geometry {
+        let coords: Vec<Coord<f64>> = match &edge.geometry {
             Some(line) => {
                 let coords: Vec<Coord<f64>> = line.coords().copied().collect();
                 let (Some(&first), Some(&last)) = (coords.first(), coords.last()) else {
@@ -779,10 +803,10 @@ impl TopoGraph {
                 {
                     return Err(TopologyViolation::EdgeGeometryEndpointMismatch { id: edge.id });
                 }
-                Ok(coords)
+                coords
             }
             None => match (start_position, end_position) {
-                (Some(start), Some(end)) => Ok(vec![
+                (Some(start), Some(end)) => vec![
                     Coord {
                         x: start.x(),
                         y: start.y(),
@@ -791,10 +815,17 @@ impl TopoGraph {
                         x: end.x(),
                         y: end.y(),
                     },
-                ]),
-                _ => Err(TopologyViolation::EdgeHasNoGeometry { id: edge.id }),
+                ],
+                _ => return Err(TopologyViolation::EdgeHasNoGeometry { id: edge.id }),
             },
+        };
+        // Non-finite coordinates (NaN/±∞) are a clip precondition failure:
+        // classification would treat them as "outside" and the walk would
+        // mint non-finite nodes. Reject once, on the assembled polyline.
+        if coords.iter().any(|c| !c.x.is_finite() || !c.y.is_finite()) {
+            return Err(TopologyViolation::EdgeGeometryNotFinite { id: edge.id });
         }
+        Ok(coords)
     }
 
     /// Clips `edge_id` against a tile extent (Requirement Topo6,
@@ -822,7 +853,8 @@ impl TopoGraph {
     /// only); [`TopologyViolation::EdgeHasNoGeometry`],
     /// [`TopologyViolation::EdgeGeometryEndpointMismatch`],
     /// [`TopologyViolation::InvalidClipExtent`] (operational
-    /// preconditions).
+    /// preconditions). Ids at the very top of the `u64` range are refused
+    /// before any mutation (the mint counters must not saturate mid-clip).
     pub fn clip_edge_to_tile(
         &mut self,
         edge_id: EdgeId,
@@ -963,6 +995,25 @@ impl TopoGraph {
                 inside: if inside { vec![edge_id] } else { Vec::new() },
                 outside: if inside { Vec::new() } else { vec![edge_id] },
                 clip_nodes: Vec::new(),
+            });
+        }
+
+        // Pre-mutation headroom guard: minting must not run the id
+        // counters into u64::MAX (a graph holding ids that high — the
+        // saturated counter case — would collide mid-mint). Conservative
+        // by exactly one id at the top of the range, documented.
+        if self
+            .next_node_id
+            .checked_add(crossings.len() as u64)
+            .is_none()
+        {
+            return Err(TopologyViolation::DuplicateNodeId {
+                id: NodeId(u64::MAX),
+            });
+        }
+        if self.next_edge_id.checked_add(runs.len() as u64).is_none() {
+            return Err(TopologyViolation::DuplicateEdgeId {
+                id: EdgeId(u64::MAX),
             });
         }
 
@@ -2161,6 +2212,278 @@ mod tests {
                 assert!((intersection.y - minted.y()).abs() < 1e-12);
             }
             other => panic!("oracle disagrees with the clip: {other:?}"),
+        }
+    }
+
+    /// §7.13.4.7 NOTE — final-review regression: a NON-dyadic polyline
+    /// whose endpoint lies exactly on the tile corner, approached from
+    /// outside, is a touch. Before the endpoint-exact lerp fix, t = 1.0
+    /// interpolation recomputed the vertex ~1 ulp off, minting a phantom
+    /// out-of-tile node and a bogus "inside" part.
+    #[test]
+    fn req_core_topology_clip_boundary_vertex_from_outside_is_a_touch() {
+        let tile = Bbox {
+            west: 3.25,
+            south: 1.75,
+            east: 6.75,
+            north: 3.75,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(2.75, -0.8979679231350227)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(3.25, 3.75)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: Vec::new(),
+                outside: vec![EdgeId(1)],
+                clip_nodes: Vec::new(),
+            }
+        );
+        assert_eq!(graph.node_count(), 2, "no phantom nodes minted");
+    }
+
+    /// §7.13.4.7 (final-review) — non-finite coordinates are rejected as a
+    /// clip precondition instead of minting NaN nodes.
+    #[test]
+    fn req_core_topology_clip_rejects_non_finite_polyline() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(f64::NAN, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(1), tile),
+            Err(TopologyViolation::EdgeGeometryNotFinite { id: EdgeId(1) })
+        );
+        let infinite = geo_types::LineString::from(vec![(0.5, 0.5), (f64::INFINITY, 0.5)]);
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(3),
+                position: None,
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(4),
+                position: None,
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(2),
+                start: NodeId(3),
+                end: NodeId(4),
+                geometry: Some(infinite),
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(2), tile),
+            Err(TopologyViolation::EdgeGeometryNotFinite { id: EdgeId(2) })
+        );
+        assert_eq!(
+            graph.edge_count(),
+            2,
+            "failed clips leave the graph untouched"
+        );
+    }
+
+    /// Final-review hardening: a graph holding ids at the top of the u64
+    /// range refuses to clip BEFORE any mutation, keeping the
+    /// errors-all-pre-mutation contract true even at counter saturation.
+    #[test]
+    fn req_core_topology_clip_id_headroom_guard_is_pre_mutation() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(u64::MAX),
+                position: Some(geo_types::Point::new(0.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(u64::MAX),
+                end: NodeId(1),
+                geometry: None,
+            })
+            .unwrap();
+        assert_eq!(
+            graph.clip_edge_to_tile(EdgeId(1), tile),
+            Err(TopologyViolation::DuplicateNodeId {
+                id: NodeId(u64::MAX)
+            })
+        );
+        assert!(
+            graph.edge(EdgeId(1)).is_some(),
+            "guard fires before any mutation"
+        );
+        assert_eq!(graph.edge_count(), 1);
+    }
+
+    /// §7.13.4.7 (final-review) — an outside polyline ENDING exactly on
+    /// the boundary is a touch: the terminal single-coordinate run is
+    /// dropped and its crossing cancelled (the post-pass `pop` branch).
+    #[test]
+    fn req_core_topology_clip_endpoint_lands_on_boundary_from_outside() {
+        let tile = Bbox {
+            west: 0.0,
+            south: 0.0,
+            east: 1.0,
+            north: 1.0,
+        };
+        let mut graph = TopoGraph::new();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(1),
+                position: Some(geo_types::Point::new(1.5, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_node(TopoNode {
+                id: NodeId(2),
+                position: Some(geo_types::Point::new(1.0, 0.5)),
+            })
+            .unwrap();
+        graph
+            .insert_edge(TopoEdge {
+                id: EdgeId(1),
+                start: NodeId(1),
+                end: NodeId(2),
+                geometry: None,
+            })
+            .unwrap();
+        let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+        assert_eq!(
+            outcome,
+            EdgeClipOutcome {
+                inside: Vec::new(),
+                outside: vec![EdgeId(1)],
+                clip_nodes: Vec::new(),
+            }
+        );
+    }
+
+    /// Final-review property mini-sweep (seeded, deterministic): 300
+    /// random non-dyadic segments against dyadic tiles. Invariants: every
+    /// minted node pins at least one coordinate bitwise to a Bbox field;
+    /// parts chain start → clips → end (Topo5); re-clipping every part
+    /// against the same tile mints nothing (idempotence).
+    #[test]
+    fn req_core_topology_clip_seeded_property_mini_sweep() {
+        let mut state: u64 = 0x5DEECE66D;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let tile = Bbox {
+            west: -0.5,
+            south: -0.25,
+            east: 1.75,
+            north: 1.5,
+        };
+        for i in 0..300 {
+            let mut graph = TopoGraph::new();
+            let a = geo_types::Point::new(next() * 6.0 - 3.0, next() * 6.0 - 3.0);
+            let b = geo_types::Point::new(next() * 6.0 - 3.0, next() * 6.0 - 3.0);
+            graph
+                .insert_node(TopoNode {
+                    id: NodeId(1),
+                    position: Some(a),
+                })
+                .unwrap();
+            graph
+                .insert_node(TopoNode {
+                    id: NodeId(2),
+                    position: Some(b),
+                })
+                .unwrap();
+            graph
+                .insert_edge(TopoEdge {
+                    id: EdgeId(1),
+                    start: NodeId(1),
+                    end: NodeId(2),
+                    geometry: None,
+                })
+                .unwrap();
+            let outcome = graph.clip_edge_to_tile(EdgeId(1), tile).unwrap();
+            for id in &outcome.clip_nodes {
+                let p = graph.node(*id).unwrap().position.unwrap();
+                assert!(
+                    p.x() == tile.west
+                        || p.x() == tile.east
+                        || p.y() == tile.south
+                        || p.y() == tile.north,
+                    "iteration {i}: clip node not pinned to a boundary: {p:?}"
+                );
+            }
+            let parts: Vec<EdgeId> = outcome
+                .inside
+                .iter()
+                .chain(outcome.outside.iter())
+                .copied()
+                .collect();
+            for part in &parts {
+                let second = graph.clip_edge_to_tile(*part, tile).unwrap();
+                assert!(
+                    second.clip_nodes.is_empty(),
+                    "iteration {i}: re-clip of part {part} minted nodes"
+                );
+            }
         }
     }
 }

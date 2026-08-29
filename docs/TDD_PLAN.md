@@ -227,7 +227,7 @@ convention (§4 Phase 9 note) binds both grids.
 | Topo2/3 | unique node & edge IDs | `TopoGraph::insert_node/insert_edge` duplicate → error |
 | Topo4 | directed node: edge IDs signed (− leaving, + entering) | adjacency maintained by the graph (wrong signs unrepresentable); isolated nodes exempt; Display renders `-17`/`+17` |
 | Topo5 | directed edge stores start/end node IDs | mandatory fields + unknown-endpoint insert error; clip parts chain through minted nodes |
-| Topo6 | clip at tile boundaries; clip node shares one ID in both tiles | `clip_edge_to_tile(edge, Bbox)`: closed containment (`geo::Intersects`), Liang–Barsky slabs, crossings pinned to the boundary coordinate exactly (both grids' extents are dyadic → adjacent tiles agree bitwise); touch/graze/vertex/collinear/zigzag cases; preconditions `EdgeHasNoGeometry`/`EdgeGeometryEndpointMismatch`/`InvalidClipExtent`/`EdgeInFace`; `geo::line_intersection` as test oracle (`BooleanOps::clip` rejected: integer snapping breaks the exactness Topo6 turns on) |
+| Topo6 | clip at tile boundaries; clip node shares one ID in both tiles | `clip_edge_to_tile(edge, Bbox)`: closed containment (`geo::Intersects`), Liang–Barsky slabs, crossings pinned to the boundary coordinate exactly (both grids' extents are dyadic → adjacent tiles agree bitwise); touch/graze/vertex/collinear/zigzag cases; preconditions `EdgeHasNoGeometry`/`EdgeGeometryEndpointMismatch`/`InvalidClipExtent`/`EdgeInFace`/`EdgeGeometryNotFinite`; `geo::line_intersection` as test oracle (`BooleanOps::clip` rejected: integer snapping breaks the exactness Topo6 turns on); final-review hardening: endpoint-exact lerp (t=0/1), finite-coordinate precondition, mint-headroom guard, seeded mini-sweep |
 | Face1-4 (optional class) | unique face ID; face = directed nodes+edges; winding in metadata | `insert_face` chain/close validation ("exterior boundary" reading); `directed_nodes` derived (Rec Topology 1 structural, never fires); `windingOrder` rides `ResourceMetadata` (4th §7.9.4.2 use) + `validate_topology_dataset`; islands = profile duty (doc only); `WindingOrder` wire spellings clockwise/counterclockwise |
 
 As-built notes: no `TopologyWarning` type — §7.13 has no SHOULD-level finding
@@ -424,6 +424,6 @@ for Phase 9).
   and any GNOSIS-declaring profile remain 14b scope.
 - Phase 11 done (`phase-11(topology)` commits): Topo1–6 + Face1–4 in
   `topology.rs`, the `windingOrder` conditional element on
-  `ResourceMetadata`, and `tests/topology_network.rs`; 221 tests
-  (205 unit + 15 integration + 1 doc); tagged `v0.6.0`.
+  `ResourceMetadata`, and `tests/topology_network.rs`; 226 tests
+  (210 unit + 15 integration + 1 doc); tagged `v0.6.0`.
 - Next: Phase 12 (Versioning).
