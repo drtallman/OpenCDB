@@ -452,7 +452,11 @@ an ecosystem.
   sweep (post-Jan-2026 ecosystem check).
 - **CDB 1.x reader + 1.x→2.0 migration tool** — the likely killer adoption
   feature (all fielded data is 1.x); a separate project with its own spec
-  corpus (1.x volumes), NOT an extension of the 2.0 core modules.
+  corpus (1.x volumes), NOT an extension of the 2.0 core modules. The
+  technical bridge already exists in-crate: `Cdb1GlobalGrid` is the
+  1.x-compatible tiling scheme (LOD/row/col ↔ geocell math match), so a
+  migrator maps 1.x tile files onto identical 2.0 tile addresses and
+  translates layout/metadata around them — the tiling itself round-trips.
 - **GeoPackage metadata encoding** — lift the deliberate
   `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
   (needs a sqlite/gpkg dependency; keep out of the core path).
