@@ -427,3 +427,38 @@ for Phase 9).
   `ResourceMetadata`, and `tests/topology_network.rs`; 226 tests
   (210 unit + 15 integration + 1 doc); tagged `v0.6.0`.
 - Next: Phase 12 (Versioning).
+
+## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
+
+Recorded 2026-08-30. These are chartered ambitions, NOT crate scope: none
+enters a phase plan until explicitly kicked off, and each gets its own
+brainstorm→spec→plan cycle (likely as sibling crates/tools rather than
+additions to the core). Rationale: after 14b the crate is, to the best of
+current knowledge, the first public OGC CDB 2.0 implementation and the only
+executable conformance check for it — these efforts turn that position into
+an ecosystem.
+
+- **Conformance CLI** (`cdb-lint`-style binary wrapping
+  `CdbDatastore::validate` → Annex-A-style report; the adoption artifact
+  implementers test against). Small; nearest-term.
+- **Public conformance matrix** — requirement ID → API item → test name,
+  consolidated from §4's as-built tables into a publishable document
+  (candidate to fold into 14b's docs instead; decide at 14b brainstorm).
+- **Spec errata package to OGC** — consolidate the crate's doc-noted defect
+  catalogue (duplicated URIs, /rec/-vs-/req/ mislabels, missing boxes, the
+  §7.14.4 editorial TODO, typos) into change requests to the CDB SWG;
+  positions the project as a contributor to the standard. Precede any
+  public "first/only" positioning with a fresh landscape-verification
+  sweep (post-Jan-2026 ecosystem check).
+- **CDB 1.x reader + 1.x→2.0 migration tool** — the likely killer adoption
+  feature (all fielded data is 1.x); a separate project with its own spec
+  corpus (1.x volumes), NOT an extension of the 2.0 core modules.
+- **GeoPackage metadata encoding** — lift the deliberate
+  `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
+  (needs a sqlite/gpkg dependency; keep out of the core path).
+- **Content codecs** — imagery/raster and model payload decode (feature-
+  gated `gdal` or pure-Rust codecs) so "work with CDB" extends from
+  structure/metadata into content; explicitly outside Part 1 Core scope.
+- **Reprojection** — feature-gated `proj` only if a profile genuinely
+  needs coordinate transformation (CLAUDE.md's standing rationale holds
+  until then).
