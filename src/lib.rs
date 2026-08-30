@@ -36,6 +36,7 @@ pub mod naming;
 pub mod profiles;
 pub mod tiling;
 pub mod topology;
+pub mod versioning;
 
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
@@ -56,4 +57,8 @@ pub use topology::{
     DirectedEdge, DirectedNode, EdgeClipOutcome, EdgeId, FaceId, NodeId, NodeSign, Orientation,
     SignedEdge, TopoEdge, TopoFace, TopoGraph, TopoNode, TopologyViolation, WindingOrder,
     validate_topology_dataset,
+};
+pub use versioning::{
+    ChangeAction, ChangeRecord, CollectionId, CollectionManifest, InverseOp, PendingCollection,
+    VersioningError, VersioningViolation, state_from_manifests,
 };

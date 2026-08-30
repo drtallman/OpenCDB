@@ -11,6 +11,7 @@ use crate::metadata::MetadataError;
 use crate::naming::NamingViolation;
 use crate::tiling::TilingViolation;
 use crate::topology::TopologyViolation;
+use crate::versioning::VersioningError;
 
 /// Top-level error for the `rusty_cdb` API.
 #[derive(Debug, Error)]
@@ -43,4 +44,8 @@ pub enum CdbError {
     /// A topology requirements violation (/req/core/topology-*, §7.13).
     #[error(transparent)]
     Topology(#[from] TopologyViolation),
+    /// A versioning failure — operational or SHALL violation
+    /// (/req/core/versioning*, §7.14).
+    #[error(transparent)]
+    Versioning(#[from] VersioningError),
 }
