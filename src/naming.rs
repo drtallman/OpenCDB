@@ -277,7 +277,8 @@ pub fn file_warnings(name: &str) -> Vec<NamingWarning> {
 /// Names mandated verbatim by the spec (e.g. `global_metadata`, Requirement
 /// File6; `vector_attributes`, Requirement Attr1-C) — or by this crate's
 /// persistence of spec-mandated records (`crs.wkt`, Requirement CRS5, written
-/// by [`crate::crs::StorageCrs::write_to`]) — are reserved and exempt from
+/// by [`crate::crs::StorageCrs::write_to`]; the `versions` journal dir,
+/// Requirement V1 §7.14.2, written by the versioning facade) — are reserved and exempt from
 /// the case rule, which would otherwise conflict with them.
 #[derive(Debug, Clone)]
 pub struct StyleGuide {
@@ -291,7 +292,7 @@ impl StyleGuide {
         // "crs" is reserved for every profile: this crate's own
         // `StorageCrs::write_to` persists the storage CRS as `crs.wkt`
         // (Requirement CRS5), so per-profile reservation would be a footgun.
-        let reserved_names = ["global_metadata", "vector_attributes", "crs"]
+        let reserved_names = ["global_metadata", "vector_attributes", "crs", "versions"]
             .into_iter()
             .map(String::from)
             .collect();

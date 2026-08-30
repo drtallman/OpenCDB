@@ -36,6 +36,10 @@ use crate::naming::{
     NamingViolation, NamingWarning, StyleGuide, component_warnings, file_warnings, split_extension,
 };
 use crate::profiles::{ApplicationProfile, RequirementsClass};
+use crate::versioning::{
+    self, ChangeAction, ChangeRecord, CollectionId, CollectionManifest, PendingCollection,
+    PendingOp, VersioningError, VersioningViolation,
+};
 
 /// A datastore-wide SHALL violation, gathering every requirements module's
 /// violation plus the two profile-layer findings Annex A `/conf/minimal-core`
@@ -857,8 +861,17 @@ impl NamingWalk<'_> {
                 for warning in component_warnings(&name) {
                     self.report.record_warning(warning.into());
                 }
-                // Recurse into real subdirectories only — never a symlink.
-                if file_type.is_dir() {
+                // Recurse into real subdirectories only — never a
+                // symlink. The reserved `versions/` journal subtree is
+                // versioning's own machinery (Requirement V1, §7.14.2):
+                // its `v######` directories and `manifest.<enc>` files are
+                // crate-persisted under every case rule, and its archive
+                // mirrors were name-checked at their live locations —
+                // [`CdbDatastore::versions`] validates the journal itself
+                // (parse + contiguity), so the walk does not descend.
+                if file_type.is_dir()
+                    && !(dir_logical.is_empty() && name == versioning::VERSIONS_DIR)
+                {
                     self.walk(&entry.path(), &child_logical)?;
                 }
             }
@@ -916,6 +929,298 @@ fn record_metadata_error(
             Ok(())
         }
         other => Err(other.into()),
+    }
+}
+
+/// Wraps a versioning SHALL violation for the facade's `CdbError` surface.
+fn versioning_violation(violation: VersioningViolation) -> CdbError {
+    CdbError::Versioning(VersioningError::Violation(violation))
+}
+
+/// Wraps a versioning-path I/O failure for the facade's `CdbError` surface.
+fn versioning_io(error: io::Error) -> CdbError {
+    CdbError::Versioning(VersioningError::Io(error))
+}
+
+/// Versioning facade (Requirements V1–V6, `/req/core/versioning*`,
+/// §7.14): applying and tracking versioning collections, reading the
+/// journal, and byte-level rollback. The pure model lives in
+/// [`crate::versioning`]; these methods own all I/O.
+impl CdbDatastore {
+    /// The `versions/` journal directory (§7.14.3; reserved name).
+    fn versions_dir(&self) -> PathBuf {
+        self.layout.root().join(versioning::VERSIONS_DIR)
+    }
+
+    /// The immutable directory of one applied collection.
+    fn version_dir(&self, id: CollectionId) -> PathBuf {
+        self.versions_dir().join(id.to_string())
+    }
+
+    /// The archive-mirror path of `asset` inside a collection directory.
+    fn archive_path(&self, id: CollectionId, asset: &str) -> PathBuf {
+        self.version_dir(id).join(asset.trim_start_matches('/'))
+    }
+
+    /// Reads one collection's manifest in the datastore's declared
+    /// encoding.
+    fn read_manifest(
+        &self,
+        id: CollectionId,
+        encoding: MetadataEncoding,
+    ) -> Result<CollectionManifest, CdbError> {
+        let path = self
+            .version_dir(id)
+            .join(format!("manifest.{}", encoding.extension()));
+        let content = fs::read_to_string(&path).map_err(versioning_io)?;
+        let manifest = match encoding {
+            MetadataEncoding::Json => CollectionManifest::from_json_str(&content),
+            MetadataEncoding::Xml => CollectionManifest::from_xml_str(&content),
+            MetadataEncoding::Gpkg => {
+                return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                    MetadataEncoding::Gpkg,
+                )));
+            }
+        };
+        manifest.map_err(CdbError::Versioning)
+    }
+
+    /// The versioning journal: every applied collection's manifest in
+    /// sequence order (Requirements V1/V2, §7.14.2–.3).
+    ///
+    /// The journal must be contiguous from sequence 1 — a missing entry is
+    /// [`VersioningViolation::ManifestSequenceGap`], because rollback's
+    /// inverse chains are only sound over an unbroken journal. Directory
+    /// entries that do not parse as `v######` ids are skipped (stray
+    /// files are not journal entries).
+    pub fn versions(&self) -> Result<Vec<CollectionManifest>, CdbError> {
+        let dir = self.versions_dir();
+        let mut manifests = Vec::new();
+        if dir.is_dir() {
+            let encoding = self.global_metadata()?.encoding;
+            for entry in fs::read_dir(&dir).map_err(versioning_io)? {
+                let entry = entry.map_err(versioning_io)?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some(id) = CollectionId::parse(&name) else {
+                    continue;
+                };
+                manifests.push(self.read_manifest(id, encoding)?);
+            }
+        }
+        manifests.sort_by_key(|manifest| manifest.sequence);
+        for (index, manifest) in manifests.iter().enumerate() {
+            let expected = index as u32 + 1;
+            if manifest.sequence != expected {
+                return Err(versioning_violation(
+                    VersioningViolation::ManifestSequenceGap {
+                        expected,
+                        found: manifest.sequence,
+                    },
+                ));
+            }
+        }
+        Ok(manifests)
+    }
+
+    /// The state of `asset` as of `as_of` (Requirement V6, §7.14.7):
+    /// replays the journal's state actions in sequence order over the
+    /// manifests applied at or before `as_of`.
+    pub fn state_of(&self, asset: &str, as_of: DateTime<Utc>) -> Result<Option<String>, CdbError> {
+        let manifests = self.versions()?;
+        Ok(versioning::state_from_manifests(
+            manifests
+                .iter()
+                .filter(|manifest| manifest.applied <= as_of),
+            asset,
+        )
+        .map(str::to_owned))
+    }
+
+    /// Applies a versioning collection with `applied = Utc::now()`
+    /// (Requirements V1–V6). See [`CdbDatastore::apply_collection_at`].
+    pub fn apply_collection(
+        &self,
+        pending: PendingCollection,
+    ) -> Result<CollectionManifest, CdbError> {
+        self.apply_collection_at(pending, Utc::now())
+    }
+
+    /// Applies a versioning collection at an explicit instant — the
+    /// deterministic primitive (the seam mirrors
+    /// [`DatastoreSeed::created`]).
+    ///
+    /// Pipeline, with **every check before any mutation**: collection
+    /// invariants → journal scan for the next sequence → precondition
+    /// sweep against the live tree (`Create` targets must not exist,
+    /// `Replace`/`Delete`/state targets must, `ClearState` needs a
+    /// current state, linked records must exist — V3-C presupposes a
+    /// record to update) → archive prior bytes of `Replace`/`Delete`
+    /// targets into `versions/<id>/` → mutate the live tree → refresh
+    /// each linked record's `updated` (V3-C) → refresh the global
+    /// `update` (V3-B) → write `manifest.<enc>` last as the commit point.
+    /// The SAME `applied` instant lands in all three places (V3-A's "date
+    /// and time of the collection of modification(s)").
+    ///
+    /// Single-writer and non-atomic: a crash mid-apply can leave mutated
+    /// assets without a manifest; recovery is operator business,
+    /// consistent with the crate-wide no-concurrency stance.
+    pub fn apply_collection_at(
+        &self,
+        pending: PendingCollection,
+        applied: DateTime<Utc>,
+    ) -> Result<CollectionManifest, CdbError> {
+        pending.validate().map_err(versioning_violation)?;
+        let journal = self.versions()?;
+        let sequence = journal.len() as u32 + 1;
+        let id = CollectionId::from_sequence(sequence).map_err(versioning_violation)?;
+        let mut global = self.global_metadata()?;
+        let encoding = global.encoding;
+
+        // Precondition sweep — nothing below may touch the tree.
+        let mut physicals = Vec::with_capacity(pending.changes.len());
+        for change in &pending.changes {
+            let physical = self.resolve(&change.asset)?;
+            match &change.op {
+                PendingOp::Create { .. } => {
+                    if physical.exists() {
+                        return Err(versioning_violation(
+                            VersioningViolation::AssetAlreadyExists {
+                                asset: change.asset.clone(),
+                            },
+                        ));
+                    }
+                }
+                PendingOp::Replace { .. } | PendingOp::Delete | PendingOp::SetState { .. } => {
+                    if !physical.is_file() {
+                        return Err(versioning_violation(VersioningViolation::AssetMissing {
+                            asset: change.asset.clone(),
+                        }));
+                    }
+                }
+                PendingOp::ClearState => {
+                    if !physical.is_file() {
+                        return Err(versioning_violation(VersioningViolation::AssetMissing {
+                            asset: change.asset.clone(),
+                        }));
+                    }
+                    if versioning::state_from_manifests(journal.iter(), &change.asset).is_none() {
+                        return Err(versioning_violation(
+                            VersioningViolation::AssetStateMissing {
+                                asset: change.asset.clone(),
+                            },
+                        ));
+                    }
+                }
+            }
+            if let Some(record) = &change.resource_record {
+                let record_physical = self.resolve(record)?;
+                if !record_physical.is_file() {
+                    return Err(versioning_violation(
+                        VersioningViolation::ResourceRecordMissing {
+                            record: record.clone(),
+                        },
+                    ));
+                }
+            }
+            physicals.push(physical);
+        }
+
+        // Archive phase — copies before any live-tree change.
+        let version_dir = self.version_dir(id);
+        fs::create_dir_all(&version_dir).map_err(versioning_io)?;
+        for (change, physical) in pending.changes.iter().zip(&physicals) {
+            if matches!(change.op, PendingOp::Replace { .. } | PendingOp::Delete) {
+                let mirror = self.archive_path(id, &change.asset);
+                if let Some(parent) = mirror.parent() {
+                    fs::create_dir_all(parent).map_err(versioning_io)?;
+                }
+                fs::copy(physical, &mirror).map_err(versioning_io)?;
+            }
+        }
+
+        // Mutate phase.
+        for (change, physical) in pending.changes.iter().zip(&physicals) {
+            match &change.op {
+                PendingOp::Create { bytes } | PendingOp::Replace { bytes } => {
+                    if let Some(parent) = physical.parent() {
+                        fs::create_dir_all(parent).map_err(versioning_io)?;
+                    }
+                    fs::write(physical, bytes).map_err(versioning_io)?;
+                }
+                PendingOp::Delete => {
+                    fs::remove_file(physical).map_err(versioning_io)?;
+                }
+                PendingOp::SetState { .. } | PendingOp::ClearState => {}
+            }
+        }
+
+        // V3-C: refresh each linked record's `updated` element.
+        for change in &pending.changes {
+            if let Some(record) = &change.resource_record {
+                let mut resource = self.read_resource_metadata(record)?;
+                resource.updated = Some(applied);
+                self.write_resource_metadata(record, &resource)?;
+            }
+        }
+
+        // V3-B: refresh the global `update` element.
+        global.update = Some(applied);
+        self.write_global_metadata(&global)?;
+
+        // Manifest last — the commit point.
+        let changes = pending
+            .changes
+            .iter()
+            .map(|change| {
+                let (action, state, archived) = match &change.op {
+                    PendingOp::Create { .. } => (ChangeAction::Created, None, false),
+                    PendingOp::Replace { .. } => (ChangeAction::Replaced, None, true),
+                    PendingOp::Delete => (ChangeAction::Deleted, None, true),
+                    PendingOp::SetState { state } => {
+                        (ChangeAction::StateSet, Some(state.clone()), false)
+                    }
+                    PendingOp::ClearState => (ChangeAction::StateCleared, None, false),
+                };
+                let prior_state = match &change.op {
+                    PendingOp::SetState { .. } | PendingOp::ClearState => {
+                        versioning::state_from_manifests(journal.iter(), &change.asset)
+                            .map(str::to_owned)
+                    }
+                    _ => None,
+                };
+                ChangeRecord {
+                    asset: change.asset.clone(),
+                    action,
+                    state,
+                    resource_record: change.resource_record.clone(),
+                    archived,
+                    prior_state,
+                }
+            })
+            .collect();
+        let manifest = CollectionManifest {
+            id,
+            sequence,
+            applied,
+            description: pending.description.clone(),
+            changes,
+        };
+        let content = match encoding {
+            MetadataEncoding::Json => manifest.to_json_string(),
+            MetadataEncoding::Xml => manifest.to_xml_string(),
+            MetadataEncoding::Gpkg => {
+                return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                    MetadataEncoding::Gpkg,
+                )));
+            }
+        }
+        .map_err(CdbError::Versioning)?;
+        fs::write(
+            version_dir.join(format!("manifest.{}", encoding.extension())),
+            content,
+        )
+        .map_err(versioning_io)?;
+        Ok(manifest)
     }
 }
 
@@ -1479,5 +1784,283 @@ mod tests {
                 })),
             "{report}"
         );
+    }
+
+    fn versioned_store() -> (tempfile::TempDir, CdbDatastore) {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new(
+                "doi:cdb.versioning",
+                "Versioned",
+                "Versioning fixture",
+                "ops",
+            ),
+        )
+        .unwrap();
+        (tmp, store)
+    }
+
+    fn ts(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// Requirements V1/V4-A req/core/versioning[-functions] (§7.14.2/.5) —
+    /// applying a create collection writes the asset, journals a manifest
+    /// under `versions/v000001/`, and records the change.
+    #[test]
+    fn req_core_versioning_functions_create_asset() {
+        let (_tmp, store) = versioned_store();
+        let manifest = store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .description("initial roads")
+                    .create("/Tiles/RoadNetwork.gpkg", *b"road-bytes"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(manifest.sequence, 1);
+        assert_eq!(manifest.id.to_string(), "v000001");
+        assert_eq!(manifest.changes.len(), 1);
+        assert_eq!(manifest.changes[0].action, ChangeAction::Created);
+        assert!(!manifest.changes[0].archived);
+        let live = store.resolve("/Tiles/RoadNetwork.gpkg").unwrap();
+        assert_eq!(fs::read(live).unwrap(), b"road-bytes");
+        assert!(
+            store
+                .root()
+                .join("versions/v000001/manifest.json")
+                .is_file()
+        );
+        let journal = store.versions().unwrap();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0], manifest);
+    }
+
+    /// Requirements V4-C/V5 req/core/versioning-file-replacement (§7.14.5–
+    /// .6) — replacement is byte-faithful for binary content and the prior
+    /// bytes are archived in the collection's directory.
+    #[test]
+    fn req_core_versioning_file_replacement_byte_faithful() {
+        let (_tmp, store) = versioned_store();
+        let original: Vec<u8> = vec![0, 159, 146, 150, 255, 1, 2, 3];
+        let replacement: Vec<u8> = vec![255, 0, 128, 7];
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/Elevation.tif", original.clone()),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        let manifest = store
+            .apply_collection_at(
+                PendingCollection::new().replace("/Tiles/Elevation.tif", replacement.clone()),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(manifest.changes[0].action, ChangeAction::Replaced);
+        assert!(manifest.changes[0].archived);
+        let live = store.resolve("/Tiles/Elevation.tif").unwrap();
+        assert_eq!(fs::read(live).unwrap(), replacement);
+        let archived = store.root().join("versions/v000002/Tiles/Elevation.tif");
+        assert_eq!(fs::read(archived).unwrap(), original);
+    }
+
+    /// Requirement V4-B req/core/versioning-functions (§7.14.5) — deleting
+    /// removes the live asset and archives its prior bytes.
+    #[test]
+    fn req_core_versioning_functions_delete_asset() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/Buildings.gpkg", *b"buildings"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        let manifest = store
+            .apply_collection_at(
+                PendingCollection::new().delete("/Tiles/Buildings.gpkg"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(manifest.changes[0].action, ChangeAction::Deleted);
+        assert!(manifest.changes[0].archived);
+        assert!(!store.resolve("/Tiles/Buildings.gpkg").unwrap().exists());
+        let archived = store.root().join("versions/v000002/Tiles/Buildings.gpkg");
+        assert_eq!(fs::read(archived).unwrap(), b"buildings");
+    }
+
+    /// Requirement V3 req/core/versioning-metadata (§7.14.4) — one instant
+    /// lands in all three places: the manifest's `applied` (V3-A), the
+    /// global `update` (V3-B), and the linked record's `updated` (V3-C).
+    #[test]
+    fn req_core_versioning_metadata_timestamps_three_way() {
+        let (_tmp, store) = versioned_store();
+        store
+            .write_resource_metadata(
+                "/Tiles/metadata/RoadNetwork.json",
+                &ResourceMetadata::new("RoadNetwork", "Road Network", "Roads"),
+            )
+            .unwrap();
+        let applied = ts("2026-08-30T12:34:56Z");
+        let manifest = store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .create("/Tiles/RoadNetwork.gpkg", *b"road-bytes")
+                    .for_record("/Tiles/metadata/RoadNetwork.json"),
+                applied,
+            )
+            .unwrap();
+        assert_eq!(manifest.applied, applied);
+        assert_eq!(store.global_metadata().unwrap().update, Some(applied));
+        let record = store
+            .read_resource_metadata("/Tiles/metadata/RoadNetwork.json")
+            .unwrap();
+        assert_eq!(record.updated, Some(applied));
+        assert_eq!(
+            manifest.changes[0].resource_record.as_deref(),
+            Some("/Tiles/metadata/RoadNetwork.json")
+        );
+    }
+
+    /// Requirement Topo6-style pre-mutation discipline for §7.14: every
+    /// precondition failure leaves the tree and journal untouched.
+    #[test]
+    fn req_core_versioning_apply_preconditions_pre_mutation() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/RoadNetwork.gpkg", *b"road-bytes"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+
+        type Expected = fn(&VersioningViolation) -> bool;
+        let cases: Vec<(PendingCollection, Expected)> = vec![
+            (
+                PendingCollection::new().create("/Tiles/RoadNetwork.gpkg", *b"xx"),
+                |violation| matches!(violation, VersioningViolation::AssetAlreadyExists { .. }),
+            ),
+            (
+                PendingCollection::new().replace("/Tiles/Missing.gpkg", *b"xx"),
+                |violation| matches!(violation, VersioningViolation::AssetMissing { .. }),
+            ),
+            (
+                PendingCollection::new().delete("/Tiles/Missing.gpkg"),
+                |violation| matches!(violation, VersioningViolation::AssetMissing { .. }),
+            ),
+            (
+                PendingCollection::new().set_state("/Tiles/Missing.gpkg", "closed"),
+                |violation| matches!(violation, VersioningViolation::AssetMissing { .. }),
+            ),
+            (
+                PendingCollection::new().clear_state("/Tiles/RoadNetwork.gpkg"),
+                |violation| matches!(violation, VersioningViolation::AssetStateMissing { .. }),
+            ),
+            (
+                PendingCollection::new()
+                    .create("/Tiles/New.gpkg", *b"xx")
+                    .for_record("/Tiles/metadata/Missing.json"),
+                |violation| matches!(violation, VersioningViolation::ResourceRecordMissing { .. }),
+            ),
+        ];
+        for (pending, expected) in cases {
+            match store.apply_collection_at(pending, ts("2026-08-30T11:00:00Z")) {
+                Err(CdbError::Versioning(VersioningError::Violation(violation))) => {
+                    assert!(expected(&violation), "unexpected violation: {violation}");
+                }
+                other => panic!("expected a versioning violation, got {other:?}"),
+            }
+        }
+        assert_eq!(store.versions().unwrap().len(), 1, "journal untouched");
+        let live = store.resolve("/Tiles/RoadNetwork.gpkg").unwrap();
+        assert_eq!(fs::read(live).unwrap(), b"road-bytes", "tree untouched");
+        assert!(!store.root().join("versions/v000002").exists());
+    }
+
+    /// Requirement V6 req/core/versioning-transitory (§7.14.7) — state
+    /// set/clear round-trips through the journal with recorded priors, and
+    /// the as-of view replays the timeline.
+    #[test]
+    fn req_core_versioning_transitory_set_and_clear_state() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/RoadNetwork.gpkg", *b"road-bytes"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        let set = store
+            .apply_collection_at(
+                PendingCollection::new().set_state("/Tiles/RoadNetwork.gpkg", "closed"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(set.changes[0].action, ChangeAction::StateSet);
+        assert_eq!(set.changes[0].state.as_deref(), Some("closed"));
+        assert_eq!(
+            set.changes[0].prior_state, None,
+            "first-ever set has no prior"
+        );
+        let cleared = store
+            .apply_collection_at(
+                PendingCollection::new().clear_state("/Tiles/RoadNetwork.gpkg"),
+                ts("2026-08-30T12:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(cleared.changes[0].action, ChangeAction::StateCleared);
+        assert_eq!(cleared.changes[0].prior_state.as_deref(), Some("closed"));
+        assert_eq!(
+            store
+                .state_of("/Tiles/RoadNetwork.gpkg", ts("2026-08-30T10:30:00Z"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .state_of("/Tiles/RoadNetwork.gpkg", ts("2026-08-30T11:30:00Z"))
+                .unwrap(),
+            Some("closed".to_owned())
+        );
+        assert_eq!(
+            store
+                .state_of("/Tiles/RoadNetwork.gpkg", ts("2026-08-30T12:30:00Z"))
+                .unwrap(),
+            None
+        );
+    }
+
+    /// Journal integrity (§7.14.3) — a removed collection directory is a
+    /// contiguity violation, and stray entries in `versions/` are skipped.
+    #[test]
+    fn req_core_versioning_versions_contiguity_and_strays() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/A.gpkg", *b"aa"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/B.gpkg", *b"bb"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        fs::write(store.root().join("versions/readme.txt"), "stray").unwrap();
+        fs::create_dir_all(store.root().join("versions/scratch")).unwrap();
+        assert_eq!(store.versions().unwrap().len(), 2, "strays are skipped");
+        fs::remove_dir_all(store.root().join("versions/v000001")).unwrap();
+        assert!(matches!(
+            store.versions(),
+            Err(CdbError::Versioning(VersioningError::Violation(
+                VersioningViolation::ManifestSequenceGap {
+                    expected: 1,
+                    found: 2,
+                }
+            )))
+        ));
     }
 }
