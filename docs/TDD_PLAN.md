@@ -236,14 +236,25 @@ spec'd topology encoding; revisit at 14b). Face1's box reuses Topo1's URI
 verbatim; Face3/Face4 boxes carry `/rec/` prefixes but are conditional
 SHALLs per their labels and text.
 
-### Phase 12 — Versioning (`/req/core/versioning*`), optional
-| Req | Rule | Tests |
+### Phase 12 — Versioning (`/req/core/versioning*`), optional — as built
+| Req | Rule | Realization/Tests |
 |---|---|---|
-| V1/V2 | apply + track change collections (CRUD) | apply collection, journal records it |
-| V3 | on apply: global `update` element refreshed; resource `updated` refreshed | timestamp assertions |
-| V4 | create / delete / update assets | one test each on tempdir datastore |
-| V5 | minimum capability: whole-file replacement | byte-level replace + history |
-| V6 | transitory state changes capturable (e.g. road closed) | state-change event round-trip, rollback view |
+| V1 | apply + track changes incl. CRUD (box URI collides with the class URI — cite §7.14.2) | `CdbDatastore::apply_collection[_at]` + the manifest journal; every precondition pre-mutation |
+| V2 | versioning collection (box text is a subset of V1's; table `version-collection` vs box `versioning-collection`; concept read from §7.14.3 prose) | `PendingCollection` builder → `CollectionManifest` in immutable `versions/v######/` commit dirs (declared-encoding `manifest.<enc>`); 1-based capped ids; one change per asset; contiguity checked at read |
+| V3 | on apply: metadata updates; global `Update`; resource `Updated` (+ the spec's own editorial TODO on who/description linkage) | one shared `applied` instant → manifest + `GlobalMetadata.update` + each linked record's `updated` (three-way equality tested); manifest `description` + per-change `resourceRecord` fill the admitted gap |
+| V4 | create/delete/update assets | the three ops; `AssetAlreadyExists`/`AssetMissing` preconditions |
+| V5 | minimum: file replacement | byte-faithful replace (binary-content test); prior bytes archived in the collection dir |
+| V6 | capture state changes ("the ability capture" typo) | `SetState`/`ClearState` events with recorded `priorState`; `state_of(asset, as_of)` timeline; free-form states (profiles may restrict) |
+
+Beyond the boxes (§7.14 intro's "enables … rollback", user-chosen): full
+byte-level rollback — `rollback_collection[_at]` (latest-only) and
+`rollback_to[_at]` (tail inverses in descending order) build inverse
+collections from manifest + archive and apply them through the SAME
+pipeline, so rollbacks are journaled and V3-stamped. As-built notes: no
+`VersioningWarning` (no SHOULD in §7.14); `VersioningError { Violation,
+Io, Serialization }`; the conformance walk skips the reserved `versions/`
+subtree (journal validated by `versions()` itself: parse + contiguity);
+the plan's code was gate-verified in a scratch tree before freezing.
 
 ### Phase 13 — Attribution (`/req/core/attribute*`), optional
 - Attr1: attribute model declared; stored in `global_metadata`; file named
@@ -426,7 +437,12 @@ for Phase 9).
   `topology.rs`, the `windingOrder` conditional element on
   `ResourceMetadata`, and `tests/topology_network.rs`; 226 tests
   (210 unit + 15 integration + 1 doc); tagged `v0.6.0`.
-- Next: Phase 12 (Versioning).
+- Phase 12 done (`phase-12(versioning)` commits): V1–V6 in `versioning.rs`
+  + the `CdbDatastore` apply/journal/rollback facade, the `versions`
+  reserved name and walk carve-out, and
+  `tests/versioning_roundtrip.rs`; 251 tests (233 unit + 17 integration
+  + 1 doc); tagged `v0.7.0`.
+- Next: Phase 13 (Attribution).
 
 ## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
 
