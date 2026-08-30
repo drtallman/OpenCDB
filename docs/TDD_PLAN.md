@@ -254,7 +254,10 @@ pipeline, so rollbacks are journaled and V3-stamped. As-built notes: no
 `VersioningWarning` (no SHOULD in §7.14); `VersioningError { Violation,
 Io, Serialization }`; the conformance walk skips the reserved `versions/`
 subtree (journal validated by `versions()` itself: parse + contiguity);
-the plan's code was gate-verified in a scratch tree before freezing.
+the plan's code was gate-verified in a scratch tree before freezing;
+final-review hardening: archive/ subdir (manifest-collision-proof),
+AssetInReservedTree guard, orphan version dirs skipped as uncommitted,
+blank/control states rejected.
 
 ### Phase 13 — Attribution (`/req/core/attribute*`), optional
 - Attr1: attribute model declared; stored in `global_metadata`; file named
@@ -440,7 +443,7 @@ for Phase 9).
 - Phase 12 done (`phase-12(versioning)` commits): V1–V6 in `versioning.rs`
   + the `CdbDatastore` apply/journal/rollback facade, the `versions`
   reserved name and walk carve-out, and
-  `tests/versioning_roundtrip.rs`; 251 tests (233 unit + 17 integration
+  `tests/versioning_roundtrip.rs`; 254 tests (236 unit + 17 integration
   + 1 doc); tagged `v0.7.0`.
 - Next: Phase 13 (Attribution).
 

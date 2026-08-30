@@ -966,9 +966,23 @@ impl CdbDatastore {
         self.versions_dir().join(id.to_string())
     }
 
-    /// The archive-mirror path of `asset` inside a collection directory.
+    /// The archive-mirror path of `asset` under a collection's `archive/`
+    /// subdirectory — `versions/<id>/archive/<mirror>`. The subdirectory
+    /// namespaces archived prior bytes away from the sibling
+    /// `manifest.<enc>`, so a root-level asset named `manifest.json`/`.xml`
+    /// cannot overwrite (or be "restored" from) the commit manifest.
     fn archive_path(&self, id: CollectionId, asset: &str) -> PathBuf {
-        self.version_dir(id).join(asset.trim_start_matches('/'))
+        self.version_dir(id)
+            .join("archive")
+            .join(asset.trim_start_matches('/'))
+    }
+
+    /// The manifest path of one collection dir in the given encoding —
+    /// the commit point whose presence marks the dir as committed (an
+    /// id-named dir without it is an uncommitted apply).
+    fn manifest_path(&self, id: CollectionId, encoding: MetadataEncoding) -> PathBuf {
+        self.version_dir(id)
+            .join(format!("manifest.{}", encoding.extension()))
     }
 
     /// Reads one collection's manifest in the datastore's declared
@@ -978,9 +992,7 @@ impl CdbDatastore {
         id: CollectionId,
         encoding: MetadataEncoding,
     ) -> Result<CollectionManifest, CdbError> {
-        let path = self
-            .version_dir(id)
-            .join(format!("manifest.{}", encoding.extension()));
+        let path = self.manifest_path(id, encoding);
         let content = fs::read_to_string(&path).map_err(versioning_io)?;
         let manifest = match encoding {
             MetadataEncoding::Json => CollectionManifest::from_json_str(&content),
@@ -1001,7 +1013,11 @@ impl CdbDatastore {
     /// [`VersioningViolation::ManifestSequenceGap`], because rollback's
     /// inverse chains are only sound over an unbroken journal. Directory
     /// entries that do not parse as `v######` ids are skipped (stray
-    /// files are not journal entries).
+    /// files are not journal entries), and a `v######` dir without a
+    /// manifest is skipped as an UNCOMMITTED apply — the manifest is the
+    /// commit point, so the next apply reuses that sequence and absorbs
+    /// the dir. A present-but-unparseable manifest still errors (real
+    /// corruption is not an uncommitted apply).
     pub fn versions(&self) -> Result<Vec<CollectionManifest>, CdbError> {
         let dir = self.versions_dir();
         let mut manifests = Vec::new();
@@ -1013,6 +1029,12 @@ impl CdbDatastore {
                 let Some(id) = CollectionId::parse(&name) else {
                     continue;
                 };
+                // An id-named dir without a manifest is an UNCOMMITTED
+                // apply (the manifest is the commit point) — skip it; the
+                // next apply reuses its sequence and absorbs the dir.
+                if !self.manifest_path(id, encoding).is_file() {
+                    continue;
+                }
                 manifests.push(self.read_manifest(id, encoding)?);
             }
         }
@@ -1070,9 +1092,11 @@ impl CdbDatastore {
     /// The SAME `applied` instant lands in all three places (V3-A's "date
     /// and time of the collection of modification(s)").
     ///
-    /// Single-writer and non-atomic: a crash mid-apply can leave mutated
-    /// assets without a manifest; recovery is operator business,
-    /// consistent with the crate-wide no-concurrency stance.
+    /// Single-writer and non-atomic: a crash mid-apply leaves an
+    /// uncommitted `versions/<id>/` directory that the journal skips and
+    /// the next apply absorbs; live-tree mutations from the failed attempt
+    /// still require operator attention, consistent with the crate-wide
+    /// no-concurrency stance.
     pub fn apply_collection_at(
         &self,
         pending: PendingCollection,
@@ -1088,6 +1112,21 @@ impl CdbDatastore {
         // Precondition sweep — nothing below may touch the tree.
         let mut physicals = Vec::with_capacity(pending.changes.len());
         for change in &pending.changes {
+            // Reserved-tree guard: a collection may not address the
+            // crate-managed `versions/` journal or `global_metadata/`
+            // records (implementation constraint, §7.14.2). Checked before
+            // any tree interaction so a forged or corrupt path — asset or
+            // linked record — never reaches the live tree.
+            for path in std::iter::once(&change.asset).chain(change.resource_record.iter()) {
+                if let Some(tree) = versioning::reserved_tree_of(path) {
+                    return Err(versioning_violation(
+                        VersioningViolation::AssetInReservedTree {
+                            asset: path.clone(),
+                            tree: tree.to_owned(),
+                        },
+                    ));
+                }
+            }
             let physical = self.resolve(&change.asset)?;
             match &change.op {
                 PendingOp::Create { .. } => {
@@ -1224,11 +1263,7 @@ impl CdbDatastore {
             }
         }
         .map_err(CdbError::Versioning)?;
-        fs::write(
-            version_dir.join(format!("manifest.{}", encoding.extension())),
-            content,
-        )
-        .map_err(versioning_io)?;
+        fs::write(self.manifest_path(id, encoding), content).map_err(versioning_io)?;
         Ok(manifest)
     }
 
@@ -2004,7 +2039,9 @@ mod tests {
         assert!(manifest.changes[0].archived);
         let live = store.resolve("/Tiles/Elevation.tif").unwrap();
         assert_eq!(fs::read(live).unwrap(), replacement);
-        let archived = store.root().join("versions/v000002/Tiles/Elevation.tif");
+        let archived = store
+            .root()
+            .join("versions/v000002/archive/Tiles/Elevation.tif");
         assert_eq!(fs::read(archived).unwrap(), original);
     }
 
@@ -2028,7 +2065,9 @@ mod tests {
         assert_eq!(manifest.changes[0].action, ChangeAction::Deleted);
         assert!(manifest.changes[0].archived);
         assert!(!store.resolve("/Tiles/Buildings.gpkg").unwrap().exists());
-        let archived = store.root().join("versions/v000002/Tiles/Buildings.gpkg");
+        let archived = store
+            .root()
+            .join("versions/v000002/archive/Tiles/Buildings.gpkg");
         assert_eq!(fs::read(archived).unwrap(), b"buildings");
     }
 
@@ -2315,5 +2354,108 @@ mod tests {
             .rollback_to_at(CollectionId::parse("v000005").unwrap(), applied)
             .unwrap();
         assert!(noop.is_empty());
+    }
+
+    /// Finding C1 (§7.14.6) — a root-level asset literally named
+    /// `manifest.json` archives under `versions/<id>/archive/` and never
+    /// collides with the sibling commit manifest, so its prior bytes
+    /// survive and rollback restores the asset (not manifest bytes).
+    #[test]
+    fn req_core_versioning_root_manifest_asset_archives_safely() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/manifest.json", *b"asset-not-a-manifest"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new().replace("/manifest.json", *b"asset-v2"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        let live = store.resolve("/manifest.json").unwrap();
+        assert_eq!(fs::read(live).unwrap(), b"asset-v2");
+        assert_eq!(
+            fs::read(store.root().join("versions/v000002/archive/manifest.json")).unwrap(),
+            b"asset-not-a-manifest"
+        );
+        // The sibling commit manifest coexists and parses: versions()
+        // reads it (would fail here if the asset had overwritten it).
+        let journal = store.versions().unwrap();
+        assert_eq!(journal.len(), 2);
+        assert_eq!(journal[1].changes[0].action, ChangeAction::Replaced);
+        assert!(
+            store
+                .root()
+                .join("versions/v000002/manifest.json")
+                .is_file()
+        );
+        store
+            .rollback_collection_at(
+                CollectionId::parse("v000002").unwrap(),
+                ts("2026-08-30T12:00:00Z"),
+            )
+            .unwrap();
+        let live = store.resolve("/manifest.json").unwrap();
+        assert_eq!(fs::read(live).unwrap(), b"asset-not-a-manifest");
+    }
+
+    /// Finding C2 (§7.14.2) — a collection may not address the
+    /// crate-managed `versions/` journal or `global_metadata/` records;
+    /// forged asset or resource-record targets are rejected as
+    /// `AssetInReservedTree` and leave the journal untouched.
+    #[test]
+    fn req_core_versioning_reserved_tree_assets_rejected() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/RoadNetwork.gpkg", *b"road-bytes"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        let cases = vec![
+            PendingCollection::new().create("/versions/v000001/manifest.json", *b"forged"),
+            PendingCollection::new().delete("/versions/v000001/manifest.json"),
+            PendingCollection::new().create("/global_metadata/extra.json", *b"x"),
+            PendingCollection::new()
+                .create("/Tiles/Ok.gpkg", *b"ok")
+                .for_record("/versions/v000001/manifest.json"),
+        ];
+        for pending in cases {
+            match store.apply_collection_at(pending, ts("2026-08-30T11:00:00Z")) {
+                Err(CdbError::Versioning(VersioningError::Violation(
+                    VersioningViolation::AssetInReservedTree { .. },
+                ))) => {}
+                other => panic!("expected AssetInReservedTree, got {other:?}"),
+            }
+        }
+        assert_eq!(store.versions().unwrap().len(), 1, "journal untouched");
+    }
+
+    /// Finding C3 (§7.14.3) — a `v######` dir without a manifest is an
+    /// uncommitted apply: `versions()` skips it, and the next apply reuses
+    /// its sequence and absorbs the dir.
+    #[test]
+    fn req_core_versioning_orphan_version_dir_skipped_and_reused() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/A.gpkg", *b"aa"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        fs::create_dir_all(store.root().join("versions/v000002")).unwrap();
+        assert_eq!(store.versions().unwrap().len(), 1, "orphan dir skipped");
+        let manifest = store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/B.gpkg", *b"bb"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(manifest.sequence, 2, "sequence reused");
+        assert_eq!(manifest.id.to_string(), "v000002");
+        assert_eq!(store.versions().unwrap().len(), 2, "dir absorbed");
     }
 }

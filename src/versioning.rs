@@ -31,6 +31,10 @@
 //! versioning metadata "enables … rollback to previous versions of the
 //! entire datastore or a given asset", and this crate realizes that
 //! ability; the `versions/<id>/` archive layout is implementation-defined.
+//! Note: rolling back a change with a linked resource record restamps
+//! that record's `updated` to the rollback instant (V3 applies to
+//! rollbacks too) — the one field where a restore is deliberately not
+//! byte-identical to the archived prior.
 //! Also deliberate: one change per asset per collection (keeps archives
 //! and inverses well-defined), free-form state strings (profiles may
 //! restrict), and no archive pruning (operator business).
@@ -72,9 +76,10 @@ pub enum VersioningViolation {
         "asset {asset:?} appears in more than one change of the collection; one change per asset per collection (implementation constraint under req/core/versioning-collection, §7.14.3)"
     )]
     DuplicateAssetInCollection { asset: String },
-    /// Requirement V6 (§7.14.7): a captured change of state needs a value.
+    /// Requirement V6 (§7.14.7): a captured change of state needs a plain
+    /// value — not empty, blank, or containing control characters.
     #[error(
-        "state for asset {asset:?} is empty; a captured change of state needs a value (violates req/core/versioning-transitory, §7.14.7)"
+        "state for asset {asset:?} is empty, blank, or contains control characters; a captured change of state needs a plain value (violates req/core/versioning-transitory, §7.14.7)"
     )]
     EmptyState { asset: String },
     /// Requirement V1 (§7.14.2): changes address assets by datastore
@@ -86,6 +91,15 @@ pub enum VersioningViolation {
         asset: String,
         source: NamingViolation,
     },
+    /// Implementation constraint (doc-noted): the `versions/` journal and
+    /// the `global_metadata/` records are crate-managed machinery — not
+    /// assets a collection may address. Global-metadata changes go
+    /// through `write_global_metadata` (and V3-B touches it on every
+    /// apply); the journal is written only by the apply pipeline.
+    #[error(
+        "path {asset:?} is inside the reserved {tree:?} tree, which versioning collections may not address (implementation constraint under req/core/versioning, §7.14.2)"
+    )]
+    AssetInReservedTree { asset: String, tree: String },
     /// The `v######` id space is 1-based and finite; sequence 0 and
     /// sequences beyond [`SEQUENCE_MAX`] are refused (§7.14.3).
     #[error(
@@ -464,6 +478,23 @@ where
     current
 }
 
+/// If `path`'s first component names a reserved, crate-managed tree —
+/// the `versions/` journal ([`VERSIONS_DIR`]) or the `global_metadata/`
+/// records ([`crate::hierarchy::GLOBAL_METADATA_DIR`]) — returns that
+/// component; otherwise `None`. Versioning collections may not address
+/// either tree (implementation constraint, §7.14.2): see
+/// [`VersioningViolation::AssetInReservedTree`].
+pub(crate) fn reserved_tree_of(path: &str) -> Option<&'static str> {
+    let first = path.trim_start_matches('/').split('/').next()?;
+    if first == VERSIONS_DIR {
+        Some(VERSIONS_DIR)
+    } else if first == crate::hierarchy::GLOBAL_METADATA_DIR {
+        Some(crate::hierarchy::GLOBAL_METADATA_DIR)
+    } else {
+        None
+    }
+}
+
 /// One not-yet-applied change of a [`PendingCollection`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingChange {
@@ -597,7 +628,7 @@ impl PendingCollection {
                 });
             }
             if let PendingOp::SetState { state } = &change.op
-                && state.is_empty()
+                && (state.trim().is_empty() || state.chars().any(char::is_control))
             {
                 return Err(VersioningViolation::EmptyState {
                     asset: change.asset.clone(),
@@ -696,16 +727,20 @@ mod tests {
     }
 
     /// Requirement V6 req/core/versioning-transitory (§7.14.7) — a state
-    /// value must be non-empty.
+    /// value must be a plain non-empty string: empty, blank, and
+    /// control-character states are all rejected.
     #[test]
     fn req_core_versioning_collection_rejects_empty_state() {
-        let pending = PendingCollection::new().set_state("/Tiles/RoadNetwork.gpkg", "");
-        assert_eq!(
-            pending.validate(),
-            Err(VersioningViolation::EmptyState {
-                asset: "/Tiles/RoadNetwork.gpkg".to_owned(),
-            })
-        );
+        for bad in ["", "  ", "a\u{1}b"] {
+            let pending = PendingCollection::new().set_state("/Tiles/RoadNetwork.gpkg", bad);
+            assert_eq!(
+                pending.validate(),
+                Err(VersioningViolation::EmptyState {
+                    asset: "/Tiles/RoadNetwork.gpkg".to_owned(),
+                }),
+                "must reject state {bad:?}"
+            );
+        }
     }
 
     /// Requirement V1 req/core/versioning (§7.14.2) — asset and record
