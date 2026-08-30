@@ -852,6 +852,7 @@ impl TopoGraph {
     /// edge; [`TopologyViolation::EdgeInFace`] (§7.13.4.7 clips *edges*
     /// only); [`TopologyViolation::EdgeHasNoGeometry`],
     /// [`TopologyViolation::EdgeGeometryEndpointMismatch`],
+    /// [`TopologyViolation::EdgeGeometryNotFinite`],
     /// [`TopologyViolation::InvalidClipExtent`] (operational
     /// preconditions). Ids at the very top of the `u64` range are refused
     /// before any mutation (the mint counters must not saturate mid-clip).

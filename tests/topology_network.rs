@@ -79,14 +79,16 @@ fn req_core_topology_clip_network_across_two_cdb1_tiles() {
 
     // The whole-in-A road is untouched by the A clip.
     let in_a = graph.clip_edge_to_tile(EdgeId(2), tile_a).unwrap();
-    assert!(in_a.clip_nodes.is_empty() && in_a.inside == vec![EdgeId(2)]);
+    assert!(in_a.clip_nodes.is_empty());
+    assert_eq!(in_a.inside, vec![EdgeId(2)]);
 
     // Clip the outside part against tile B: the shared junction survives
     // with the same identifier and no new node is minted (Topo6's "SHALL
     // share the same node identifier in both tiles").
     let part_b = outcome.outside[0];
     let second = graph.clip_edge_to_tile(part_b, tile_b).unwrap();
-    assert!(second.clip_nodes.is_empty() && second.inside == vec![part_b]);
+    assert!(second.clip_nodes.is_empty());
+    assert_eq!(second.inside, vec![part_b]);
     let stored = graph.edge(part_b).unwrap();
     assert_eq!(stored.start, junction);
     assert_eq!(
