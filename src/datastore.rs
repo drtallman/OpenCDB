@@ -37,8 +37,8 @@ use crate::naming::{
 };
 use crate::profiles::{ApplicationProfile, RequirementsClass};
 use crate::versioning::{
-    self, ChangeAction, ChangeRecord, CollectionId, CollectionManifest, PendingCollection,
-    PendingOp, VersioningError, VersioningViolation,
+    self, ChangeAction, ChangeRecord, CollectionId, CollectionManifest, InverseOp,
+    PendingCollection, PendingOp, VersioningError, VersioningViolation,
 };
 
 /// A datastore-wide SHALL violation, gathering every requirements module's
@@ -942,6 +942,15 @@ fn versioning_io(error: io::Error) -> CdbError {
     CdbError::Versioning(VersioningError::Io(error))
 }
 
+/// Attaches an optional resource-record link to the most recently added
+/// change of a pending collection (rollback inverse assembly).
+fn with_record(pending: PendingCollection, record: Option<String>) -> PendingCollection {
+    match record {
+        Some(record) => pending.for_record(record),
+        None => pending,
+    }
+}
+
 /// Versioning facade (Requirements V1–V6, `/req/core/versioning*`,
 /// §7.14): applying and tracking versioning collections, reading the
 /// journal, and byte-level rollback. The pure model lives in
@@ -1221,6 +1230,137 @@ impl CdbDatastore {
         )
         .map_err(versioning_io)?;
         Ok(manifest)
+    }
+
+    /// Builds and applies the inverse of `target` (no latest-check): the
+    /// shared engine of [`CdbDatastore::rollback_collection_at`] (which
+    /// guards) and [`CdbDatastore::rollback_to_at`] (which processes the
+    /// tail in strict descending order — exactly the order under which
+    /// every inverse's preconditions hold).
+    fn apply_inverse_of(
+        &self,
+        target: &CollectionManifest,
+        applied: DateTime<Utc>,
+    ) -> Result<CollectionManifest, CdbError> {
+        let mut pending =
+            PendingCollection::new().description(format!("rollback of {}", target.id));
+        for op in target.inverse_ops() {
+            pending = match op {
+                InverseOp::Delete {
+                    asset,
+                    resource_record,
+                } => with_record(pending.delete(asset), resource_record),
+                InverseOp::RestoreReplace {
+                    asset,
+                    resource_record,
+                } => {
+                    let bytes =
+                        fs::read(self.archive_path(target.id, &asset)).map_err(versioning_io)?;
+                    with_record(pending.replace(asset, bytes), resource_record)
+                }
+                InverseOp::RestoreCreate {
+                    asset,
+                    resource_record,
+                } => {
+                    let bytes =
+                        fs::read(self.archive_path(target.id, &asset)).map_err(versioning_io)?;
+                    with_record(pending.create(asset, bytes), resource_record)
+                }
+                InverseOp::SetState {
+                    asset,
+                    state,
+                    resource_record,
+                } => with_record(pending.set_state(asset, state), resource_record),
+                InverseOp::ClearState {
+                    asset,
+                    resource_record,
+                } => with_record(pending.clear_state(asset), resource_record),
+            };
+        }
+        self.apply_collection_at(pending, applied)
+    }
+
+    /// Rolls back the LATEST applied collection with
+    /// `applied = Utc::now()`. See
+    /// [`CdbDatastore::rollback_collection_at`].
+    pub fn rollback_collection(&self, id: CollectionId) -> Result<CollectionManifest, CdbError> {
+        self.rollback_collection_at(id, Utc::now())
+    }
+
+    /// Rolls back one collection at an explicit instant — restoring every
+    /// changed asset's prior bytes and states from the collection's
+    /// archive and manifest (§7.14 intro's "rollback … a given asset",
+    /// realized beyond the boxes).
+    ///
+    /// Only the LATEST collection may be rolled back directly
+    /// ([`VersioningViolation::NotLatestCollection`] otherwise): undoing
+    /// an older collection beneath newer work would restore stale bytes.
+    /// The rollback is itself an applied collection — journaled,
+    /// timestamped (V3), and rollbackable.
+    pub fn rollback_collection_at(
+        &self,
+        id: CollectionId,
+        applied: DateTime<Utc>,
+    ) -> Result<CollectionManifest, CdbError> {
+        let journal = self.versions()?;
+        let Some(target) = journal.iter().find(|manifest| manifest.id == id) else {
+            return Err(versioning_violation(
+                VersioningViolation::UnknownCollection { id: id.to_string() },
+            ));
+        };
+        let Some(latest) = journal.last() else {
+            return Err(versioning_violation(
+                VersioningViolation::UnknownCollection { id: id.to_string() },
+            ));
+        };
+        if latest.id != id {
+            return Err(versioning_violation(
+                VersioningViolation::NotLatestCollection {
+                    id: id.to_string(),
+                    latest: latest.id.to_string(),
+                },
+            ));
+        }
+        self.apply_inverse_of(target, applied)
+    }
+
+    /// Rolls back the whole datastore to its content as of collection
+    /// `id` with `applied = Utc::now()`. See
+    /// [`CdbDatastore::rollback_to_at`].
+    pub fn rollback_to(&self, id: CollectionId) -> Result<Vec<CollectionManifest>, CdbError> {
+        self.rollback_to_at(id, Utc::now())
+    }
+
+    /// Rolls back the whole datastore to its content as of collection
+    /// `id` (§7.14 intro's "rollback to previous versions of the entire
+    /// datastore"): snapshots the collections after `id` at entry and
+    /// applies their inverses in strict DESCENDING sequence order — the
+    /// order under which each inverse's preconditions hold, since
+    /// undoing sequence `n` restores exactly the content sequence `n−1`
+    /// changed. Every inverse shares the one `applied` instant and is
+    /// appended to the journal; the returned manifests are in application
+    /// order. Rolling back to the latest collection is a no-op returning
+    /// an empty list.
+    pub fn rollback_to_at(
+        &self,
+        id: CollectionId,
+        applied: DateTime<Utc>,
+    ) -> Result<Vec<CollectionManifest>, CdbError> {
+        let journal = self.versions()?;
+        if !journal.iter().any(|manifest| manifest.id == id) {
+            return Err(versioning_violation(
+                VersioningViolation::UnknownCollection { id: id.to_string() },
+            ));
+        }
+        let tail: Vec<&CollectionManifest> = journal
+            .iter()
+            .filter(|manifest| manifest.sequence > id.sequence())
+            .collect();
+        let mut applied_manifests = Vec::with_capacity(tail.len());
+        for target in tail.iter().rev() {
+            applied_manifests.push(self.apply_inverse_of(target, applied)?);
+        }
+        Ok(applied_manifests)
     }
 }
 
@@ -2062,5 +2202,118 @@ mod tests {
                 }
             )))
         ));
+    }
+
+    /// Rollback safety (doc-noted constraint) — only the latest collection
+    /// rolls back directly; unknown targets are rejected.
+    #[test]
+    fn req_core_versioning_rollback_latest_only() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/A.gpkg", *b"aa"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/B.gpkg", *b"bb"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        let first = CollectionId::parse("v000001").unwrap();
+        assert!(matches!(
+            store.rollback_collection_at(first, ts("2026-08-30T12:00:00Z")),
+            Err(CdbError::Versioning(VersioningError::Violation(
+                VersioningViolation::NotLatestCollection { .. }
+            )))
+        ));
+        let unknown = CollectionId::parse("v000009").unwrap();
+        assert!(matches!(
+            store.rollback_collection_at(unknown, ts("2026-08-30T12:00:00Z")),
+            Err(CdbError::Versioning(VersioningError::Violation(
+                VersioningViolation::UnknownCollection { .. }
+            )))
+        ));
+    }
+
+    /// §7.14 intro's "rollback … a given asset" — rolling back the latest
+    /// collection restores replaced bytes and deleted files from the
+    /// archive, as a new journaled collection.
+    #[test]
+    fn req_core_versioning_rollback_collection_restores_bytes() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .create("/Tiles/A.gpkg", *b"aa-original")
+                    .create("/Tiles/B.gpkg", *b"bb-original"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .replace("/Tiles/A.gpkg", *b"aa-changed")
+                    .delete("/Tiles/B.gpkg"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        let second = CollectionId::parse("v000002").unwrap();
+        let inverse = store
+            .rollback_collection_at(second, ts("2026-08-30T12:00:00Z"))
+            .unwrap();
+        assert_eq!(inverse.sequence, 3);
+        assert_eq!(inverse.description.as_deref(), Some("rollback of v000002"));
+        assert_eq!(inverse.changes[0].action, ChangeAction::Replaced);
+        assert_eq!(inverse.changes[1].action, ChangeAction::Created);
+        let a = store.resolve("/Tiles/A.gpkg").unwrap();
+        assert_eq!(fs::read(a).unwrap(), b"aa-original");
+        let b = store.resolve("/Tiles/B.gpkg").unwrap();
+        assert_eq!(fs::read(b).unwrap(), b"bb-original");
+        assert_eq!(store.versions().unwrap().len(), 3);
+    }
+
+    /// §7.14 intro's "rollback to previous versions of the entire
+    /// datastore" — rollback_to snapshots the tail and applies inverses in
+    /// descending order, restoring the content as of the target.
+    #[test]
+    fn req_core_versioning_rollback_to_restores_point() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/A.gpkg", *b"a-v1"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new().replace("/Tiles/A.gpkg", *b"a-v2"),
+                ts("2026-08-30T11:00:00Z"),
+            )
+            .unwrap();
+        store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .replace("/Tiles/A.gpkg", *b"a-v3")
+                    .create("/Tiles/B.gpkg", *b"b-v3"),
+                ts("2026-08-30T12:00:00Z"),
+            )
+            .unwrap();
+        let target = CollectionId::parse("v000001").unwrap();
+        let applied = ts("2026-08-30T13:00:00Z");
+        let inverses = store.rollback_to_at(target, applied).unwrap();
+        assert_eq!(inverses.len(), 2);
+        assert_eq!(inverses[0].sequence, 4, "inverse of v000003 first");
+        assert_eq!(inverses[1].sequence, 5, "then inverse of v000002");
+        assert!(inverses.iter().all(|manifest| manifest.applied == applied));
+        let a = store.resolve("/Tiles/A.gpkg").unwrap();
+        assert_eq!(fs::read(a).unwrap(), b"a-v1");
+        assert!(!store.resolve("/Tiles/B.gpkg").unwrap().exists());
+        assert_eq!(store.versions().unwrap().len(), 5);
+        let noop = store
+            .rollback_to_at(CollectionId::parse("v000005").unwrap(), applied)
+            .unwrap();
+        assert!(noop.is_empty());
     }
 }
