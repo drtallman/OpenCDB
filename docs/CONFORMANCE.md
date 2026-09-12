@@ -50,9 +50,22 @@ so those warnings carry a `/req/core/` code and are warnings all the same.
 2. **Five classes are mandatory** — Annex A bundles them as `/conf/minimal-core`
    — and six are optional, binding once the datastore holds the content they
    govern.
-3. **A declared class with no corresponding content passes**, and the report
-   says so separately (`ClassFindings::has_content`), so a vacuous pass on an
-   empty datastore cannot be misread as a clean check.
+3. **A pass has three meanings, and the report says which.** Every listed
+   class carries a `ContentCoverage` (`ConformanceReport::class_coverage`,
+   serialized as the `content` field of a class entry) alongside its verdict:
+
+   | `content` | Meaning |
+   |---|---|
+   | `checked` | the datastore held content this class governs, and it was judged |
+   | `none` | the datastore held no such content — a declared class with nothing to check **passes** |
+   | `unchecked` | content was present but this crate has no datastore-level check that could judge it |
+
+   None of the three affects pass/fail. The third is not a gap awaiting work:
+   it is the standing position of **Geometry and Topology**, whose subjects
+   live inside payloads the crate deliberately does not decode — see §6. A
+   consumer that reads `"passed": true` without reading `content` will
+   mistake "we did not look" for "we looked and it was fine", which is the
+   false green this document exists to prevent.
 4. **Undeclared content is reported.** A content sweep reports content whose
    class the profile never declared as
    `CdbViolation::DeclarationMismatch`, filed under that class. A report
@@ -146,7 +159,7 @@ It is the only cross-class normalization in the crate.
 | Metadata4 — one BCP 47 language | `/req/core/metadata-language` | `LanguageTag` | `req_core_metadata_language_bcp47` |
 | Metadata5 — one encoding (xml/json/gpkg) | `/req/core/metadata-encoding` | `MetadataEncoding`, `metadata::encoding_violations`, `CdbDatastore::write_global_metadata` | `req_core_metadata_encoding_values`, `req_core_metadata_encoding_consistency`, `req_core_metadata_encoding_write_global_metadata_refuses_switch`, `req_core_metadata_encoding_write_attribute_model_refuses_switch`, `req_core_metadata_encoding_simulation_json_or_xml`, `req_core_metadata_encoding_gnosis_mirrors_simulation_convention`, `req_core_metadata_declaration_mismatch_detected` |
 | Metadata6 — UTC, RFC 3339 §5.6 | `/req/core/metadata-datetime`, `/req/core/metadata-datetime-A` | `metadata::temporal` | `req_core_metadata_datetime_accepts_utc_forms`, `req_core_metadata_datetime_rejects_non_utc`, `req_core_metadata_datetime_rejects_malformed`, `req_core_metadata_datetime_formats_canonical_z`, `req_core_metadata_datetime_enforced_on_deserialize` |
-| Metadata7 — temporal intervals (incl. half-bounded) | `/req/core/metadata-temporal-interval` | `metadata::temporal::TemporalInterval` | `req_core_metadata_temporal_instant`, `req_core_metadata_temporal_bounded_interval`, `req_core_metadata_temporal_half_bounded`, `req_core_metadata_temporal_rejects_invalid` |
+| Metadata7 — temporal intervals (incl. half-bounded) | `/req/core/metadata-temporal-interval` | `metadata::temporal::Temporal` (its `Interval` arm), `metadata::temporal::parse_datetime` | `req_core_metadata_temporal_instant`, `req_core_metadata_temporal_bounded_interval`, `req_core_metadata_temporal_half_bounded`, `req_core_metadata_temporal_rejects_invalid` |
 | Metadata8 — one unit of measure, element `uom` | `/req/core/metadata-uom-measure` | `UnitOfMeasure` | `req_core_metadata_uom_values`, `req_core_metadata_standard_and_uom_pinned` |
 | §7.9.4.1 — global element table | `/req/core/metadata-` (`MissingElement`) | `GlobalMetadata`, `GlobalMetadataBuilder` | `req_core_metadata_global_builder_requires_mandatory`, `req_core_metadata_global_wire_names` |
 | §7.9.4.2 — resource element table and its four conditional elements | `/req/core/metadata-` | `ResourceMetadata` (`uom`, `domainSet`, `windingOrder`; `tilingScheme` on the global record) | `req_core_geometry_mvalue_resource_uom_roundtrip`, `req_core_coverage_domainset_resource_roundtrip`, `req_core_topology_winding_resource_roundtrip`, `req_core_tiling_tilingscheme_global_roundtrip` |
@@ -235,6 +248,12 @@ own at 1.0.
 
 ### 4.10 Topology — `/req/core/topology` (§7.13, optional)
 
+**Read §6 before reading a "Topology: conformant" verdict.** Like Geometry,
+this class reports `content: "unchecked"` when a datastore carries topology:
+the graph lives in a payload the crate does not decode, so the items below
+are real API and real tests, but the *datastore-level stage* judges almost
+nothing.
+
 | Requirement | Code | API | Tests |
 |---|---|---|---|
 | Topo1 — the ISO 19107 model | `/req/core/topology` | `TopoNode`, `TopoEdge`, `TopoFace`, `SignedEdge`, `DirectedEdge`, `DirectedNode` | `req_core_topology_topic1_primitives_are_coordinate_free` |
@@ -293,12 +312,22 @@ Three normalizations make every code a single whitespace-free token:
 
 1. **Always absolute** — `/req/core/…` for a requirement box, `/rec/core/…`
    for a recommendation box, `/per/core/…` for a permission box, and
-   `/conf/minimal-core` for Annex A's bundle. The draft writes the attribution
-   and versioning slugs *without* the leading solidus and everything else with
-   it; one form is used here.
-2. **A part letter joins with a hyphen** — the draft's
-   `/req/core/attribute-model-content B` becomes `…-content-B`.
+   `/conf/minimal-core` for Annex A's bundle. The draft is inconsistent: the
+   requirement boxes of §7.11, §7.12 and §7.14 drop the leading solidus that
+   their own class tables use, and Tiling9 does the reverse (see errata row
+   5). One form is used here.
+2. **A part letter joins with a hyphen** — the draft puts a part's letter in
+   its own table column, so `/req/core/attribute-model-content` + `B` is not
+   one token anywhere in the document; this crate writes
+   `/req/core/attribute-model-content-B` (see errata row 6).
 3. **The code names the clause, not the severity** (see §1).
+4. **A code discriminates.** No violation carries the bare
+   requirements-module URI of a class the content sweep can convict
+   (Attribution, Coverages, Tiling, Topology, Versioning): that string is
+   what an undeclared-content `DeclarationMismatch` cites, and a consumer
+   keying on `code` has to be able to tell "this datastore holds undeclared
+   versioning content" from "this collection addressed a reserved tree".
+   `req_core_conformance_finding_codes_discriminate_from_sweep` enforces it.
 
 **Many-to-one is expected.** A code identifies a clause, and one clause is
 breakable in several ways: `DuplicateId` and `EmptyId` are both
@@ -306,7 +335,7 @@ breakable in several ways: `DuplicateId` and `EmptyId` are both
 
 ### 5.1 Codes this crate had to judge
 
-Seven findings have no slug to read off the draft. Each is recorded here so
+Nine findings have no slug to read off the draft. Each is recorded here so
 an auditor sees the reasoning rather than guessing at it:
 
 | Finding | Code | Why |
@@ -314,8 +343,10 @@ an auditor sees the reasoning rather than guessing at it:
 | `NamingViolation::EmptyName`, `NamingViolation::EmptyPathComponent` | `/req/core/naming-system` | No box of its own; an empty name is the naming system's floor. |
 | `NamingViolation::ControlCharacter` | `/req/core/name-unicode-B` | The crate's own portability extension of Name1-B's character rule; the draft does not spell control characters out. |
 | `MetadataViolation::MissingElement` | `/req/core/metadata-` | The §7.9.4 element tables carry no per-element box; the module URI is the honest answer. |
-| `TopologyViolation::UnknownEdgeId` | `/req/core/topology` | Raised from both the clip (§7.13.4.7) and the face-boundary (§7.13.5.4) paths; naming one would be arbitrary. |
+| `TopologyViolation::UnknownEdgeId` | `/req/core/topology-edgeID` | Raised from both the clip (§7.13.4.7) and the face-boundary (§7.13.5.4) paths, so it names neither: Topo3 is the clause that makes an edge identifier mean something. It may not be the bare `/req/core/topology`, per normalization 4. |
 | `VersioningViolation::AssetMissing` | `/req/core/versioning-functions` | V4-B (delete) and V4-C (update) both reach it, so no part letter. |
+| `VersioningViolation::InvalidAssetPath`, `VersioningViolation::AssetInReservedTree` | `/req/core/versioning-A` | V1's own box URI collides with the versioning class URI (errata row 9), so the part letter is what keeps `code` a discriminator (normalization 4). |
+| `VersioningViolation::UnknownCollection`, `VersioningViolation::NotLatestCollection` | `/req/core/versioning-collection` | Rollback preconditions: both are about *which* collection is addressed, which is Requirement V2's subject. The draft has no box for rollback (§7.14 intro only). |
 | `CoverageWarning::UomLooksLikeUri` | `/req/core/coverage-domainSet-A` | §7.2.6.1's disconnected-environment SHOULD is prose under the `uom` element's own requirement part; it has no box. |
 | `TilingViolation::UnknownTilingScheme` | `/rec/core/tiling-extension` | A vocabulary rejection against the set that recommendation closes. |
 
@@ -323,16 +354,25 @@ an auditor sees the reasoning rather than guessing at it:
 
 ## 6. Honesty notes — what a conformant verdict does not mean
 
+**These notes are also machine-readable.** Everything below about Geometry
+and Topology is carried in the report itself as
+`ContentCoverage::Unchecked` — `content: "unchecked"` on the wire, `[PASS]
+geometry (content not checked)` in the rendered text (§2 item 3). A tool that
+keys on `content` does not have to have read this section to avoid the false
+green; a human reading only `passed` does.
+
 **The crate does not decode payloads.** GeoPackage containers, raster files,
 and model files are opaque bytes it stores and returns verbatim (`proj` and
 `gdal` are deliberately absent). Every content signal it reads is a directory
 entry or a parsed metadata element — never a payload byte.
 
-**Geometry's stage checks one element.** Requirements Geom1–Geom6 govern
-geometry *instances*, which live in those payloads. The Geometry stage of
-`validate` therefore checks only the Geom4 `uom` conditional element on
-geometry-bearing records. "Geometry: conformant" means the Geom4 declarations
-the records carry are well formed — **not** that any geometry was inspected.
+**Geometry's stage cannot fail.** Requirements Geom1–Geom6 govern geometry
+*instances*, which live in those payloads. The Geometry stage of `validate`
+reaches only the Geom4 `uom` conditional element, and every record reaching
+it was already validated at parse time — so the stage re-checks a record
+known to be valid and can produce no finding at all. "Geometry: conformant"
+therefore means **nothing was inspected**, and the report says exactly that
+(`content: "unchecked"`).
 Instance-level validation remains an API-boundary duty: a caller holding a
 decoded geometry calls `CdbGeometry::validate_in` against a
 `GeometryContext`, and that is where Geom2/Geom3/Geom5/Geom6 actually bite.
@@ -340,12 +380,15 @@ Geom4 is unenforceable at the datastore level in *both* directions: the crate
 can see neither the m coordinates nor their absence, so it can neither
 require the `uom` nor forbid it.
 
-**Topology's stage validates against an empty graph.** A topological graph
-lives in the dataset payload, so Face4's face-count arm ("once the graph
-contains faces, the record SHALL declare a `windingOrder`") cannot fire from
-the datastore level. It stays an API-boundary duty for a caller holding a
-decoded `TopoGraph`. What the stage does check holds by construction: a
-record that declares a winding order declares a valid one.
+**Topology's stage validates against an empty graph, and so cannot fail
+either.** A topological graph lives in the dataset payload, so Face4's
+face-count arm ("once the graph contains faces, the record SHALL declare a
+`windingOrder`") cannot fire from the datastore level. It stays an
+API-boundary duty for a caller holding a decoded `TopoGraph`. What the stage
+does check holds by construction — a record that declares a winding order
+declares a valid one, since `WindingOrder` is a closed enum the parse already
+rejected bad values for — so this class too reports `content: "unchecked"`
+whenever a datastore carries topology.
 
 **Coverages4 is judged as association-via-datastore.** A per-instance CRS
 claim lives in the coverage payload, so the stage passes `source_crs` as
@@ -380,11 +423,11 @@ file with the OGC CDB SWG.
 | # | Where | Defect | What this crate does |
 |---|---|---|---|
 | 1 | §7.10.2 | The "Requirements Class — Tiling-Abstract" box labels itself `/req/core/geometry-`, a copy-paste from §7.6 that collides with the Geometry class. | Uses `/req/core/tiling`. |
-| 2 | §7.9.3.5 vs §7.1.2.1 | Requirement Metadata5 admits `xsd` as an XML metadata extension and matches extensions case-insensitively, while Attr1-C mandates one literal file name. Nothing says which governs `vector_attributes.xsd` (or `vector_attributes.JSON`). | Lets both speak: Metadata5 stays silent, Attr1-C convicts. Without this, an XML datastore could carry an attribute model nothing would ever load and still look clean. |
+| 2 | §7.1.2.1 vs §7.4.8, §7.9.3.5 | Requirement Name7's extension table admits `*.xsd` for XML and Metadata5 admits a `gpkg` datastore encoding, while Attr1-C fixes the attribute model's name to `vector_attributes.<ext>` "where `<ext>` is either xml or json". Nothing says which governs `vector_attributes.xsd`, or what an all-`gpkg` datastore's attribute model is called. | Lets both speak: the encoding sweep stays silent, Attr1-C convicts. Without this, an XML datastore could carry an attribute model nothing would ever load and still look clean. A `gpkg`-encoded datastore has no core-readable model at all (`attribution::file_name_for` yields `None`), which counts as no attribution content. |
 | 3 | §7.2.2, §7.9 | The Coverages and Metadata module URIs carry a trailing hyphen (`/req/core/coverages-`, `/req/core/metadata-`). | Reproduced verbatim — a trailing hyphen is ugly, not ambiguous. |
 | 4 | §7.6.3 | Geom3's slug is inconsistent: the class table says `/req/core/geometry-zvalue`, the requirement box says `req/core/geometry-zcoordinate` (also missing its leading solidus). | Uses `/req/core/geometry-zvalue`, the class table's spelling. |
-| 5 | §7.1, §7.14 | The attribution and versioning slugs are written without a leading solidus; every other module uses one. | Normalized to absolute (§5). |
-| 6 | throughout | Part letters are written with a space (`/req/core/attribute-model-content B`), which makes a code non-tokenizable. | Hyphen-joined in codes; display text keeps the draft's spacing. |
+| 5 | §7.10.2, §7.11.3, §7.12.3, §7.14.2–.7 | Requirement box URIs in both grid extensions and in all six versioning boxes are written without the leading solidus their own class tables use; Tiling9 is the mirror image (no solidus in the §7.10.2 class table, solidus in its box). Attribution, by contrast, is solidus-consistent throughout. | Normalized to absolute (§5). |
+| 6 | throughout | A multi-part requirement puts each part's letter in its own table column, so the draft never spells a part's identity as one token — `/req/core/attribute-model-content` and `B` are separate cells. Single-part boxes carry no letter at all. | Hyphen-joined into one token in codes (`…-content-B`); display prose follows the draft's two-column layout. |
 | 7 | §7.11, §7.12 | TCE5's tileset-metadata requirement box is **missing** from the document in both extensions. | Tileset duties are covered by Tiling9/10 at the abstract level. |
 | 8 | §7.13.5 | Face1's box reuses Topo1's URI verbatim; the Face3 and Face4 boxes carry `/rec/` prefixes although their labels and text are conditional SHALLs. | Read as SHALLs; Face4 codes to `/req/core/topology-winding` (its box's own slug is `-face-winding`). |
 | 9 | §7.14.2 | V1's box URI collides with the versioning class URI. | Cites §7.14.2 rather than inventing a slug. |
@@ -392,9 +435,9 @@ file with the OGC CDB SWG.
 | 11 | §7.14.4 | The clause carries an editorial TODO admitting it lacks words for who made a change and how a change links to a resource record. | Filled implementation-defined: `CollectionManifest::description` and `ChangeRecord::resource_record`. |
 | 12 | §7.13.2 | Topo1's box cites ISO "19101" where 19107 is meant; V6's text reads "the ability capture". | Read through the typo. |
 | 13 | §7.9.4.2 | There is **no** per-record tileset-metadata signal: no conditional element, and `ResourceType` has the single `Dataset` variant. | See §8 — this crate's one interpretation of a silence. |
-| 14 | Annex A | Conformance-class URIs in the draft omit some path separators. | Normalized to `http://www.opengis.net/spec/CDB/2.0/conf/<profile>/<class>`. |
+| 14 | §2, Table 1 | Two of the five suggested conformance-class URIs omit the separator after `<name>` (`…/conf/<name>file-naming`, `…/conf/<name>file-structure`); the other three carry it. Annex A's own single URI (`/conf/minimal-core`) is well formed. | Normalized to `http://www.opengis.net/spec/CDB/2.0/conf/<profile>/<class>`. |
 | 15 | §7.2.6 | Coverages6-E assigns `data_null` no default and no mandatory line. | Read as "absent means the coverage has no null value". |
-| 16 | §7.3 | The CRS examples are malformed strict WKT-2 (a missing comma between compound members, a space before `[`). | The WKT-2 reader is comma-lenient, so the spec's own examples parse verbatim. |
+| 16 | §7.3.1.4, §7.3.1.9 | Both CRS examples are malformed strict WKT-2: a missing comma between the two compound members, and a space before `[` in `COMPOUNDCRS [`. The §7.3.1.9 copy is additionally bracket-unbalanced — it closes `VERTCRS` and leaves `COMPOUNDCRS` open, where the otherwise identical §7.3.1.4 copy closes both. | The WKT-2 reader is comma- and whitespace-lenient, so the spec's own examples parse verbatim. The unbalanced bracket is the one thing leniency cannot cover — an unclosed node is an unreadable document — so the test fixture uses §7.3.1.4's balanced spelling and says so. |
 | 17 | §7.1.2.3 | The example attribute table carries a stray closing parenthesis in a description. | Reproduced verbatim in the test fixture. |
 | 18 | §7.4.5 | Recommendation Name4 (avoid empty folders) is a *naming* recommendation that can only be detected by walking the tree. | Emitted by the hierarchy validator and filed under File Structure; its code stays `/req/core/name-empty-folders-A`. |
 
@@ -489,7 +532,7 @@ sweep convicts it, which is the right layer.
 
 ## 10. How this document is kept honest
 
-`tests/conformance_matrix.rs` holds two guards that run with every
+`tests/conformance_matrix.rs` holds three guards that run with every
 `cargo test`:
 
 - **`req_core_conformance_matrix_lists_every_requirements_class`** — for each
@@ -500,11 +543,27 @@ sweep convicts it, which is the right layer.
   document grows the section that audits it.
 - **`req_core_conformance_matrix_cites_only_real_tests`** — every backticked
   `req_*` / `rec_*` / `conf_*` / `per_*` token in this file must resolve to a
-  test function somewhere in `src/` or `tests/`. An audit that follows a
-  citation to a renamed or deleted test is worse served than by no citation
-  at all. The guard also asserts that it found a plausible number of tests on
-  both sides, so it cannot pass by looking in the wrong place.
+  function somewhere in `src/` or `tests/` that **carries `#[test]`**. An
+  audit that follows a citation to a renamed or deleted test is worse served
+  than by no citation at all, and a test-shaped *helper* would be worse
+  still — it would look like evidence while running never. The guard asserts
+  that it found a plausible number of tests on both sides, so it cannot pass
+  by looking in the wrong place, and it checks a deliberately planted
+  non-`#[test]` decoy is rejected, so its attribute lookback is proven rather
+  than assumed.
+- **`req_core_conformance_matrix_cites_only_real_api_items`** — every
+  backticked Rust-path token in the matrix's **API** column must resolve,
+  segment by segment, to an identifier `src/` declares. The Tests column was
+  guarded from the start and this one was not; a review found
+  `metadata::temporal::TemporalInterval` here — a type that was never
+  written — which is precisely the dead end the document exists to prevent.
+  Tokens that are deliberately *not* crate items (the spec's `domainSet`,
+  `windingOrder` and `tilingScheme` element names, the WKT-2 keywords,
+  `serde`'s own traits) are listed by name in the test, so admitting a new
+  one is a deliberate act rather than a silent exemption. Only §4's tables
+  are scanned — §5.1's and §7's third columns are prose, where a backticked
+  encoding or file name is not a claim about the API.
 
-Neither guard can check that a cited test *proves* what the row claims. That
-is what the citation is for: the row tells you where to look, and the test's
-own doc comment cites the spec clause it verifies.
+No guard can check that a cited test *proves* what the row claims. That is
+what the citation is for: the row tells you where to look, and the test's own
+doc comment cites the spec clause it verifies.

@@ -345,9 +345,9 @@ Split into **14a** (mandatory core — the `0.1.0` milestone, done) and **14b**
 
 | Item | Realization |
 |---|---|
-| The `conformance` module | Extracted from `datastore.rs` (2,794 → 1,807 lines): `class.rs` (`RequirementsClass`, moved out of `profiles` — conformance owns the vocabulary, profiles declare *from* it), `finding.rs` (`CdbViolation`/`CdbWarning` + the one auditable `code()` table), `report.rs` (`ClassFindings`/`ConformanceReport`), `validate.rs` (the orchestrator). All five types stay re-exported at the crate root; `CdbDatastore::validate` delegates. |
+| The `conformance` module | Extracted from `datastore.rs` (2,794 → 1,807 lines): `class.rs` (`RequirementsClass`, moved out of `profiles` — conformance owns the vocabulary, profiles declare *from* it), `finding.rs` (`CdbViolation`/`CdbWarning` + the one auditable `code()` table), `report.rs` (`ClassFindings`/`ConformanceReport`/`ContentCoverage`), `validate/` (`mod.rs` the orchestrator, `stages.rs` the optional-class stages, `sweep.rs` the content sweep, `support.rs` the test profiles). All five types stay re-exported at the crate root; `CdbDatastore::validate` delegates. |
 | Eleven requirements classes | `RequirementsClass` gains Attribution, Coverages, Geometry, Tiling, Topology, Versioning (alphabetical, because `Ord` order **is** the report's listing order); `MANDATORY` joined by `OPTIONAL` and `ALL`. `CdbWarning` gains `Coverage` and `Tiling` — the only two optional classes with SHOULD-level text. Topology, Versioning and Attribution deliberately have **no** warning variant. |
-| Optional-class stages | One stage per declared class, each delegating to the owning module's free fn — `validate_coverage_instance`, `validate_tileset_metadata`, `validate_topology_dataset`, and the three added here: `geometry::validate_geometry_metadata`, `attribution::validate_attribute_model_document`, `versioning::validate_journal`. A declared class with no content **passes**, recorded separately via `ClassFindings::has_content` so a vacuous pass is never mistaken for a clean one. |
+| Optional-class stages | One stage per declared class, each delegating to the owning module's free fn — `validate_coverage_instance`, `validate_tileset_metadata`, `validate_topology_dataset`, and the three added here: `geometry::validate_geometry_metadata`, `attribution::validate_attribute_model_document`, `versioning::validate_journal`. A declared class with no content **passes**, recorded separately via `ClassFindings::coverage` so a vacuous pass is never mistaken for a clean one. That field is a **three-state** `ContentCoverage` (`checked` / `none` / `unchecked`), not a boolean: the Geometry and Topology stages are structurally incapable of producing a finding — their subjects live in payloads the crate does not decode — so they mark content `unchecked`, and the report never claims a check that provably never ran. |
 | The content sweep | Rides the existing walk (no third traversal): five signals — a `vector_attributes.*` entry, the `tilingScheme` element, a `versions/` journal, `windingOrder`, `domainSet` — each reported under its class as `CdbViolation::DeclarationMismatch` when undeclared, clause = the class's `requirements_uri()`. Signals come only from directory entries and parsed metadata, never payload bytes. Geometry is deliberately **not** swept (Geom4's `uom` is a unit declaration, too weak to convict). Closes the Phase 13 carry-forward: `attribution::parse_file_name` finally has a production caller, so `vector_attributes.xsd` in an XML store and `Vector_Attributes.json` stop being invisible. Two cross-checks ride along: Tiling4 (profile pin vs the on-disk element) and the attribute model, both gated on `Some` since both trait methods default to `None`. `GlobalMetadataBuilder::tiling_scheme` added so the element can be written at all. |
 | The case stance | `naming::guard_eq` (ASCII-only, `pub(crate)`): **guards fold, requirements don't.** Six fold sites (reserved-tree guard, root-name match, `global_metadata/` detection, the `vector_attributes` stem signal, the `versions/` descent guard, `is_resource_metadata`'s `metadata/` component — the last two were not on the design spec's list); four deliberate non-fold sites (Name6's `CaseRule::matches`, `StyleGuide::is_reserved`, Attr1-C's `parse_file_name`, Attr2-B id uniqueness). Closes the item parked since Phase 12. |
 | serde surfaces | `ConformanceReport` is `Serialize` in a designed (not derived) shape: class-keyed array in `Ord` order, every finding a flat `{code, class, severity, message}` record. `Deserialize` only where a round-trip is meaningful (`RequirementsClass`, the topology primitives). `TopoGraph`'s `Deserialize` replays the constructors, so a wire graph meets the same SHALLs an in-memory one does. |
@@ -505,23 +505,30 @@ for Phase 9).
   hand-authored XML), literal Attr1-C name matching, blank-URI remainder
   rejected, Gpkg facade coverage, crate-root re-exports;
   281 tests (261 unit + 19 integration + 1 doc); tagged `v0.8.0`.
-- Phase 14b done (`phase-14b(conformance)` commits ×8): the `conformance`
+- Phase 14b done (`phase-14b(conformance)` commits ×10): the `conformance`
   module extraction, eleven requirements classes with optional-class
   warnings, the six optional-class stages, the content sweep with the
   Attr1-C closure and the Tiling4/attribute-model cross-checks, the
   crate-wide case stance, serde on reports and topology primitives, the
-  GNOSIS profile and the interior-whitespace URI tightening, and finally
+  GNOSIS profile and the interior-whitespace URI tightening, then
   `tests/full_conformance.rs`, `tests/conformance_matrix.rs` and
-  `docs/CONFORMANCE.md`; 329 tests (304 unit + 24 integration + 1 doc);
+  `docs/CONFORMANCE.md`, the `validate.rs` split into `validate/`, and the
+  single post-review fix wave; 335 tests (309 unit + 25 integration + 1 doc);
   tagged `v1.0.0`. As-built notes: `CdbViolation` forgoes its `Eq` derive
   (`TilingViolation` carries `f64`); `ClassFindings` is
-  `#[non_exhaustive]` and gained `has_content`;
+  `#[non_exhaustive]` and carries a three-state `ContentCoverage` rather
+  than a `has_content` boolean, so the two stages that cannot fail report
+  `unchecked` instead of claiming a check;
+  `RequirementsClass::{MANDATORY,OPTIONAL,ALL}` are `&'static` slices, not
+  fixed-size arrays, so a twelfth class stays a `1.x` change as the
+  `#[non_exhaustive]` enum promises;
   `SimulationProfile::conformance_classes()` widened from `MANDATORY` to
   `ALL` (the truthful declaration — an under-declaring profile convicts its
   own datastores), which is why the sweep's integration coverage needs the
   deliberately narrow profile in `tests/full_conformance.rs`; finding codes
-  are normalized absolute and hyphen-joined (the draft is inconsistent), and
-  the seven codes with no draft slug are listed in `docs/CONFORMANCE.md` §5.1.
+  are normalized absolute and hyphen-joined (the draft is inconsistent), must
+  discriminate from the sweep's own `DeclarationMismatch`, and the nine codes
+  with no draft slug are listed in `docs/CONFORMANCE.md` §5.1.
 - **The plan is complete.** Everything further is TDD_PLAN §8 territory:
   separate projects, each with its own brainstorm→spec→plan cycle.
 
