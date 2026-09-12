@@ -357,14 +357,21 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// The spec's compound-CRS example (§7.3.1.9) — including its missing
-    /// comma between member CRSs and the space before `[`, both of which the
-    /// reader is lenient about. **One correction**: the draft's §7.3.1.9 copy
-    /// closes `VERTCRS` and then stops, leaving `COMPOUNDCRS` open, where the
-    /// otherwise identical §7.3.1.4 copy closes both. The balanced spelling is
-    /// used here — an unclosed node is not a leniency question but an
-    /// unreadable document. Errata §7 row 16.
-    const SPEC_COMPOUND: &str = r#"COMPOUNDCRS ["CDB Compound CRS",
+    /// The spec's compound-CRS example — **verbatim, with no correction at
+    /// all**, including its missing comma between member CRSs and the space
+    /// before `[`, both of which the reader is lenient about.
+    ///
+    /// The draft prints this example twice. The copy taken here is
+    /// **§7.3.1.4**'s (spec line 989), under Requirement CRS5, because it is
+    /// the *balanced* one; §7.3.1.9's copy (line 1087) is byte-identical
+    /// apart from the title string and closes `VERTCRS` and then stops,
+    /// leaving `COMPOUNDCRS` open. An unclosed node is not a leniency
+    /// question but an unreadable document, so a fixture built on it would
+    /// have had to be corrected and would prove nothing about the reader.
+    /// Taking the other copy whole avoids the correction entirely — the title
+    /// `"I3S Compound CRS"` is the only difference, and a CRS's name is not
+    /// what any of these tests judge. Errata §7 row 16.
+    const SPEC_COMPOUND: &str = r#"COMPOUNDCRS ["I3S Compound CRS",
 GEODCRS["WGS 84",
   DATUM["World Geodetic System 1984",
     ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1.0]]],
@@ -377,7 +384,7 @@ VERTCRS["EGM2008 height",
   VDATUM["EGM2008 geoid"],
   CS[vertical,1],
     AXIS["gravity-related height (H)",up],
-  LENGTHUNIT["metre",1.0],
+    LENGTHUNIT["metre",1.0],
   ID["EPSG",3855]]]"#;
 
     /// The spec's static geographic example (§7.3.1.4), verbatim.

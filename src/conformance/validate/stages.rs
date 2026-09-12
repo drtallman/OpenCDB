@@ -9,6 +9,7 @@
 //! none: a declared class with nothing to check passes.
 
 use std::fs;
+use std::io;
 
 use crate::attribution::{self, AttributeModel, AttributionError};
 use crate::conformance::{ConformanceReport, RequirementsClass};
@@ -20,45 +21,83 @@ use crate::geometry;
 use crate::metadata::{GlobalMetadata, ResourceMetadata};
 use crate::tiling::{self, TilingScheme};
 use crate::topology::{self, TopoGraph};
-use crate::versioning::{self, VersioningError, VersioningViolation};
+use crate::versioning::{VersioningError, VersioningViolation};
 
-/// Attribution stage (§7.1.2, Requirements Attr1-B/C and Attr2): the
+/// Attribution stage (§7.1.2, Requirements Attr1-A/B and Attr2): the
 /// attribute model stored at `global_metadata/vector_attributes.<ext>` — the
-/// Attr1-B location and the Attr1-C name, derived from the datastore's
-/// declared metadata encoding — parses and validates.
+/// Attr1-B location — parses and validates.
+///
+/// **Attr1-C is not this stage's finding**, and the header no longer claims
+/// it: the file this stage reads is one whose name Attr1-C already admits, so
+/// the check could never fail here. A *mis-named* model is convicted by the
+/// content sweep, which runs every `vector_attributes.*` entry of
+/// `global_metadata/` through [`crate::attribution::parse_file_name`].
+///
+/// **The Attr1-C name is encoding-*independent*, and so is this stage.** The
+/// requirement reads "`vector_attributes.<ext>` where `<ext>` is either `xml`
+/// or `json`" (spec line 717) with no reference to the datastore's declared
+/// metadata encoding, so an XML datastore holding `vector_attributes.json`
+/// holds Attribution content and the model in it is read and judged. Probing
+/// only the declared-encoding spelling reported `(no content)` over an unread
+/// model and left the Attr1-A cross-check dead — a class-level false green.
+/// A *wrong-encoding* metadata file is Requirement Metadata5's finding, filed
+/// under Metadata by the orchestrator's encoding sweep; it never excuses this
+/// class from reading the file. When both spellings are present the declared
+/// encoding breaks the tie, so the common case reads the file the facade
+/// would.
+///
+/// The candidates are the walk's own inventory (`model_files`, the entries at
+/// the top of `global_metadata/` whose stem is the reserved
+/// [`crate::attribution::VECTOR_ATTRIBUTES_STEM`], case-folded), not a
+/// filesystem probe: the walk has already established which files exist, and
+/// a `Path::is_file()` here returned `false` for *any* stat failure, so a
+/// present-but-unstattable model read as "no model". Names the walk offers
+/// that Attr1-C does not admit — `vector_attributes.xsd` — are the content
+/// sweep's business, which convicts the name.
 ///
 /// No file means no attribute model, which is **not** a violation: Attr1-A
 /// binds a profile "specifying and/or implementing attribution", and a
-/// datastore that ships none simply has no attribution content. A
-/// GeoPackage-declared datastore likewise has no core-readable model
-/// ([`crate::attribution::file_name_for`] yields `None`) and counts as no
-/// content. A file that *is* present but unreadable as a model is a SHALL
-/// finding, not an I/O error — only the read itself can fail operationally.
+/// datastore that ships none simply has no attribution content. A file that
+/// *is* present but unreadable as a model is a SHALL finding, not an I/O
+/// error — only the read itself can fail operationally, and `NotFound` is not
+/// that (it means the walk reached `global_metadata/` under a spelling the
+/// canonical path does not resolve to, which is a naming finding already).
 ///
 /// Returns the model when one is present and valid, so the content sweep can
 /// cross-check it against the profile's own [`ApplicationProfile::attribute_model`]
-/// without reading the file a second time. This stage probes only the
-/// canonical Attr1-C name; a *mis-named* model is the sweep's business.
+/// without reading the file a second time.
 pub(super) fn validate_attribution(
     datastore: &CdbDatastore,
     global: Option<&GlobalMetadata>,
+    model_files: &[String],
     report: &mut ConformanceReport,
 ) -> Result<Option<AttributeModel>, CdbError> {
-    // Without a readable global record the declared encoding is unknown —
-    // that finding is already filed under Metadata; nothing to check here.
+    // Without a readable global record the datastore's own description is
+    // missing — that finding is already filed under Metadata, and the class
+    // has no settled encoding to prefer; nothing to check here.
     let Some(global) = global else {
         return Ok(None);
     };
-    let Some(name) = attribution::file_name_for(global.encoding) else {
+    let preferred = attribution::file_name_for(global.encoding);
+    let Some(name) = model_files
+        .iter()
+        .find(|name| Some(name.as_str()) == preferred.as_deref())
+        .or_else(|| {
+            model_files
+                .iter()
+                .find(|name| attribution::parse_file_name(name).is_ok())
+        })
+    else {
         return Ok(None);
     };
-    let path = datastore.layout().global_metadata_dir().join(&name);
-    if !path.is_file() {
-        return Ok(None);
-    }
+    let path = datastore.layout().global_metadata_dir().join(name);
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AttributionError::Io(error).into()),
+    };
     report.mark_content(RequirementsClass::Attribution);
-    let content = fs::read_to_string(&path).map_err(AttributionError::Io)?;
-    match attribution::validate_attribute_model_document(&name, &content) {
+    match attribution::validate_attribute_model_document(name, &content) {
         Ok(model) => Ok(Some(model)),
         Err(violation) => {
             report.record_violation(violation.into());
@@ -67,16 +106,18 @@ pub(super) fn validate_attribution(
     }
 }
 
-/// Coverages stage (§7.2.4–.6, Requirements Coverages4/5/6): every resource
+/// Coverages stage (§7.2.5–.6, Requirements Coverages5/6): every resource
 /// metadata record carrying the Coverages6 `domainSet` conditional element is
 /// a coverage instance, and is validated as one by
 /// [`crate::coverage::validate_coverage_instance`] — Coverages5's
-/// minimum-metadata duty and Coverages6's domainSet content, with Coverages4
-/// judged against the datastore's own CRS.
+/// minimum-metadata duty and Coverages6's domainSet content.
 ///
-/// `source_crs` is passed as `None`: a per-instance CRS claim lives in the
-/// coverage payload, which this crate does not decode, so every record here
-/// is association-via-datastore (the normal case, which Coverages4 permits).
+/// **Coverages4 is out of this stage's reach, and the header no longer claims
+/// it.** `source_crs` is passed as `None` — a per-instance CRS claim lives in
+/// the coverage payload, which this crate does not decode — so every record
+/// here is association-via-datastore, the case Coverages4 permits and whose
+/// branch therefore never fails. `docs/CONFORMANCE.md` §6 records the limit;
+/// judging a claimed CRS is the caller's, holding a decoded coverage.
 /// The §7.2.6.1 SHOULD on `uom` is surfaced as a warning, never a failure.
 pub(super) fn validate_coverages(
     records: &[ResourceMetadata],
@@ -240,15 +281,24 @@ pub(super) fn validate_topology(records: &[ResourceMetadata], report: &mut Confo
 /// fault. A manifest that fails to parse, or a hole in the sequence, is a
 /// SHALL finding; an unreadable directory is operational and returns `Err`.
 ///
+/// `has_journal` is the walk's own signal
+/// ([`super::ContentSignals::versions_journal`]) rather than a probe of this
+/// stage's own: re-deriving `root().join(VERSIONS_DIR).is_dir()` here both
+/// duplicated a path the facade owns privately and swallowed stat failures,
+/// and — because `is_dir()` follows symlinks while the walk's `file_type`
+/// does not — made this stage and the content sweep disagree about whether a
+/// symlinked journal exists. One guard, one answer.
+///
 /// `global` is required because the journal is written in the datastore's
 /// declared metadata encoding: without a readable global record the manifest
 /// file names are unknown, and that finding already sits under Metadata.
 pub(super) fn validate_versioning(
     datastore: &CdbDatastore,
     global: Option<&GlobalMetadata>,
+    has_journal: bool,
     report: &mut ConformanceReport,
 ) -> Result<(), CdbError> {
-    if global.is_none() || !datastore.root().join(versioning::VERSIONS_DIR).is_dir() {
+    if global.is_none() || !has_journal {
         return Ok(());
     }
     report.mark_content(RequirementsClass::Versioning);
@@ -274,7 +324,9 @@ mod tests {
     use crate::attribution::{AttributeDef, AttributionViolation};
     use crate::conformance::{CdbViolation, CdbWarning, ContentCoverage};
     use crate::coverage::{CoverageViolation, CoverageWarning, DomainSet};
+    use crate::datastore::DatastoreSeed;
     use crate::metadata::UnitOfMeasure;
+    use crate::profiles::SimulationProfile;
     use crate::tiling::{TilingViolation, TilingWarning};
     use crate::topology::WindingOrder;
     use crate::versioning::PendingCollection;
@@ -361,6 +413,81 @@ mod tests {
             )]
         ));
         assert!(report.class_passed(RequirementsClass::Metadata), "{report}");
+    }
+
+    /// Requirement Attr1-C (§7.1.2.1) — **an attribute model whose extension
+    /// denotes the *other* core encoding is still an attribute model.**
+    ///
+    /// Attr1-C admits `vector_attributes.json` *or* `vector_attributes.xml`
+    /// with no reference to the datastore's metadata encoding, so an XML
+    /// datastore holding the `.json` spelling holds Attribution content. A
+    /// stage that probed only the declared-encoding name reported
+    /// `[PASS] attribution (no content)` over an unread — here invalid —
+    /// model, a class-level false green, and the Attr1-A cross-check went
+    /// dead with it. The wrong *encoding* is Requirement Metadata5's finding,
+    /// filed under Metadata; it never excuses Attribution from reading the
+    /// file. The neighbouring `vector_attributes.xsd` has always been
+    /// convicted, which is what made the hole an inconsistency in one code
+    /// path.
+    #[test]
+    fn req_core_attribution_stage_reads_model_of_either_extension() {
+        for (profile, present, other) in [
+            (
+                SimulationProfile::xml(),
+                "vector_attributes.json",
+                "vector_attributes.xml",
+            ),
+            (
+                SimulationProfile::json(),
+                "vector_attributes.xml",
+                "vector_attributes.json",
+            ),
+        ] {
+            let tmp = tempdir().unwrap();
+            let store = CdbDatastore::create(
+                tmp.path(),
+                &profile,
+                DatastoreSeed::new("id", "Title", "Description", "contact"),
+            )
+            .unwrap();
+            let body = if present.ends_with("json") {
+                "{\"attributes\":[]}"
+            } else {
+                "<AttributeModel></AttributeModel>"
+            };
+            fs::write(store.layout().global_metadata_dir().join(present), body).unwrap();
+
+            let declaring = DeclaringProfile {
+                inner: profile,
+                ..DeclaringProfile::all()
+            };
+            let report = store.validate(&declaring).unwrap();
+            assert_eq!(
+                report.class_coverage(RequirementsClass::Attribution),
+                ContentCoverage::Checked,
+                "{present}: {report}"
+            );
+            // An empty model is an Attr1-A/Attr2-A SHALL violation, and it is
+            // Attribution's finding — not only Metadata's encoding one.
+            assert!(
+                report
+                    .violations(RequirementsClass::Attribution)
+                    .iter()
+                    .any(|violation| matches!(
+                        violation,
+                        CdbViolation::Attribution(AttributionViolation::EmptyModel)
+                    )),
+                "{present}: {report}"
+            );
+            assert!(
+                !report.class_passed(RequirementsClass::Metadata),
+                "{present}: Metadata5 still convicts the encoding: {report}"
+            );
+            assert!(
+                !store.layout().global_metadata_dir().join(other).exists(),
+                "{present}: fixture wrote the wrong file"
+            );
+        }
     }
 
     /// Requirements Coverages4/5/6 (§7.2.4–.6) — the Coverages stage treats

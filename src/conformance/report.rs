@@ -34,7 +34,14 @@ use crate::metadata::MetadataViolation;
 /// three states are a complete partition of what this crate can know about a
 /// class — content was judged, was absent, or was beyond the validator's
 /// reach. A consumer is meant to `match` all three exhaustively.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// **Deliberately not `Ord`/`Hash`**, unlike [`RequirementsClass`], whose
+/// ordering is load-bearing (it is the documented order a report lists its
+/// classes in). These three states have no meaningful rank — `Unchecked` is
+/// not "more" than `Checked` — so deriving an order would freeze an
+/// accidental one at 1.0, and removing a derive afterwards is a breaking
+/// change. Equality is all the type promises.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ContentCoverage {
     /// The datastore holds no content this class governs. A **declared**
     /// class in this state passes (design spec §4: the class describes what

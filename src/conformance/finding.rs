@@ -485,14 +485,32 @@ impl CdbWarning {
     /// belongs to, absolute and whitespace-free.
     ///
     /// A code names the clause; the SHALL/SHOULD split is carried by the
-    /// finding's kind, not by its code. The draft writes several of its
-    /// SHOULDs as lettered parts *inside* requirement boxes — Name1-A inside
-    /// `/req/core/name-unicode`, Name3-B inside `/req/core/name-language`,
-    /// Name7-B inside `/req/core/name-extensions` — so those codes keep the
-    /// `/req/core/` path and are warnings all the same. Recommendations with
-    /// boxes of their own (`/rec/core/file-hierarchy-root-name`,
-    /// `/rec/core/crs/crs-definition`, `/rec/core/tiling-extension`) keep
-    /// theirs. Nothing here is promoted or demoted by its spelling.
+    /// finding's kind, not by its code. Three of the naming warnings
+    /// therefore carry a `/req/core/` code, for three different reasons —
+    /// none of them a promotion or a demotion:
+    ///
+    /// - **Name1-A** (`/req/core/name-unicode-A`) is a SHOULD, and its box is
+    ///   labelled *Recommendation* Name1 — but the draft prefixes that box
+    ///   `/req/` (spec line 1146). The code reproduces what the draft wrote;
+    ///   the label is the draft's own defect (errata §7 row 19). The same
+    ///   holds for **Recommendation Name4** (`/req/core/name-empty-folders-A`,
+    ///   spec line 1163), whose warning is
+    ///   [`crate::hierarchy::HierarchyWarning::EmptyFolder`].
+    /// - **Name3-B** (`/req/core/name-language-B`) is a SHOULD written as a
+    ///   lettered part *inside* a genuine Requirement box, Name3 — the one
+    ///   case that really is "a SHOULD inside a requirement".
+    /// - **Name7-B** (`/req/core/name-extensions-B`) is neither: it is a
+    ///   **SHALL** ("industry standard extensions SHALL be used", §7.4.8)
+    ///   whose predicate no validator can decide — this crate cannot know
+    ///   which extensions the industry considers standard — so it is reported
+    ///   as a warning the profile can silence by vouching for the extension
+    ///   ([`crate::profiles::ApplicationProfile::known_extensions`]). The
+    ///   demotion is in the *reporting of an undecidable predicate*, not in
+    ///   the requirement's force.
+    ///
+    /// Recommendations whose boxes the draft prefixes correctly
+    /// (`/rec/core/file-hierarchy-root-name`, `/rec/core/crs/crs-definition`,
+    /// `/rec/core/tiling-extension`) keep their `/rec/` codes.
     pub fn code(&self) -> &'static str {
         match self {
             CdbWarning::Naming(NamingWarning::NonAscii { .. }) => "/req/core/name-unicode-A",

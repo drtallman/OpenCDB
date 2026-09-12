@@ -219,7 +219,23 @@ impl AttributeModel {
     /// functions before validation, so one logical model has one
     /// in-memory form no matter which encoding — or which indentation —
     /// carried it.
-    fn canonicalize(&mut self) {
+    ///
+    /// The **write** path runs it too, after validating
+    /// ([`crate::datastore::CdbDatastore::write_attribute_model`]), so the
+    /// bytes a datastore holds always read back as the value that was
+    /// written. Parse-canonicalizes-but-write-does-not was an asymmetry with
+    /// a real cost: the conformance cross-check of Requirement Attr1-A
+    /// compares a profile's declared model against the on-disk one, and a
+    /// verbatim write made one stray space enough to convict a datastore the
+    /// crate itself had produced from that very model. Canonicalizing on
+    /// both sides of the file makes write→read a fixed point, which is what
+    /// [`Self::from_json_str`]'s "canonical models are a fixed point" note
+    /// promises.
+    ///
+    /// `pub(crate)` rather than public: it is an internal normal form, not a
+    /// 1.0 API commitment. Callers get it applied for them by the parse and
+    /// write paths, which are the only places a model crosses a boundary.
+    pub(crate) fn canonicalize(&mut self) {
         if let Some(uri) = &mut self.schema_uri {
             let trimmed = uri.trim();
             if trimmed.len() != uri.len() {

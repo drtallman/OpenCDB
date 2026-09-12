@@ -197,7 +197,7 @@ pub fn validate(
                 .map(|scheme| scheme.id.clone());
             global_record = Some(global);
         }
-        Err(error) => record_metadata_error(&mut report, error)?,
+        Err(error) => record_metadata_error(&mut report, None, error)?,
     }
 
     // Metadata5 sweep: every metadata file must use the declared encoding.
@@ -293,7 +293,7 @@ pub fn validate(
                 }
                 resource_records.push(record);
             }
-            Err(error) => record_metadata_error(&mut report, error)?,
+            Err(error) => record_metadata_error(&mut report, Some(logical_path), error)?,
         }
     }
 
@@ -319,8 +319,12 @@ pub fn validate(
         report.declare_class(class);
         match class {
             RequirementsClass::Attribution => {
-                attribute_model =
-                    validate_attribution(datastore, global_record.as_ref(), &mut report)?;
+                attribute_model = validate_attribution(
+                    datastore,
+                    global_record.as_ref(),
+                    &signals.attribute_model_files,
+                    &mut report,
+                )?;
             }
             RequirementsClass::Coverages => {
                 validate_coverages(&resource_records, storage_crs.as_ref(), &mut report);
@@ -340,7 +344,12 @@ pub fn validate(
                 validate_topology(&resource_records, &mut report);
             }
             RequirementsClass::Versioning => {
-                validate_versioning(datastore, global_record.as_ref(), &mut report)?;
+                validate_versioning(
+                    datastore,
+                    global_record.as_ref(),
+                    signals.versions_journal,
+                    &mut report,
+                )?;
             }
             // The mandatory five are not in OPTIONAL; stages 1–6 ran them.
             // Spelled out rather than wildcarded so a new variant is a
@@ -439,10 +448,23 @@ fn is_global_metadata_dir(dir_logical: &str) -> bool {
 impl NamingWalk<'_> {
     /// Walks `dir`, whose logical path is `dir_logical` (empty for the root, so
     /// its children read as `/name`).
+    ///
+    /// **Entries are visited in name order, not `read_dir` order.** The
+    /// report is a document that gets diffed and archived, and `read_dir` is
+    /// hash-ordered on APFS and creation-ordered elsewhere, so an unsorted
+    /// walk made the order of findings within a class — and the evidence
+    /// value the first-record-wins signals quote — a property of the *host*
+    /// rather than of the datastore. Sorting here is the one place that fixes
+    /// it for every downstream consumer: the file inventory, the
+    /// `global_metadata/` listing, the record parse order of stage 6 and the
+    /// signals of [`ContentSignals`] all inherit it. `OsString`'s order is a
+    /// byte order, which is all that is needed — it must be *a* total order,
+    /// not a locale-aware one.
     fn walk(&mut self, dir: &Path, dir_logical: &str) -> io::Result<()> {
         let in_global_metadata = is_global_metadata_dir(dir_logical);
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
+        let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
             let file_type = entry.file_type()?;
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy();
@@ -490,12 +512,25 @@ impl NamingWalk<'_> {
                 // case-insensitive filesystem `Versions/` IS the journal, and
                 // descending into it would name-check the crate's own
                 // `v000001/manifest.json` against the profile's case rule.
-                let journal = file_type.is_dir()
-                    && dir_logical.is_empty()
-                    && guard_eq(&name, versioning::VERSIONS_DIR);
+                //
+                // The name match resolves symlinks — and only here. A
+                // symlinked `versions/` still holds a journal, so treating it
+                // as "no journal" would let a datastore escape the
+                // undeclared-content conviction by a link, and would make the
+                // Versioning stage (which reads this one signal) disagree
+                // with the sweep about the same bytes. Resolving is the
+                // pessimistic direction; *descending* stays no-follow below.
+                // A name that matches but does not resolve to a directory —
+                // a dangling link, a plain file — is not the journal, and its
+                // own findings come from the naming rules above.
+                let journal = dir_logical.is_empty()
+                    && guard_eq(&name, versioning::VERSIONS_DIR)
+                    && (file_type.is_dir()
+                        || fs::metadata(entry.path()).is_ok_and(|meta| meta.is_dir()));
                 if journal {
                     // Sweep signal: the journal's existence is Versioning's
                     // content, seen here as a directory entry under the root.
+                    // It is also the *stage's* signal — one guard, one answer.
                     self.signals.versions_journal = true;
                 }
                 if file_type.is_dir() && !journal {
@@ -531,25 +566,42 @@ fn filter_known(warnings: Vec<NamingWarning>, known: &[String]) -> Vec<NamingWar
 /// defensively as `Malformed` so a future caller cannot make it panic. I/O — and
 /// any future operational variant — is not a conformance finding and returns
 /// `Err`.
+///
+/// `subject` names the document the failure is about — a record's logical
+/// path, or `None` for the datastore's one global record. It is prefixed onto
+/// a `Malformed` reason, because that variant's message is neutral about
+/// *which* metadata document failed, and a bare parser message ("EOF while
+/// parsing an object at line 1 column 14") cannot be acted on in a datastore
+/// holding many records.
 fn record_metadata_error(
     report: &mut ConformanceReport,
+    subject: Option<&str>,
     error: MetadataError,
 ) -> Result<(), CdbError> {
+    let about = |reason: String| match subject {
+        Some(path) => format!("{path}: {reason}"),
+        None => format!("global metadata: {reason}"),
+    };
     match error {
         MetadataError::Violation(violation) => {
             report.record_violation(violation.into());
             Ok(())
         }
         MetadataError::Serialization(reason) => {
-            report.record_violation(MetadataViolation::Malformed { reason }.into());
+            report.record_violation(
+                MetadataViolation::Malformed {
+                    reason: about(reason),
+                }
+                .into(),
+            );
             Ok(())
         }
         MetadataError::UnsupportedEncoding(encoding) => {
             report.record_violation(
                 MetadataViolation::Malformed {
-                    reason: format!(
-                        "metadata declares the {encoding} encoding the core cannot read"
-                    ),
+                    reason: about(format!(
+                        "declares the {encoding} encoding the core cannot read"
+                    )),
                 }
                 .into(),
             );
@@ -906,6 +958,143 @@ mod tests {
         assert!(
             leaked.is_empty(),
             "journal internals name-checked: {leaked:?}"
+        );
+    }
+
+    /// §7.9.4.2 Requirement Metadata5 — **a record that fails to parse is
+    /// reported as the record it is, and is named.**
+    ///
+    /// [`MetadataViolation::Malformed`] is the finding for *any* metadata
+    /// document this crate cannot parse, and stage 6 routes every resource
+    /// record's parse failure through it — but its message said "global
+    /// metadata could not be parsed" and named no file, so a datastore with
+    /// forty records told its owner only that something, somewhere, was
+    /// unreadable. The message is neutral now, and the orchestrator prefixes
+    /// the record's logical path onto the reason.
+    #[test]
+    fn req_core_metadata_malformed_record_is_named() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let record = ResourceMetadata::new("Roads", "Road Network", "Tiled roads");
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        fs::write(
+            store.root().join("Tiles/metadata/Roads.json"),
+            "{\"ID\": \"Roads\"",
+        )
+        .unwrap();
+
+        let report = store.validate(&DeclaringProfile::all()).unwrap();
+        let text = report
+            .violations(RequirementsClass::Metadata)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("/Tiles/metadata/Roads.json"),
+            "the failing record must be named: {report}"
+        );
+        assert!(
+            !text.contains("global metadata could not be parsed"),
+            "a resource record is not the global record: {report}"
+        );
+    }
+
+    /// §7.14.2 Requirement V1 — **the Versioning stage and the content sweep
+    /// answer "does this datastore have a journal?" from one guard.**
+    ///
+    /// They used to answer it twice: the walk's no-follow `file_type` probe
+    /// (which the sweep reads) said no for a symlinked `versions/`, while the
+    /// stage's own `root().join("versions").is_dir()` followed the link and
+    /// said yes. A datastore therefore escaped the undeclared-content
+    /// conviction by a symlink while a declaring profile still validated the
+    /// journal behind it. The walk now resolves the journal name — a symlink
+    /// must not hide content from the sweep — while still refusing to
+    /// *descend* into any symlink (Permission PFile1's external resources),
+    /// and the stage reads that one signal instead of re-deriving a private
+    /// path.
+    #[cfg(unix)]
+    #[test]
+    fn req_core_versioning_journal_guard_agrees_across_stage_and_sweep() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        store
+            .apply_collection(PendingCollection::new().create("/Tiles/Roads.gpkg", *b"roads"))
+            .unwrap();
+        // Relocate the journal and leave a symlink in its place.
+        let real = tmp.path().join("journal");
+        fs::rename(store.root().join("versions"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, store.root().join("versions")).unwrap();
+
+        // Declared: the journal behind the link is content, and it validates.
+        let declared = store.validate(&DeclaringProfile::all()).unwrap();
+        assert_eq!(
+            declared.class_coverage(RequirementsClass::Versioning),
+            crate::conformance::ContentCoverage::Checked,
+            "{declared}"
+        );
+        // Undeclared: the same content convicts the profile.
+        let swept = store.validate(&DeclaringProfile::mandatory_only()).unwrap();
+        assert!(
+            swept
+                .violations(RequirementsClass::Versioning)
+                .iter()
+                .any(|violation| matches!(
+                    violation,
+                    CdbViolation::DeclarationMismatch {
+                        element: "versions journal",
+                        ..
+                    }
+                )),
+            "{swept}"
+        );
+    }
+
+    /// Design spec §4 — **the walk visits each directory's entries in name
+    /// order, so a report is a function of the datastore's content and not of
+    /// its filesystem.**
+    ///
+    /// `validate` was already deterministic for a fixed tree, but the order
+    /// came from `read_dir`, which is hash-ordered on APFS and
+    /// creation-ordered elsewhere: the *evidence value* a
+    /// `DeclarationMismatch` quotes ("the record that carries `windingOrder`")
+    /// and the order of findings within a class therefore differed between
+    /// hosts holding identical bytes. A conformance report is a document that
+    /// gets diffed and archived, so it is sorted at the source — one
+    /// `sort_by` per directory, which also makes the first-record-wins
+    /// signals name the lexicographically first record rather than an
+    /// arbitrary one.
+    #[test]
+    fn conf_core_walk_visits_entries_in_name_order() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+
+        // Written in an order that is neither lexicographic nor its reverse;
+        // on APFS `read_dir` returns them in a third order again.
+        for id in ["Delta", "Hotel", "Alpha", "Golf", "Charlie", "Bravo"] {
+            let mut record = ResourceMetadata::new(id, "Road Network", "Tiled roads");
+            record.keywords = vec!["transportation".to_owned()];
+            record.winding_order = Some(crate::topology::WindingOrder::Counterclockwise);
+            store
+                .write_resource_metadata(&format!("/Tiles/metadata/{id}.json"), &record)
+                .unwrap();
+        }
+
+        let report = store.validate(&DeclaringProfile::mandatory_only()).unwrap();
+        let evidence: Vec<String> = report
+            .violations(RequirementsClass::Topology)
+            .iter()
+            .filter_map(|violation| match violation {
+                CdbViolation::DeclarationMismatch { found, .. } => Some(found.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            evidence,
+            vec!["resource metadata record \"Alpha\"".to_owned()],
+            "evidence must name the first record in NAME order: {report}"
         );
     }
 }

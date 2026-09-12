@@ -73,7 +73,15 @@ pub enum MetadataViolation {
         "no global metadata file found under {searched:?} (violates /req/core/metadata-repository and /req/core/metadata-global)"
     )]
     MissingGlobalMetadata { searched: PathBuf },
-    #[error("global metadata could not be parsed: {reason} (violates /req/core/metadata-encoding)")]
+    /// A metadata document this crate could not parse — **any** metadata
+    /// document, not only the global record: the global record, a resource
+    /// record (§7.9.4.2), or a path whose extension names no readable
+    /// encoding. The message is deliberately neutral about *which*; the
+    /// `reason` carries the subject, and the conformance orchestrator
+    /// prefixes the failing record's logical path onto it, because a
+    /// datastore holding many records cannot be diagnosed from a bare parser
+    /// message.
+    #[error("metadata could not be parsed: {reason} (violates /req/core/metadata-encoding)")]
     Malformed { reason: String },
     #[error(transparent)]
     Link(#[from] LinkViolation),
@@ -1281,6 +1289,81 @@ mod tests {
         let xml = record.to_xml_string().unwrap();
         let back = ResourceMetadata::from_xml_str(&xml).unwrap();
         assert_eq!(back.domain_set, Some(ds));
+    }
+
+    /// §7.2.6 Requirements Coverages6-B/C/D/E — `precision`, `scale`,
+    /// `offset` and `data_null` are `f64` *values*, and a JSON round trip
+    /// must return the same value, bit for bit.
+    ///
+    /// This is not pedantry: `DomainSet::decode` is `raw * scale + offset`,
+    /// so a one-ULP drift in `scale` silently changes every decoded coverage
+    /// value, and a drifted `data_null` stops matching its own sentinel.
+    /// `serde_json`'s default float parser is a fast approximation that is
+    /// not correctly rounded; the `float_roundtrip` feature (enabled in
+    /// `Cargo.toml`) makes it agree with `str::parse::<f64>`, which is what
+    /// this test pins. The XML encoding has always been exact, so this also
+    /// keeps the two encodings' fidelity claims equal (`docs/CONFORMANCE.md`
+    /// §6).
+    #[test]
+    fn req_core_coverage_domainset_floats_are_bit_exact_across_json_roundtrip() {
+        use crate::coverage::DomainSet;
+
+        // Values chosen because serde_json's default parser drifts on them.
+        let cases: [(f64, f64, f64, f64); 3] = [
+            (
+                // -123456789.123456789, whose nearest f64 the default
+                // serde_json parser recovers one ULP high.
+                f64::from_bits(0xC19D_6F34_547E_6B75),
+                1.000_000_000_000_000_2_f64,
+                -0.1_f64,
+                -32_767.000_000_000_004_f64,
+            ),
+            (
+                f64::from_bits(0x3FE5_5555_5555_5555),
+                f64::from_bits(0x4005_BF0A_8B14_5769),
+                f64::from_bits(0xC1D2_6580_B487_E6B5),
+                f64::from_bits(0x0010_0000_0000_0000),
+            ),
+            (
+                1e-300,
+                1e300,
+                f64::MIN_POSITIVE,
+                2.225_073_858_507_201_4e-308,
+            ),
+        ];
+
+        for (precision, scale, offset, data_null) in cases {
+            let mut ds = DomainSet::new("m");
+            ds.precision = precision;
+            ds.scale = scale;
+            ds.offset = offset;
+            ds.data_null = Some(data_null);
+            let mut record = ResourceMetadata::new("Elevation", "Terrain", "Gridded DEM");
+            record.domain_set = Some(ds);
+
+            let json = record.to_json_string().unwrap();
+            let back = ResourceMetadata::from_json_str(&json).unwrap();
+            let back = back.domain_set.unwrap();
+            for (label, wrote, read) in [
+                ("precision", precision, back.precision),
+                ("scale", scale, back.scale),
+                ("offset", offset, back.offset),
+                ("data_null", data_null, back.data_null.unwrap()),
+            ] {
+                assert_eq!(
+                    wrote.to_bits(),
+                    read.to_bits(),
+                    "{label}: wrote {:016x} read back {:016x} via {json}",
+                    wrote.to_bits(),
+                    read.to_bits()
+                );
+            }
+
+            let xml = record.to_xml_string().unwrap();
+            let back = ResourceMetadata::from_xml_str(&xml).unwrap().domain_set;
+            let back = back.unwrap();
+            assert_eq!(back.scale.to_bits(), scale.to_bits(), "xml scale: {xml}");
+        }
     }
 
     /// §7.13.5.5 Face Topology Requirement 4 + §7.9.4.2 — a

@@ -272,10 +272,17 @@ impl CdbDatastore {
     /// construction. The model is validated first (Attr2), so an invalid one
     /// is refused before any file is touched — including a model whose ids
     /// differ only by whitespace, which [`AttributeModel::validate`] treats as
-    /// duplicates exactly as the read path does. Serialization is verbatim: a
-    /// model holding edge whitespace in its strings is written as-is and comes
-    /// back trimmed, because the *parse* canonicalizes — only canonical models
-    /// round-trip unchanged. Requirement Metadata5 is
+    /// duplicates exactly as the read path does. **Serialization is
+    /// canonical**: the validated model is canonicalized — leaf text trimmed,
+    /// exactly as [`AttributeModel::from_json_str`] canonicalizes what it
+    /// reads — before it is
+    /// serialized, so the bytes written are the bytes the parse would produce
+    /// and `write` → [`Self::attribute_model`] is a fixed point. A model held
+    /// in memory with edge whitespace therefore comes back trimmed, but the
+    /// *datastore* never holds a model that reads back different from what it
+    /// was given — which is what lets the conformance cross-check of
+    /// Requirement Attr1-A compare a profile's declaration against the disk
+    /// without convicting a datastore this crate wrote. Requirement Metadata5 is
     /// enforced the way [`Self::write_global_metadata`] enforces it: a
     /// `vector_attributes` file already on disk in a *different* encoding
     /// refuses the write with [`MetadataViolation::EncodingMismatch`]. A
@@ -309,10 +316,17 @@ impl CdbDatastore {
                 }
             }
         }
+        // Canonicalize *after* validating, never before: `validate` stays a
+        // pure predicate on the value the caller handed over (its own doc
+        // relies on that), so a model whose `schema_uri` carries edge
+        // whitespace is still refused rather than quietly repaired. What the
+        // trim changes is only what reaches disk.
+        let mut canonical = model.clone();
+        canonical.canonicalize();
         let content = if declared == MetadataEncoding::Xml {
-            model.to_xml_string()?
+            canonical.to_xml_string()?
         } else {
-            model.to_json_string()?
+            canonical.to_json_string()?
         };
         let path = dir.join(&name);
         fs::write(&path, content).map_err(AttributionError::Io)?;
@@ -1686,6 +1700,54 @@ mod tests {
             store.root().join("global_metadata/vector_attributes.xml")
         );
         assert_eq!(store.attribute_model().unwrap(), Some(model));
+    }
+
+    /// Requirements Attr1-B/C + Attr2 (§7.1.2) — **the write side
+    /// canonicalizes, so write→read is a fixed point in both encodings.**
+    ///
+    /// The parse canonicalizes (leaf text trimmed, bare integer ids
+    /// stringified), so a verbatim write of a non-canonical model would put
+    /// bytes in the datastore that do not read back as the value written —
+    /// and the conformance cross-check of Requirement Attr1-A would then
+    /// convict a datastore the crate itself produced against the very profile
+    /// whose model it was written from. Writing canonically closes that:
+    /// `attribute_model()` after `write_attribute_model(m)` returns
+    /// `canonical(m)` **and** re-writing that model produces byte-identical
+    /// content.
+    #[test]
+    fn req_core_attribute_model_facade_write_is_canonical() {
+        for (profile, name) in [
+            (SimulationProfile::json(), "vector_attributes.json"),
+            (SimulationProfile::xml(), "vector_attributes.xml"),
+        ] {
+            let tmp = tempdir().unwrap();
+            let store = CdbDatastore::create(
+                tmp.path(),
+                &profile,
+                DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+            )
+            .unwrap();
+
+            // Non-canonical only in leaf whitespace — every value is valid.
+            let mut scruffy = street_model();
+            scruffy.attributes[0].description.push(' ');
+            scruffy.attributes[1].id = " 2 ".to_owned();
+            scruffy.attributes[1].name = "StreetType ".to_owned();
+
+            let path = store.write_attribute_model(&scruffy).unwrap();
+            assert_eq!(path, store.root().join("global_metadata").join(name));
+            let read_back = store.attribute_model().unwrap().unwrap();
+            assert_eq!(
+                read_back,
+                street_model(),
+                "{name}: write did not canonicalize"
+            );
+
+            // Fixed point: the bytes of a rewrite are identical.
+            let first = fs::read_to_string(&path).unwrap();
+            store.write_attribute_model(&read_back).unwrap();
+            assert_eq!(first, fs::read_to_string(&path).unwrap(), "{name}");
+        }
     }
 
     /// Attribution is an optional class (§7.1.2): a datastore without a

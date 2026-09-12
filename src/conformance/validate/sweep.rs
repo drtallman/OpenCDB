@@ -143,8 +143,20 @@ pub(super) fn sweep_content(
     // makes pass. The on-disk side comes from the Attribution stage, the only
     // reader of the file, so an undeclared class has no model to compare —
     // it has already drawn the mismatch above.
-    if let (Some(declared_model), Some(on_disk)) = (profile.attribute_model(), attribute_model)
-        && &declared_model != on_disk
+    //
+    // **Both sides are compared in canonical form.** The on-disk model
+    // arrives canonicalized — every parse path canonicalizes — so comparing
+    // it against a profile's verbatim declaration made a stray space in a
+    // description a mismatch, and `model_summary` omits descriptions, so the
+    // finding rendered as `X != X`. The write path canonicalizes too now
+    // (`CdbDatastore::write_attribute_model`), which is the primary fix; this
+    // is the defense in depth for a model that reached disk another way.
+    if let Some(mut declared_model) = profile.attribute_model()
+        && let Some(on_disk) = attribute_model
+        && {
+            declared_model.canonicalize();
+            &declared_model != on_disk
+        }
     {
         report.record_violation(CdbViolation::DeclarationMismatch {
             profile: profile.name().to_owned(),
@@ -162,6 +174,17 @@ pub(super) fn sweep_content(
 /// content-bearing — the content is real, it is the declaration that is
 /// missing.
 ///
+/// The marker is
+/// [`crate::conformance::ContentCoverage::Unchecked`], never `Checked`, and
+/// that is the whole point: an undeclared class had no stage-7 run
+/// ([`super::validate`] skips it), so *nothing of this crate's judged that
+/// content*. Marking it checked made a datastore report more checking the
+/// less its profile declared, and contradicted the promise
+/// `docs/CONFORMANCE.md` §6 makes to consumers keying on the `content` field.
+/// The sweep never judges content for any class — it reads directory entries
+/// and parsed metadata elements — so `Unchecked` is the honest marker
+/// throughout.
+///
 /// The cited clause is the class's own requirements-module URI: what the
 /// content escapes by going undeclared is that module's requirements. (Annex
 /// A's `/conf/minimal-core` is not it — that clause governs the *mandatory*
@@ -174,7 +197,7 @@ fn record_undeclared(
     found: String,
     report: &mut ConformanceReport,
 ) {
-    report.mark_content(class);
+    report.mark_unchecked_content(class);
     report.record_violation(CdbViolation::DeclarationMismatch {
         profile: profile.name().to_owned(),
         class,
@@ -210,6 +233,7 @@ mod tests {
 
     use super::super::support::{DeclaringProfile, fresh_store, model_of};
     use crate::attribution::AttributionViolation;
+    use crate::conformance::ContentCoverage;
     use crate::coverage::DomainSet;
     use crate::datastore::{CdbDatastore, DatastoreSeed};
     use crate::metadata::ResourceMetadata;
@@ -493,5 +517,101 @@ mod tests {
             .unwrap();
         let report = store.validate(&profile).unwrap();
         assert!(report.is_conformant(), "{report}");
+    }
+
+    /// Design spec §4 + `docs/CONFORMANCE.md` §6 — **the sweep records that
+    /// content exists without claiming anything was checked.**
+    ///
+    /// A class the profile did not declare had no stage-7 run at all, so
+    /// nothing of this crate's ever judged its content; marking it
+    /// [`ContentCoverage::Checked`] made a datastore report *more* checking
+    /// the *less* its profile declared, and broke the promise
+    /// `docs/CONFORMANCE.md` §6 makes to consumers that key on `content` —
+    /// that a topology-bearing datastore always reads `unchecked`. The honest
+    /// marker is [`ContentCoverage::Unchecked`]: content was present, and
+    /// this crate did not look at it.
+    #[test]
+    fn conf_core_sweep_records_content_without_claiming_a_check() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+
+        let mut record = ResourceMetadata::new("Roads", "Road Network", "Tiled roads");
+        record.keywords = vec!["transportation".to_owned()];
+        record.winding_order = Some(WindingOrder::Counterclockwise);
+        record.domain_set = Some(DomainSet::new("m"));
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        store
+            .write_attribute_model(&model_of("1", "StreetName"))
+            .unwrap();
+
+        let swept = store.validate(&DeclaringProfile::mandatory_only()).unwrap();
+        for class in [
+            RequirementsClass::Attribution,
+            RequirementsClass::Coverages,
+            RequirementsClass::Topology,
+        ] {
+            assert!(swept.class_has_content(class), "{class}: {swept}");
+            assert_eq!(
+                swept.class_coverage(class),
+                ContentCoverage::Unchecked,
+                "{class}: {swept}"
+            );
+        }
+
+        // Declared, the same bytes are genuinely checked — except Topology,
+        // which has no datastore-level check to run either way.
+        let declared = store.validate(&DeclaringProfile::all()).unwrap();
+        for class in [RequirementsClass::Attribution, RequirementsClass::Coverages] {
+            assert_eq!(
+                declared.class_coverage(class),
+                ContentCoverage::Checked,
+                "{class}: {declared}"
+            );
+        }
+        assert_eq!(
+            declared.class_coverage(RequirementsClass::Topology),
+            ContentCoverage::Unchecked,
+            "{declared}"
+        );
+    }
+
+    /// Requirement Attr1-A (§7.1.2.1) — **the cross-check must never convict
+    /// a datastore the crate itself wrote from the profile's own model.**
+    ///
+    /// The on-disk side arrives canonicalized (both parse paths canonicalize),
+    /// so comparing it against a *verbatim* profile declaration made one
+    /// stray space in a description a `DeclarationMismatch` — and
+    /// `model_summary` omits descriptions, so the finding rendered as
+    /// `X != X` and could not be diagnosed. Both halves are fixed: the write
+    /// canonicalizes (`CdbDatastore::write_attribute_model`) and the compare
+    /// canonicalizes the declared side too, as defense in depth for a profile
+    /// whose model never went through this crate's writer.
+    #[test]
+    fn req_core_attribute_model_declaration_compared_canonically() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+
+        let mut declared = model_of("1", "StreetName");
+        declared.attributes[0].description.push(' ');
+        store.write_attribute_model(&declared).unwrap();
+
+        let profile = DeclaringProfile::all().with_model(declared);
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Attribution),
+            crate::conformance::ContentCoverage::Checked,
+            "{report}"
+        );
+
+        // A model differing in substance still convicts.
+        let profile = DeclaringProfile::all().with_model(model_of("1", "StreetWidth"));
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            !report.class_passed(RequirementsClass::Attribution),
+            "{report}"
+        );
     }
 }
