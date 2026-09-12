@@ -264,11 +264,14 @@ blank/control states rejected.
   `AttributeDef { id, name, description }`; written by the facade to
   `global_metadata/vector_attributes.<declared-enc>` so Attr1-B (location)
   and Attr1-C (name) hold by construction; `parse_file_name`/`file_name_for`
-  encode Attr1-C standalone (exact reserved stem, `json`/`xml` extension
-  case-insensitive, anything else → error).
-- PAttr1: optional `schema_uri`, validated for RFC 3986 scheme shape by a
-  module-local check (no links-module dependency — the URI is not a
-  Links-class link object). The inline minimum is ALWAYS required: the URI
+  encode Attr1-C standalone — the name is matched LITERALLY (exact reserved
+  stem, exact lowercase `json`/`xml` extension, anything else → error), so a
+  name the crate blesses is always a name the facade can read; `naming`'s
+  case-insensitive Name7 table is a media-type lookup for files the crate
+  does not name, a different job.
+- PAttr1: optional `schema_uri`, validated for RFC 3986 scheme shape plus a
+  remainder with visible content, by a module-local check (no links-module
+  dependency — the URI is not a Links-class link object). The inline minimum is ALWAYS required: the URI
   supplements, never replaces (doc-noted; the spec is silent).
 - Attr2: unique id + name + description per attribute (the spec's
   StreetName/StreetType/StreetWidth table as fixture, verbatim including
@@ -277,15 +280,25 @@ blank/control states rejected.
   reading). Ids are STRINGS — the inline-minimum rule means NAS/LCCS codes
   must project inline — with bare-integer JSON ids canonicalized in a
   `from_json_str` value pre-pass (quick-xml cannot drive untagged/`any`
-  serde leniency; XML text is naturally a string).
+  serde leniency). Both parse paths canonicalize leaf whitespace before
+  validating and before the uniqueness check — quick-xml preserves element
+  text verbatim, so without it a pretty-printed `vector_attributes.xml` was
+  unreadable and whitespace could forge a "distinct" id; whitespace-only
+  values still fail as blank.
 - Facade: `attribute_model()` → `Ok(None)` when absent, full validation on
   read; `write_attribute_model` validates first, writes the declared
   encoding only, and mirrors `write_global_metadata`'s Metadata5
   cross-encoding guard; a Gpkg-declared store is `UnsupportedEncoding`.
   Profile hook `ApplicationProfile::attribute_model()` defaults `None`
-  (Attr1-A); `SimulationProfile` declares none. `RequirementsClass`
-  membership + the profile-declaration cross-check are deferred to 14b
-  (uniform optional-class join).
+  (Attr1-A); `SimulationProfile` declares none. Deferred to 14b (uniform
+  optional-class join): `RequirementsClass` membership + `CdbViolation`
+  mapping, the profile-declaration cross-check, and **the Attr1-C name
+  sweep** — `validate()` does not yet walk the top of `global_metadata/`
+  passing `vector_attributes*` entries through `parse_file_name`, so
+  `vector_attributes.txt` draws only a Name7-B warning and
+  `vector_attributes.xsd` in an XML store draws nothing at all (the
+  Metadata5 sweep skips unknown extensions and maps `xsd → Xml`); Attr1-C
+  is the only check that can catch either.
 - `tests/attribution_roundtrip.rs`: create → write → reopen → read equal →
   `validate()` conformant, JSON and XML.
 
@@ -314,7 +327,8 @@ Split into **14a** (mandatory core — the `0.1.0` milestone, done) and **14b**
   resource-metadata recognizer (a Name5 path duty). Provided defaults only
   where the spec itself defaults: root name `cdb` (RFile1), language derived
   from the style guide (Name3/Metadata4 single source), tiling declaration
-  `None`, `known_extensions()` empty (Name7-B vouching hook).
+  `None`, attribute-model declaration `None` (Attr1-A),
+  `known_extensions()` empty (Name7-B vouching hook).
 - Annex A: `tests/conformance_core.rs` mechanizes `/conf/minimal-core`
   (profile-declaration inspection) and operationalizes it — a full
   default-profile datastore passes all five mandatory classes with zero
@@ -471,8 +485,11 @@ for Phase 9).
 - Phase 13 done (`phase-13(attribution)` commits): Attr1/PAttr1/Attr2 in
   `attribution.rs` + the `ApplicationProfile::attribute_model` hook and
   the `CdbDatastore` read/write facade, and
-  `tests/attribution_roundtrip.rs`; 274 tests (254 unit + 19 integration
-  + 1 doc); tagged `v0.8.0`.
+  `tests/attribution_roundtrip.rs`; final-review fixes: parse-time leaf
+  whitespace canonicalization on both encodings (Attr2-B uniqueness hole +
+  hand-authored XML), literal Attr1-C name matching, blank-URI remainder
+  rejected, Gpkg facade coverage, crate-root re-exports;
+  279 tests (259 unit + 19 integration + 1 doc); tagged `v0.8.0`.
 - Next: Phase 14b (full conformance suite → `1.0.0`).
 
 ## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
