@@ -60,7 +60,10 @@ impl fmt::Display for HierarchyWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HierarchyWarning::EmptyFolder(path) => {
-                write!(f, "empty folder {path:?} (recommendation §7.4.5)")
+                write!(
+                    f,
+                    "empty folder {path:?} (recommendation /req/core/name-empty-folders A)"
+                )
             }
             HierarchyWarning::RootNameNotCdb { name } => write!(
                 f,
@@ -345,7 +348,18 @@ mod tests {
         fs::create_dir(&empty).unwrap();
 
         let report = layout.validate().unwrap();
-        assert_eq!(report.warnings, vec![HierarchyWarning::EmptyFolder(empty)]);
+        assert_eq!(
+            report.warnings,
+            vec![HierarchyWarning::EmptyFolder(empty.clone())]
+        );
+        // The message names the clause, not just the section: the finding's
+        // stable code is `/req/core/name-empty-folders-A`, and a reader of
+        // the human-readable text should be able to look the same clause up.
+        let rendered = HierarchyWarning::EmptyFolder(empty).to_string();
+        assert!(
+            rendered.contains("/req/core/name-empty-folders A"),
+            "{rendered}"
+        );
     }
 
     /// Root names obey the naming module.

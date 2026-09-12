@@ -6,6 +6,38 @@
 //! that makes the core implementable. Development is strictly test-driven
 //! against the spec — see `docs/TDD_PLAN.md`.
 //!
+//! # Conformance
+//!
+//! `docs/CONFORMANCE.md` is the public conformance matrix: every
+//! requirement of the standard mapped to the API item that implements it and
+//! the test that proves it, plus the draft defects this crate normalizes, the
+//! one place it interprets a silence in the spec, and what a "conformant"
+//! verdict does *not* mean. Read it before relying on a report.
+//!
+//! # What 1.0 guarantees
+//!
+//! The `1.0.0` release freezes the **public API surface** under semantic
+//! versioning: types, traits, function signatures, module paths, and the
+//! serde wire shape of a [`ConformanceReport`]. A breaking change to any of
+//! those requires `2.0`.
+//!
+//! It deliberately does **not** freeze the *content* of conformance
+//! findings. Which violations and warnings a datastore draws, and the
+//! human-readable text they carry, may change within `1.x` — because the
+//! standard they encode is a draft that carries defects (see
+//! `docs/CONFORMANCE.md` §7), and because this crate reads a silence in it as
+//! an interpretation that a future erratum may settle differently. A report
+//! that changes from conformant to non-conformant because the spec was
+//! corrected is the crate doing its job, not an API break.
+//!
+//! Two consequences for a consumer:
+//!
+//! - key on [`CdbViolation::code`] / [`CdbWarning::code`] — the stable
+//!   requirement-URI form of the clause — and never on `Display` text, which
+//!   is free to improve;
+//! - treat [`RequirementsClass`] and the finding enums as
+//!   `#[non_exhaustive]`, which they are: new variants arrive within `1.x`.
+//!
 //! # Example
 //!
 //! Create a datastore from the default simulation profile and validate it

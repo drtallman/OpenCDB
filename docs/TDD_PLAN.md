@@ -341,9 +341,20 @@ Split into **14a** (mandatory core — the `0.1.0` milestone, done) and **14b**
   epoch via `COORDINATEMETADATA`), and resource metadata, all through the
   facade with a fresh reopen.
 
-**14b (deferred until Phases 7–9 exist):** extend the conformance suite over
-the optional classes and run the full round-trip — create → write vector tiles
-+ an elevation coverage + metadata → reopen → read back → byte/value equality.
+**14b (as built) — the last phase of the plan, shipped as `1.0.0`:**
+
+| Item | Realization |
+|---|---|
+| The `conformance` module | Extracted from `datastore.rs` (2,794 → 1,807 lines): `class.rs` (`RequirementsClass`, moved out of `profiles` — conformance owns the vocabulary, profiles declare *from* it), `finding.rs` (`CdbViolation`/`CdbWarning` + the one auditable `code()` table), `report.rs` (`ClassFindings`/`ConformanceReport`), `validate.rs` (the orchestrator). All five types stay re-exported at the crate root; `CdbDatastore::validate` delegates. |
+| Eleven requirements classes | `RequirementsClass` gains Attribution, Coverages, Geometry, Tiling, Topology, Versioning (alphabetical, because `Ord` order **is** the report's listing order); `MANDATORY` joined by `OPTIONAL` and `ALL`. `CdbWarning` gains `Coverage` and `Tiling` — the only two optional classes with SHOULD-level text. Topology, Versioning and Attribution deliberately have **no** warning variant. |
+| Optional-class stages | One stage per declared class, each delegating to the owning module's free fn — `validate_coverage_instance`, `validate_tileset_metadata`, `validate_topology_dataset`, and the three added here: `geometry::validate_geometry_metadata`, `attribution::validate_attribute_model_document`, `versioning::validate_journal`. A declared class with no content **passes**, recorded separately via `ClassFindings::has_content` so a vacuous pass is never mistaken for a clean one. |
+| The content sweep | Rides the existing walk (no third traversal): five signals — a `vector_attributes.*` entry, the `tilingScheme` element, a `versions/` journal, `windingOrder`, `domainSet` — each reported under its class as `CdbViolation::DeclarationMismatch` when undeclared, clause = the class's `requirements_uri()`. Signals come only from directory entries and parsed metadata, never payload bytes. Geometry is deliberately **not** swept (Geom4's `uom` is a unit declaration, too weak to convict). Closes the Phase 13 carry-forward: `attribution::parse_file_name` finally has a production caller, so `vector_attributes.xsd` in an XML store and `Vector_Attributes.json` stop being invisible. Two cross-checks ride along: Tiling4 (profile pin vs the on-disk element) and the attribute model, both gated on `Some` since both trait methods default to `None`. `GlobalMetadataBuilder::tiling_scheme` added so the element can be written at all. |
+| The case stance | `naming::guard_eq` (ASCII-only, `pub(crate)`): **guards fold, requirements don't.** Six fold sites (reserved-tree guard, root-name match, `global_metadata/` detection, the `vector_attributes` stem signal, the `versions/` descent guard, `is_resource_metadata`'s `metadata/` component — the last two were not on the design spec's list); four deliberate non-fold sites (Name6's `CaseRule::matches`, `StyleGuide::is_reserved`, Attr1-C's `parse_file_name`, Attr2-B id uniqueness). Closes the item parked since Phase 12. |
+| serde surfaces | `ConformanceReport` is `Serialize` in a designed (not derived) shape: class-keyed array in `Ord` order, every finding a flat `{code, class, severity, message}` record. `Deserialize` only where a round-trip is meaningful (`RequirementsClass`, the topology primitives). `TopoGraph`'s `Deserialize` replays the constructors, so a wire graph meets the same SHALLs an in-memory one does. |
+| `GnosisProfile` | The simulation profile by composition with `TilingSchemeId::GnosisGlobalGrid` pinned — the second implementation the `ApplicationProfile` trait's premise always needed. |
+| The full round-trip | `tests/full_conformance.rs`: create → tile payloads (opaque blobs) at real CDB1/GNOSIS tile addresses → an elevation coverage with a `domainSet` → an attribute model → two versioning collections → reopen → byte equality, value equality on every structure the crate owns, and all eleven classes conformant with zero warnings — under **both** shipped profiles — plus the restricted-profile case that gives the content sweep its integration coverage. |
+| The public matrix | `docs/CONFORMANCE.md` (requirement → code → API → test, the errata list, the Tiling9/10 interpretation, the case stance, the honesty notes), guarded by `tests/conformance_matrix.rs`. Closes the §8 "public conformance matrix" ambition inside the crate. |
+| `1.0.0` | The API surface freezes; the *content* of conformance findings deliberately does not (`src/lib.rs`). |
 
 ## 5. TDD working agreement
 
@@ -360,10 +371,12 @@ the optional classes and run the full round-trip — create → write vector til
 
 ## 6. Phase order and rationale
 
-Order: 1 Naming → 2 Hierarchy → 3 Links → 4 Media types → 5 Metadata → 6 CRS
+**Complete as of `v1.0.0`.** Order, all phases delivered in it:
+1 Naming → 2 Hierarchy → 3 Links → 4 Media types → 5 Metadata → 6 CRS
 → 14a facade/conformance for the mandatory core → 7 Geometry → 8 Coverages →
 9 Tiling+CDB1 → 10 GNOSIS → 11 Topology → 12 Versioning → 13 Attribution →
-14b full conformance suite.
+14b full conformance suite. Nothing follows it inside this crate: the §8
+efforts are separate projects.
 
 Rationale: pure-function string/path validation first (fast feedback, no I/O),
 then the metadata/CRS backbone every other module depends on (the spec notes
@@ -492,7 +505,25 @@ for Phase 9).
   hand-authored XML), literal Attr1-C name matching, blank-URI remainder
   rejected, Gpkg facade coverage, crate-root re-exports;
   281 tests (261 unit + 19 integration + 1 doc); tagged `v0.8.0`.
-- Next: Phase 14b (full conformance suite → `1.0.0`).
+- Phase 14b done (`phase-14b(conformance)` commits ×8): the `conformance`
+  module extraction, eleven requirements classes with optional-class
+  warnings, the six optional-class stages, the content sweep with the
+  Attr1-C closure and the Tiling4/attribute-model cross-checks, the
+  crate-wide case stance, serde on reports and topology primitives, the
+  GNOSIS profile and the interior-whitespace URI tightening, and finally
+  `tests/full_conformance.rs`, `tests/conformance_matrix.rs` and
+  `docs/CONFORMANCE.md`; 329 tests (304 unit + 24 integration + 1 doc);
+  tagged `v1.0.0`. As-built notes: `CdbViolation` forgoes its `Eq` derive
+  (`TilingViolation` carries `f64`); `ClassFindings` is
+  `#[non_exhaustive]` and gained `has_content`;
+  `SimulationProfile::conformance_classes()` widened from `MANDATORY` to
+  `ALL` (the truthful declaration — an under-declaring profile convicts its
+  own datastores), which is why the sweep's integration coverage needs the
+  deliberately narrow profile in `tests/full_conformance.rs`; finding codes
+  are normalized absolute and hyphen-joined (the draft is inconsistent), and
+  the seven codes with no draft slug are listed in `docs/CONFORMANCE.md` §5.1.
+- **The plan is complete.** Everything further is TDD_PLAN §8 territory:
+  separate projects, each with its own brainstorm→spec→plan cycle.
 
 ## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
 
@@ -507,9 +538,10 @@ an ecosystem.
 - **Conformance CLI** (`cdb-lint`-style binary wrapping
   `CdbDatastore::validate` → Annex-A-style report; the adoption artifact
   implementers test against). Small; nearest-term.
-- **Public conformance matrix** — requirement ID → API item → test name,
-  consolidated from §4's as-built tables into a publishable document
-  (candidate to fold into 14b's docs instead; decide at 14b brainstorm).
+- ~~**Public conformance matrix**~~ — **done in 14b**: folded into the crate
+  as `docs/CONFORMANCE.md`, guarded by `tests/conformance_matrix.rs`. The
+  errata catalogue below can now be assembled from its §7 rather than from
+  scattered doc comments.
 - **Spec errata package to OGC** — consolidate the crate's doc-noted defect
   catalogue (duplicated URIs, /rec/-vs-/req/ mislabels, missing boxes, the
   §7.14.4 editorial TODO, typos) into change requests to the CDB SWG;
