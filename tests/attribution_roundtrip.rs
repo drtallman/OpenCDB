@@ -4,7 +4,9 @@
 //! `global_metadata/` without disturbing Annex A `/conf/minimal-core`
 //! conformance.
 
-use rusty_cdb::{AttributeDef, AttributeModel, CdbDatastore, DatastoreSeed, SimulationProfile};
+use rusty_cdb::{
+    AttributeDef, AttributeModel, CdbDatastore, DatastoreSeed, RequirementsClass, SimulationProfile,
+};
 
 /// The spec's §7.1.2.3 example table, verbatim (including its stray
 /// closing parenthesis), plus PAttr1's supplementary external-schema URI.
@@ -51,6 +53,12 @@ fn req_core_attributes_roundtrip_json() {
     assert_eq!(reopened.attribute_model().unwrap(), Some(model));
     let report = reopened.validate(&profile).unwrap();
     assert!(report.is_conformant(), "report: {report}");
+    for class in RequirementsClass::MANDATORY {
+        assert!(
+            report.warnings(class).is_empty(),
+            "{class} should have no warnings with the schema file present: {report}"
+        );
+    }
 }
 
 /// The XML twin (§7.1.2): the declared encoding picks
@@ -70,4 +78,10 @@ fn req_core_attributes_roundtrip_xml() {
     assert_eq!(reopened.attribute_model().unwrap(), Some(model));
     let report = reopened.validate(&profile).unwrap();
     assert!(report.is_conformant(), "report: {report}");
+    for class in RequirementsClass::MANDATORY {
+        assert!(
+            report.warnings(class).is_empty(),
+            "{class} should have no warnings with the schema file present: {report}"
+        );
+    }
 }

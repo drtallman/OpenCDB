@@ -39,7 +39,10 @@ pub mod tiling;
 pub mod topology;
 pub mod versioning;
 
-pub use attribution::{AttributeDef, AttributeModel, AttributionError, AttributionViolation};
+pub use attribution::{
+    AttributeDef, AttributeModel, AttributionError, AttributionViolation, VECTOR_ATTRIBUTES_STEM,
+    file_name_for, parse_file_name,
+};
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
     validate_coverage_instance,

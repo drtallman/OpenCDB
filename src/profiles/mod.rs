@@ -118,7 +118,8 @@ impl fmt::Display for StorageTechnology {
 /// CDB Core implementable (§5.1). Every core *singularity* is a required item;
 /// provided methods cover only what the spec itself defaults
 /// (`root_folder_name`, RFile1), derives (`language`, from the one style
-/// guide), or leaves optional (`tiling_scheme`, `known_extensions`).
+/// guide), or leaves optional (`tiling_scheme`, `attribute_model`,
+/// `known_extensions`).
 ///
 /// The trait is object-safe: the facade holds a `&dyn ApplicationProfile`.
 pub trait ApplicationProfile {

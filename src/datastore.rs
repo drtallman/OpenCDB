@@ -2683,6 +2683,44 @@ mod tests {
         );
     }
 
+    /// Requirement Attr1-C (§7.1.2.1) names only `xml` and `json`, so a
+    /// GeoPackage-declared datastore has no core-readable attribute
+    /// model: both facade directions report
+    /// [`MetadataError::UnsupportedEncoding`], the metadata readers'
+    /// precedent. (`gpkg` is unrepresentable through a profile
+    /// constructor, so the declaration is patched on disk — the only way
+    /// a `gpkg`-declaring store can exist for the core.)
+    #[test]
+    fn req_core_attribute_model_facade_gpkg_unsupported() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+        let record = store.root().join("global_metadata/global_metadata.json");
+        let patched = fs::read_to_string(&record).unwrap().replace(
+            r#""metadataEncoding": "json""#,
+            r#""metadataEncoding": "gpkg""#,
+        );
+        assert!(patched.contains("gpkg"), "declaration patched");
+        fs::write(&record, patched).unwrap();
+
+        assert!(matches!(
+            store.attribute_model(),
+            Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                MetadataEncoding::Gpkg
+            )))
+        ));
+        assert!(matches!(
+            store.write_attribute_model(&street_model()),
+            Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                MetadataEncoding::Gpkg
+            )))
+        ));
+    }
+
     /// Requirement Metadata5 — `write_attribute_model` refuses to write
     /// beside a `vector_attributes` file in a different encoding, the
     /// same single-encoding guard as `write_global_metadata`.

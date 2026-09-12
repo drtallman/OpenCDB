@@ -29,9 +29,19 @@
 //! codes like `AL013` inline, which an integer id cannot carry. The
 //! spec's informative fixture (`1`/`2`/`3`) still parses — the JSON
 //! parse canonicalizes bare non-negative-integer ids to their decimal
-//! strings (XML text content is a string by nature). Id uniqueness is
-//! byte-exact (the crate-wide case-folding stance is deliberately
-//! deferred).
+//! strings. Id uniqueness is byte-exact (the crate-wide case-folding
+//! stance is deliberately deferred).
+//!
+//! Parsing canonicalizes, validation rejects blanks. Both parse
+//! functions trim leading/trailing whitespace from `schemaUri` and from
+//! every attribute's `id`, `name`, and `description` before validating,
+//! so a hand-authored, indented `vector_attributes.xml` reads as the
+//! model it depicts, the two encodings carry one model to one in-memory
+//! value, and whitespace cannot make two ids "distinct" for Attr2-B.
+//! Whitespace-only values are still violations — the trim runs first,
+//! then the blank check fires. The cost is deliberate: a string stored
+//! with meaningful edge whitespace does not survive a write→read round
+//! trip unchanged (no CDB attribute vocabulary assigns meaning to it).
 //!
 //! This module deliberately has NO warning type — §7.1 contains no
 //! SHOULD-level finding — and no dependency on the links module: PAttr1's
@@ -158,7 +168,12 @@ fn is_blank(value: &str) -> bool {
 }
 
 /// RFC 3986 scheme well-formedness: `ALPHA *( ALPHA / DIGIT / "+" / "-"
-/// / "." )`, a `:`, and a non-empty remainder.
+/// / "." )`, a `:`, and a remainder with visible content — a blank
+/// remainder is no more a value than a blank name is ([`is_blank`]'s
+/// posture). The check stays scoped to the scheme and the remainder's
+/// presence (design decision 6); it is not a full RFC 3986 parser, so a
+/// space *inside* an otherwise well-formed remainder is not this
+/// module's finding.
 fn has_uri_shape(uri: &str) -> bool {
     match uri.split_once(':') {
         Some((scheme, rest)) => {
@@ -167,13 +182,40 @@ fn has_uri_shape(uri: &str) -> bool {
                 .next()
                 .is_some_and(|first| first.is_ascii_alphabetic())
                 && characters.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-                && !rest.is_empty()
+                && !rest.trim().is_empty()
         }
         None => false,
     }
 }
 
 impl AttributeModel {
+    /// Canonicalizes the model's leaf text: leading and trailing
+    /// whitespace is trimmed from `schema_uri` and from every
+    /// attribute's `id`, `name`, and `description`. Run by both parse
+    /// functions before validation, so one logical model has one
+    /// in-memory form no matter which encoding — or which indentation —
+    /// carried it.
+    fn canonicalize(&mut self) {
+        if let Some(uri) = &mut self.schema_uri {
+            let trimmed = uri.trim();
+            if trimmed.len() != uri.len() {
+                *uri = trimmed.to_owned();
+            }
+        }
+        for attribute in &mut self.attributes {
+            for field in [
+                &mut attribute.id,
+                &mut attribute.name,
+                &mut attribute.description,
+            ] {
+                let trimmed = field.trim();
+                if trimmed.len() != field.len() {
+                    *field = trimmed.to_owned();
+                }
+            }
+        }
+    }
+
     /// Validates the Attr2 content rules and PAttr1's URI shape — the
     /// single validation source. Parse functions call this before
     /// returning, and the facade calls it before writing.
@@ -217,24 +259,37 @@ impl AttributeModel {
     }
 
     /// Parses and validates a JSON model — a model obtained from bytes
-    /// is always valid. A bare non-negative integer id (the spec
-    /// fixture's style) is canonicalized to its decimal string in a
-    /// value pre-pass; other id types fail with the underlying serde
-    /// message.
+    /// is always valid. Parsing canonicalizes: a bare non-negative
+    /// integer id (the spec fixture's style) becomes its decimal string
+    /// in a value pre-pass, and leaf text (`schemaUri`, `id`, `name`,
+    /// `description`) is trimmed before validation and before the
+    /// Attr2-B uniqueness check. A model whose strings carry leading or trailing
+    /// whitespace therefore does **not** survive
+    /// `from_json_str(to_json_string(m))` unchanged — the whitespace is
+    /// dropped, deliberately; canonical models are a fixed point. An id
+    /// that is a number the canonicalization cannot carry (negative,
+    /// fractional, or wider than `u64`) is a `Serialization` failure.
     pub fn from_json_str(content: &str) -> Result<AttributeModel, AttributionError> {
         let mut value: serde_json::Value = serde_json::from_str(content)
             .map_err(|e| AttributionError::Serialization(e.to_string()))?;
         if let Some(attributes) = value.get_mut("attributes").and_then(|a| a.as_array_mut()) {
             for attribute in attributes {
-                if let Some(id) = attribute.get_mut("id")
-                    && let Some(number) = id.as_u64()
-                {
-                    *id = serde_json::Value::String(number.to_string());
+                if let Some(id) = attribute.get_mut("id") {
+                    if let Some(number) = id.as_u64() {
+                        *id = serde_json::Value::String(number.to_string());
+                    } else if id.is_number() {
+                        return Err(AttributionError::Serialization(
+                            "attribute id must be a string or a non-negative integer that fits \
+                             in 64 bits; quote the value to keep it verbatim"
+                                .to_owned(),
+                        ));
+                    }
                 }
             }
         }
-        let model: AttributeModel = serde_json::from_value(value)
+        let mut model: AttributeModel = serde_json::from_value(value)
             .map_err(|e| AttributionError::Serialization(e.to_string()))?;
+        model.canonicalize();
         model.validate()?;
         Ok(model)
     }
@@ -245,10 +300,19 @@ impl AttributeModel {
     }
 
     /// Parses and validates an XML model — a model obtained from bytes
-    /// is always valid.
+    /// is always valid. Leaf text (`schemaUri`, `id`, `name`,
+    /// `description`) is trimmed before validation and before the
+    /// Attr2-B uniqueness check, so a
+    /// hand-authored, indented `vector_attributes.xml` reads as the
+    /// model it depicts (quick-xml itself preserves element text
+    /// verbatim, indentation included) and ids cannot be made distinct
+    /// by invisible formatting. As on [`Self::from_json_str`], strings
+    /// with leading or trailing whitespace do not survive a write→read
+    /// round trip unchanged.
     pub fn from_xml_str(content: &str) -> Result<AttributeModel, AttributionError> {
-        let model: AttributeModel = quick_xml::de::from_str(content)
+        let mut model: AttributeModel = quick_xml::de::from_str(content)
             .map_err(|e| AttributionError::Serialization(e.to_string()))?;
+        model.canonicalize();
         model.validate()?;
         Ok(model)
     }
@@ -267,19 +331,28 @@ pub fn file_name_for(encoding: MetadataEncoding) -> Option<String> {
 }
 
 /// Parses an Attr1-C file name, returning the encoding its extension
-/// denotes. The stem must be exactly [`VECTOR_ATTRIBUTES_STEM`] (a
-/// reserved name — the case rule never applies to it); the extension is
-/// matched case-insensitively, like the Requirement Name7 table.
+/// denotes. The name must be the canonical form exactly — stem
+/// [`VECTOR_ATTRIBUTES_STEM`] (a reserved name, so the profile's case
+/// rule never applies to it) and a lowercase `json` or `xml` extension,
+/// i.e. precisely what [`file_name_for`] emits.
+///
+/// The match is case-*sensitive*, unlike [`crate::naming`]'s Requirement
+/// Name7 extension table, and the difference is deliberate: Name7
+/// resolves a media type for an arbitrary file whose name the crate does
+/// not control, so leniency there costs nothing, while Attr1-C mandates
+/// one literal file name for one specific file — and a literal-name
+/// mandate is read literally. Accepting `vector_attributes.JSON` here
+/// would also break the invariant that a name this function blesses is a
+/// name the facade can find: [`crate::datastore::CdbDatastore::attribute_model`]
+/// probes only the canonical name, so on a case-sensitive volume a
+/// mis-cased file would be "valid" and yet silently unreadable.
 pub fn parse_file_name(name: &str) -> Result<MetadataEncoding, AttributionViolation> {
     let (stem, extension) = split_extension(name);
-    if stem == VECTOR_ATTRIBUTES_STEM
-        && let Some(extension) = extension
-    {
-        if extension.eq_ignore_ascii_case("json") {
-            return Ok(MetadataEncoding::Json);
-        }
-        if extension.eq_ignore_ascii_case("xml") {
-            return Ok(MetadataEncoding::Xml);
+    if stem == VECTOR_ATTRIBUTES_STEM {
+        match extension {
+            Some("json") => return Ok(MetadataEncoding::Json),
+            Some("xml") => return Ok(MetadataEncoding::Xml),
+            _ => {}
         }
     }
     Err(AttributionViolation::InvalidFileName {
@@ -424,6 +497,8 @@ mod tests {
             "not a uri",
             "://missing-scheme",
             "http:",
+            "http:   ",
+            "a:\u{a0}",
             "1http://leading-digit",
             "ht tp://space-in-scheme",
             "https://example.org/\u{7}",
@@ -532,10 +607,136 @@ mod tests {
         ));
     }
 
+    /// `/req/core/attribute-model-content` B/C/D (§7.1.2.3) — parsing
+    /// canonicalizes leaf text: a hand-authored, indented XML document
+    /// (the natural shape of the externally-authored file §7.1 is about)
+    /// parses to the same model as the compact form, and to the same
+    /// model as the equivalent JSON document — the two encodings are
+    /// interchangeable carriers of one model.
+    #[test]
+    fn req_core_attribute_model_parse_canonicalizes_whitespace() {
+        let pretty = "<AttributeModel>\n  \
+             <schemaUri>\n    https://example.org/schemas/street.xsd\n  </schemaUri>\n  \
+             <attributes>\n    \
+               <id>\n      1\n    </id>\n    \
+               <name>\n      StreetName\n    </name>\n    \
+               <description>\n      Name of a street as an alphanumeric string\n    </description>\n  \
+             </attributes>\n\
+             </AttributeModel>";
+        let expected = AttributeModel {
+            schema_uri: Some("https://example.org/schemas/street.xsd".to_owned()),
+            attributes: vec![AttributeDef {
+                id: "1".to_owned(),
+                name: "StreetName".to_owned(),
+                description: "Name of a street as an alphanumeric string".to_owned(),
+            }],
+        };
+        assert_eq!(AttributeModel::from_xml_str(pretty).unwrap(), expected);
+
+        let compact = expected.to_xml_string().unwrap();
+        assert_eq!(
+            AttributeModel::from_xml_str(&compact).unwrap(),
+            AttributeModel::from_xml_str(pretty).unwrap()
+        );
+
+        let json = r#"{
+  "schemaUri": "  https://example.org/schemas/street.xsd  ",
+  "attributes": [
+    { "id": " 1 ", "name": "  StreetName ", "description": "\tName of a street as an alphanumeric string " }
+  ]
+}"#;
+        assert_eq!(AttributeModel::from_json_str(json).unwrap(), expected);
+    }
+
+    /// `/req/core/attribute-model-content` B/C/D (§7.1.2.3) — trimming is
+    /// canonicalization, not leniency: a value that is whitespace-only is
+    /// still empty after the trim, so the blank check fires on both
+    /// parse paths.
+    #[test]
+    fn req_core_attribute_model_parse_rejects_whitespace_only_values() {
+        let blank_name = "<AttributeModel><attributes>\
+             <id>1</id><name>   </name><description>d</description>\
+             </attributes></AttributeModel>";
+        assert!(matches!(
+            AttributeModel::from_xml_str(blank_name),
+            Err(AttributionError::Violation(
+                AttributionViolation::EmptyName { .. }
+            ))
+        ));
+
+        let blank_id = r#"{ "attributes": [ { "id": "  ", "name": "A", "description": "a" } ] }"#;
+        assert!(matches!(
+            AttributeModel::from_json_str(blank_id),
+            Err(AttributionError::Violation(AttributionViolation::EmptyId {
+                position: 0
+            }))
+        ));
+
+        let blank_uri = r#"{ "schemaUri": "http:   ", "attributes": [ { "id": "1", "name": "A", "description": "a" } ] }"#;
+        assert!(matches!(
+            AttributeModel::from_json_str(blank_uri),
+            Err(AttributionError::Violation(
+                AttributionViolation::InvalidSchemaUri { .. }
+            ))
+        ));
+    }
+
+    /// `/req/core/attribute-model-content` B (§7.1.2.3) — ids that differ
+    /// only by surrounding whitespace are the same identifier, in both
+    /// encodings: canonicalization runs before the uniqueness check, so
+    /// invisible formatting cannot defeat Attr2-B on the XML path.
+    #[test]
+    fn req_core_attribute_model_content_whitespace_ids_are_not_distinct() {
+        let xml = "<AttributeModel>\
+             <attributes><id>1</id><name>A</name><description>a</description></attributes>\
+             <attributes><id> 1 </id><name>B</name><description>b</description></attributes>\
+             </AttributeModel>";
+        assert!(
+            matches!(
+                AttributeModel::from_xml_str(xml),
+                Err(AttributionError::Violation(
+                    AttributionViolation::DuplicateId { ref id }
+                )) if id == "1"
+            ),
+            "xml: {:?}",
+            AttributeModel::from_xml_str(xml)
+        );
+
+        let json = r#"{ "attributes": [
+            { "id": "1", "name": "A", "description": "a" },
+            { "id": " 1 ", "name": "B", "description": "b" }
+        ] }"#;
+        assert!(matches!(
+            AttributeModel::from_json_str(json),
+            Err(AttributionError::Violation(
+                AttributionViolation::DuplicateId { .. }
+            ))
+        ));
+    }
+
+    /// `/req/core/attribute-model-content` B (§7.1.2.3) — a numeric id
+    /// the canonicalizing pre-pass cannot carry (negative, fractional, or
+    /// wider than `u64`) is refused with a message that names the fix,
+    /// not serde's re-typed view of the literal.
+    #[test]
+    fn req_core_attribute_model_content_numeric_id_message() {
+        for literal in ["-1", "1.5", "18446744073709551616"] {
+            let document = format!(
+                r#"{{ "attributes": [ {{ "id": {literal}, "name": "A", "description": "a" }} ] }}"#
+            );
+            match AttributeModel::from_json_str(&document) {
+                Err(AttributionError::Serialization(message)) => assert!(
+                    message.contains("quote the value"),
+                    "expected an actionable message for id {literal}: {message}"
+                ),
+                other => panic!("expected a Serialization failure for id {literal}: {other:?}"),
+            }
+        }
+    }
+
     /// Requirement Attr1-C (§7.1.2.1) — the schema file is
     /// `vector_attributes.<ext>` with `<ext>` either `xml` or `json`:
-    /// exact stem (reserved name), case-insensitive extension, nothing
-    /// else.
+    /// exact stem and exact lowercase extension, nothing else.
     #[test]
     fn req_core_attribute_model_file_name_rules() {
         assert_eq!(
@@ -546,15 +747,12 @@ mod tests {
             parse_file_name("vector_attributes.xml"),
             Ok(MetadataEncoding::Xml)
         );
-        assert_eq!(
-            parse_file_name("vector_attributes.JSON"),
-            Ok(MetadataEncoding::Json)
-        );
-
         for bad in [
             "vector_attributes.txt",
             "vector_attributes",
             "Vector_Attributes.json",
+            "vector_attributes.JSON",
+            "vector_attributes.Xml",
             "vector_attributes.json.bak",
             "attributes.json",
         ] {
