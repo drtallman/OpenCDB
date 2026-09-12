@@ -11,13 +11,13 @@
 
 pub mod simulation;
 
+pub use crate::conformance::RequirementsClass;
 pub use crate::tiling::TilingSchemeId;
 pub use simulation::SimulationProfile;
 
 use std::fmt;
 
 use crate::attribution::AttributeModel;
-use crate::conformance::RequirementsClass;
 use crate::crs::{CrsViolation, StorageCrs};
 use crate::hierarchy::RECOMMENDED_ROOT_NAME;
 use crate::metadata::{

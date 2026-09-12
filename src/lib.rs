@@ -42,7 +42,7 @@ pub mod versioning;
 
 pub use attribution::{
     AttributeDef, AttributeModel, AttributionError, AttributionViolation, VECTOR_ATTRIBUTES_STEM,
-    file_name_for, parse_file_name,
+    file_name_for, parse_file_name, validate_attribute_model_document,
 };
 pub use conformance::{
     CdbViolation, CdbWarning, ClassFindings, ConformanceReport, RequirementsClass,
@@ -55,7 +55,7 @@ pub use datastore::{CdbDatastore, DatastoreSeed};
 pub use error::CdbError;
 pub use geometry::{
     CdbGeometry, GeometryCode, GeometryContext, GeometryViolation, LineStringM, LineStringZ,
-    MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
+    MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ, validate_geometry_metadata,
 };
 pub use profiles::{ApplicationProfile, SimulationProfile};
 pub use tiling::{
@@ -69,5 +69,5 @@ pub use topology::{
 };
 pub use versioning::{
     ChangeAction, ChangeRecord, CollectionId, CollectionManifest, InverseOp, PendingCollection,
-    VersioningError, VersioningViolation, state_from_manifests,
+    VersioningError, VersioningViolation, state_from_manifests, validate_journal,
 };

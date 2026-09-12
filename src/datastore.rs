@@ -531,17 +531,7 @@ impl CdbDatastore {
             }
         }
         manifests.sort_by_key(|manifest| manifest.sequence);
-        for (index, manifest) in manifests.iter().enumerate() {
-            let expected = index as u32 + 1;
-            if manifest.sequence != expected {
-                return Err(versioning_violation(
-                    VersioningViolation::ManifestSequenceGap {
-                        expected,
-                        found: manifest.sequence,
-                    },
-                ));
-            }
-        }
+        versioning::validate_journal(&manifests).map_err(versioning_violation)?;
         Ok(manifests)
     }
 

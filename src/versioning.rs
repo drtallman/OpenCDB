@@ -132,6 +132,12 @@ pub enum VersioningViolation {
         "versioning journal is not contiguous: expected sequence {expected}, found {found}; inverse chains need an unbroken journal (req/core/versioning-collection, §7.14.3)"
     )]
     ManifestSequenceGap { expected: u32, found: u32 },
+    /// A journal entry's manifest was read but its bytes do not parse as
+    /// one (§7.14.3). A conformance finding, not an operational failure —
+    /// the read succeeded; mirrors
+    /// [`crate::metadata::MetadataViolation::Malformed`].
+    #[error("versioning manifest is malformed: {reason} (req/core/versioning, §7.14.3)")]
+    MalformedManifest { reason: String },
     /// A rollback target that is not in the journal (§7.14.2).
     #[error("no versioning collection {id} exists in the journal (req/core/versioning, §7.14.2)")]
     UnknownCollection { id: String },
@@ -453,6 +459,33 @@ impl CollectionManifest {
             })
             .collect()
     }
+}
+
+/// Validates the integrity of a datastore's versioning journal — the
+/// Versioning class's datastore-level entry point (Requirements V1/V2,
+/// §7.14.2–.3).
+///
+/// `manifests` is the journal's manifests **in sequence order**, one per
+/// committed `versions/v######/` entry; that they parsed at all is the other
+/// half of journal integrity and is the reader's duty
+/// ([`crate::datastore::CdbDatastore::versions`], which calls this).
+///
+/// The sequence SHALL be contiguous from 1, else
+/// [`VersioningViolation::ManifestSequenceGap`]: rollback composes inverse
+/// collections back down the journal, and an inverse chain is only sound
+/// over an unbroken one. An empty journal is coherent — a datastore that has
+/// applied no collection.
+pub fn validate_journal(manifests: &[CollectionManifest]) -> Result<(), VersioningViolation> {
+    for (index, manifest) in manifests.iter().enumerate() {
+        let expected = index as u32 + 1;
+        if manifest.sequence != expected {
+            return Err(VersioningViolation::ManifestSequenceGap {
+                expected,
+                found: manifest.sequence,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The state of `asset` after replaying the given manifests in order:
@@ -940,6 +973,35 @@ mod tests {
             Some("flooded")
         );
         assert_eq!(state_from_manifests(&journal, "/Tiles/B.gpkg"), None);
+    }
+
+    /// Requirements V1/V2 (§7.14.2–.3) — the datastore-level entry point
+    /// for the Versioning class: the journal SHALL be contiguous from
+    /// sequence 1, because rollback's inverse chains are only sound over an
+    /// unbroken journal. An empty journal is a coherent journal (a datastore
+    /// that has applied no collection).
+    #[test]
+    fn req_core_versioning_journal_sequence_contiguous() {
+        assert!(validate_journal(&[]).is_ok());
+
+        let good = vec![
+            manifest(1, "2026-01-01T00:00:00Z", Vec::new()),
+            manifest(2, "2026-01-02T00:00:00Z", Vec::new()),
+            manifest(3, "2026-01-03T00:00:00Z", Vec::new()),
+        ];
+        assert!(validate_journal(&good).is_ok());
+
+        let gapped = vec![
+            manifest(1, "2026-01-01T00:00:00Z", Vec::new()),
+            manifest(3, "2026-01-03T00:00:00Z", Vec::new()),
+        ];
+        assert_eq!(
+            validate_journal(&gapped),
+            Err(VersioningViolation::ManifestSequenceGap {
+                expected: 2,
+                found: 3
+            })
+        );
     }
 
     /// §7.14 — the versioning families route through the crate-wide error

@@ -10,7 +10,19 @@
 //!
 //! Conformance is decided by violations alone:
 //! [`ConformanceReport::is_conformant`] and
-//! [`ConformanceReport::class_passed`] ignore warnings.
+//! [`ConformanceReport::class_passed`] ignore warnings — and so does
+//! [`ConformanceReport::class_has_content`], which separates a class checked
+//! against real content from one checked against none.
+//!
+//! Each optional class's stage delegates to a free `validate_*` function
+//! owned by the requirements module itself
+//! ([`crate::coverage::validate_coverage_instance`],
+//! [`crate::tiling::validate_tileset_metadata`],
+//! [`crate::topology::validate_topology_dataset`],
+//! [`crate::geometry::validate_geometry_metadata`],
+//! [`crate::attribution::validate_attribute_model_document`],
+//! [`crate::versioning::validate_journal`]) rather than to a validator
+//! registry: the rules stay next to the types they judge.
 
 mod class;
 mod finding;

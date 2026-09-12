@@ -7,22 +7,53 @@ use std::path::{Path, PathBuf};
 use crate::conformance::{CdbViolation, CdbWarning, RequirementsClass};
 use crate::metadata::MetadataViolation;
 
-/// The violations and warnings recorded against a single requirements class.
+/// The violations and warnings recorded against a single requirements class,
+/// plus whether the datastore held any content that class governs.
 /// Fields are open, mirroring [`crate::hierarchy::HierarchyReport`].
+///
+/// `#[non_exhaustive]`: the fields are public and 1.0 freezes them, so the
+/// struct must stay open to fields a later class needs — [`Self::has_content`]
+/// is itself exactly such a field. Downstream code reads the fields and
+/// constructs values through [`Default`] rather than with a struct literal.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ClassFindings {
     /// SHALL violations for this class.
     pub violations: Vec<CdbViolation>,
     /// SHOULD warnings for this class.
     pub warnings: Vec<CdbWarning>,
+    /// Whether the datastore holds content this class governs — a tiling
+    /// scheme for Tiling, a `domainSet`-bearing record for Coverages, a
+    /// `versions/` journal for Versioning, and so on.
+    ///
+    /// A declared class with no such content **passes** (design spec §4: the
+    /// class describes what the profile *supports*, and Annex A nowhere
+    /// requires the content to exist), so this flag never affects pass/fail.
+    /// It exists to separate *checked-and-clean* from
+    /// *checked-with-no-content*, the reading a silent pass on an empty
+    /// datastore would otherwise conflate — the likeliest source of a false
+    /// green.
+    ///
+    /// `true` for the five mandatory classes by construction: the datastore
+    /// root, its names, its global metadata record, and its storage CRS are
+    /// precisely their content, and `/conf/minimal-core` requires all four.
+    pub has_content: bool,
 }
 
 /// The outcome of validating a datastore against a profile (Annex A
-/// `/conf/minimal-core`): findings bucketed by [`RequirementsClass`]. The five
-/// mandatory classes are always listed, whether or not they have findings.
+/// `/conf/minimal-core`): findings bucketed by [`RequirementsClass`].
+///
+/// **Which classes a report lists** is "the classes that were checked", not
+/// "the classes the profile declared" — the two coincide today but will not
+/// once the content sweep lands. A report lists the five mandatory classes
+/// always, plus every optional class the profile declares (checked by its own
+/// stage, whether or not the datastore holds matching content — see
+/// [`ClassFindings::has_content`]), plus any class that turns out to govern
+/// content the profile failed to declare.
 ///
 /// Conformance is decided by violations alone; warnings never affect
-/// [`Self::is_conformant`] or [`Self::class_passed`].
+/// [`Self::is_conformant`] or [`Self::class_passed`], and neither does
+/// [`Self::class_has_content`].
 #[derive(Debug, Clone)]
 pub struct ConformanceReport {
     profile: String,
@@ -35,17 +66,40 @@ pub struct ConformanceReport {
 impl ConformanceReport {
     /// A fresh report for `profile` at datastore `root`, pre-seeding the five
     /// mandatory classes with empty findings so they are always listed (the
-    /// invariant behind `/conf/minimal-core`).
+    /// invariant behind `/conf/minimal-core`). They are seeded
+    /// content-bearing: their content is the datastore's own mandatory
+    /// artifacts (see [`ClassFindings::has_content`]).
     pub(crate) fn new(profile: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         let mut classes = BTreeMap::new();
         for class in RequirementsClass::MANDATORY {
-            classes.insert(class, ClassFindings::default());
+            classes.insert(
+                class,
+                ClassFindings {
+                    has_content: true,
+                    ..ClassFindings::default()
+                },
+            );
         }
         Self {
             profile: profile.into(),
             root: root.into(),
             classes,
         }
+    }
+
+    /// Lists `class` with empty findings and no content yet, so a class the
+    /// profile declares appears in the report even when its stage finds
+    /// nothing to check. Idempotent, and never clears findings or content
+    /// already recorded.
+    pub(crate) fn declare_class(&mut self, class: RequirementsClass) {
+        self.classes.entry(class).or_default();
+    }
+
+    /// Records that the datastore holds content `class` governs, listing the
+    /// class if it was not listed already. Pass/fail is untouched: this is
+    /// the checked-and-clean vs. checked-with-no-content distinction only.
+    pub(crate) fn mark_content(&mut self, class: RequirementsClass) {
+        self.classes.entry(class).or_default().has_content = true;
     }
 
     /// Records a violation under its [`CdbViolation::class`]. A nested
@@ -111,6 +165,18 @@ impl ConformanceReport {
         }
     }
 
+    /// Whether the datastore held content `class` governs
+    /// ([`ClassFindings::has_content`]); `false` for an unlisted class. A
+    /// class that passed with `false` was checked against nothing — the
+    /// distinction between a clean datastore and an empty one. Never affects
+    /// [`Self::class_passed`] or [`Self::is_conformant`].
+    pub fn class_has_content(&self, class: RequirementsClass) -> bool {
+        match self.classes.get(&class) {
+            Some(findings) => findings.has_content,
+            None => false,
+        }
+    }
+
     /// The warnings recorded for `class`; an empty slice for an unlisted class.
     pub fn warnings(&self, class: RequirementsClass) -> &[CdbWarning] {
         match self.classes.get(&class) {
@@ -141,7 +207,14 @@ impl fmt::Display for ConformanceReport {
             } else {
                 "FAIL"
             };
-            writeln!(f, "  [{status}] {class}")?;
+            // §4: a declared class with no content passes — but say so, so a
+            // pass on an empty datastore cannot read as a pass on a clean one.
+            let content = if findings.has_content {
+                ""
+            } else {
+                " (no content)"
+            };
+            writeln!(f, "  [{status}] {class}{content}")?;
             for violation in &findings.violations {
                 writeln!(f, "      violation: {violation}")?;
             }
@@ -168,7 +241,16 @@ mod tests {
     fn conformance_report_lists_classes_and_pass_fail() {
         let report = ConformanceReport::new("simulation", "/tmp/cdb");
         let listed: Vec<RequirementsClass> = report.classes().map(|(class, _)| class).collect();
-        assert_eq!(listed, RequirementsClass::MANDATORY.to_vec());
+        // Membership, not position: a report lists every mandatory class and
+        // no optional class it was never told about. (Once `validate` seeds
+        // the profile's declared optional classes, an index-keyed assertion
+        // would break for reasons that have nothing to do with this test.)
+        for class in RequirementsClass::MANDATORY {
+            assert!(listed.contains(&class), "{class} not listed");
+        }
+        for class in RequirementsClass::OPTIONAL {
+            assert!(!listed.contains(&class), "{class} listed unbidden");
+        }
         assert_eq!(report.profile(), "simulation");
         assert_eq!(report.root(), Path::new("/tmp/cdb"));
         assert!(report.is_conformant());
@@ -225,5 +307,42 @@ mod tests {
         assert!(text.contains("simulation"), "{text}");
         assert!(text.contains("PASS"), "{text}");
         assert!(text.contains("FAIL"), "{text}");
+    }
+
+    /// Design spec §4 — "a declared class with no corresponding content
+    /// passes", but the report distinguishes *checked-and-clean* from
+    /// *checked-with-no-content*, because a silent pass on an empty
+    /// datastore is the failure mode most likely to give a false green. A
+    /// declared class starts content-free and passing; marking content flips
+    /// the flag without touching pass/fail, and `Display` says which is
+    /// which. The mandatory five are content-bearing by construction — the
+    /// datastore root, its names, its global metadata and its storage CRS
+    /// are exactly their content.
+    #[test]
+    fn conformance_report_distinguishes_no_content_from_clean() {
+        let mut report = ConformanceReport::new("simulation", "/tmp/cdb");
+        for class in RequirementsClass::MANDATORY {
+            assert!(report.class_has_content(class), "{class}");
+        }
+        // An unlisted class has no content and no findings.
+        assert!(!report.class_has_content(RequirementsClass::Tiling));
+
+        // Declaring a class lists it, passing and content-free.
+        report.declare_class(RequirementsClass::Tiling);
+        report.declare_class(RequirementsClass::Topology);
+        assert!(report.class_passed(RequirementsClass::Tiling));
+        assert!(!report.class_has_content(RequirementsClass::Tiling));
+        let listed: Vec<RequirementsClass> = report.classes().map(|(class, _)| class).collect();
+        assert!(listed.contains(&RequirementsClass::Tiling));
+
+        // Marking content flips only the flag.
+        report.mark_content(RequirementsClass::Tiling);
+        assert!(report.class_has_content(RequirementsClass::Tiling));
+        assert!(report.class_passed(RequirementsClass::Tiling));
+        assert!(report.is_conformant());
+
+        let text = report.to_string();
+        assert!(text.contains("[PASS] tiling\n"), "{text}");
+        assert!(text.contains("[PASS] topology (no content)"), "{text}");
     }
 }

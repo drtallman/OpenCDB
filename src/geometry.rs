@@ -11,7 +11,7 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::crs::{StorageCrs, authority_ids_match};
-use crate::metadata::{GlobalMetadata, ResourceMetadata, UnitOfMeasure};
+use crate::metadata::{GlobalMetadata, MetadataViolation, ResourceMetadata, UnitOfMeasure};
 
 /// A violation of a SHALL requirement of the geometry module (§7.6).
 /// The module has no warning type: §7.6 contains no SHOULD recommendations.
@@ -57,6 +57,13 @@ pub enum GeometryViolation {
         "geometry declares CRS {declared} but the datastore CRS is {datastore} (violates /req/core/geometry-coordinates)"
     )]
     ForeignCrs { declared: String, datastore: String },
+    /// A geometry-bearing dataset's resource metadata failed its own
+    /// module's validation; surfaced through the geometry family so a
+    /// geometry-metadata check yields a single error type (the delegation
+    /// shape [`crate::coverage::CoverageViolation::Metadata`] and
+    /// [`crate::topology::TopologyViolation::Metadata`] already use).
+    #[error(transparent)]
+    Metadata(#[from] MetadataViolation),
 }
 
 /// Geometry type codes of spec §7.6.1 (Requirement Geom2,
@@ -741,6 +748,44 @@ impl GeometryContext {
     }
 }
 
+/// Validates the geometry declarations a *resource metadata record* carries
+/// — the Geometry class's datastore-level entry point (Requirements
+/// Geom3/Geom4, §7.6.3).
+///
+/// **Read what this does NOT check.** Geometry is the one requirements class
+/// with no on-disk artifact of its own: Geom1–Geom6 govern geometry
+/// *instances*, and a CDB datastore keeps its instances inside payloads
+/// (GeoPackage containers, raster files) that this crate deliberately does
+/// not decode — `proj` and `gdal` are absent by design. Instance-level
+/// validation is therefore an **API-boundary duty**, performed by the caller
+/// that holds a decoded geometry, via [`CdbGeometry::validate_in`] against a
+/// [`GeometryContext`] (build one with [`GeometryContext::from_datastore`]).
+/// A conformance report that says "geometry: conformant" means exactly what
+/// this function checked and nothing more.
+///
+/// What a record alone makes checkable:
+///
+/// 1. The record is valid resource metadata — delegated through
+///    [`GeometryViolation::Metadata`], the same shape as
+///    [`crate::coverage::validate_coverage_instance`] and
+///    [`crate::topology::validate_topology_dataset`].
+/// 2. **Geom4** (`/req/core/geometry-mvalue`): the m-value unit of measure is
+///    declared "in the metadata for a given CDB dataset", i.e. the record's
+///    own `uom` element. Its *value* is a typed
+///    [`UnitOfMeasure`], so a parsed record cannot carry an unknown unit; a
+///    record with no `uom` carries no m-value declaration, which is correct
+///    for a dataset whose geometries have no m coordinates. Whether the
+///    payload's geometries actually have m values is invisible here — that
+///    conditional is what [`CdbGeometry::validate_in`] resolves.
+/// 3. **Geom3** (`/req/core/geometry-zvalue`) is satisfied datastore-wide
+///    rather than per-record: it requires the z unit in the *global*
+///    metadata UoM, which Requirement Metadata8 already makes a mandatory,
+///    non-optional element of `GlobalMetadata`.
+pub fn validate_geometry_metadata(record: &ResourceMetadata) -> Result<(), GeometryViolation> {
+    record.validate()?;
+    Ok(())
+}
+
 /// Wraps a planar geo-types `Point` directly as [`CdbGeometry::Point`].
 impl From<geo_types::Point<f64>> for CdbGeometry {
     fn from(value: geo_types::Point<f64>) -> CdbGeometry {
@@ -1213,5 +1258,36 @@ mod tests {
         )));
         assert!(matches!(&tri, CdbGeometry::Polygon(_)));
         assert_eq!(tri.geometry_code(), GeometryCode::Polygon);
+    }
+
+    /// Requirement Geom4 /req/core/geometry-mvalue (§7.6.3) — the
+    /// datastore-level entry point for the Geometry class validates the
+    /// record carrying the Geom4 `uom` conditional element: a valid record
+    /// passes, and an invalid one surfaces through the geometry family as
+    /// [`GeometryViolation::Metadata`] (the delegation shape
+    /// `coverage::validate_coverage_instance` and
+    /// `topology::validate_topology_dataset` already use). Geometry
+    /// *instances* are not reachable from a record — see the function's own
+    /// doc comment.
+    #[test]
+    fn req_core_geometry_mvalue_record_entry_point_validates_metadata() {
+        let mut record = ResourceMetadata::new("Roads", "Road Network", "Vector roads with m");
+        record.uom = Some(UnitOfMeasure::Meters);
+        assert!(validate_geometry_metadata(&record).is_ok());
+
+        // The Geom4 element is optional on a record; a record without it is
+        // still valid metadata.
+        let plain = ResourceMetadata::new("Roads", "Road Network", "Vector roads");
+        assert!(validate_geometry_metadata(&plain).is_ok());
+
+        // An invalid record is a Geometry-class finding, delegated.
+        let mut broken = ResourceMetadata::new("Roads", "", "Vector roads with m");
+        broken.uom = Some(UnitOfMeasure::Meters);
+        assert!(matches!(
+            validate_geometry_metadata(&broken),
+            Err(GeometryViolation::Metadata(
+                crate::metadata::MetadataViolation::MissingElement { element: "title" }
+            ))
+        ));
     }
 }

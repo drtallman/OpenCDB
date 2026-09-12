@@ -109,6 +109,14 @@ pub enum AttributionViolation {
         "file name {name:?} is not vector_attributes.<ext> with <ext> xml or json (violates req/core/attribute-model C, §7.1.2.1)"
     )]
     InvalidFileName { name: String },
+    /// Attr1-A (§7.1.2.1): the schema file was read but its bytes are not a
+    /// parseable attribute model, so the datastore "specifies" none. A
+    /// conformance finding, not an operational failure — the read
+    /// succeeded; mirrors [`crate::metadata::MetadataViolation::Malformed`].
+    #[error(
+        "attribute model document is malformed: {reason} (violates req/core/attribute-model A, §7.1.2.1)"
+    )]
+    Malformed { reason: String },
 }
 
 /// Operational failure of the attribution module: an I/O or encoding
@@ -375,6 +383,45 @@ pub fn parse_file_name(name: &str) -> Result<MetadataEncoding, AttributionViolat
     Err(AttributionViolation::InvalidFileName {
         name: name.to_owned(),
     })
+}
+
+/// Validates an attribute-model document as stored at
+/// `global_metadata/<file_name>` — the Attribution class's datastore-level
+/// entry point (Requirements Attr1-B/C and Attr2, §7.1.2).
+///
+/// `file_name` is checked against Attr1-C by [`parse_file_name`], and the
+/// encoding it names selects the parser; the parse then validates the
+/// content against Attr2 (and Permission PAttr1) and canonicalizes it, so
+/// the returned model is always a valid one. The *location* duty, Attr1-B
+/// (top of `global_metadata/`), is the caller's — it chose the file it read.
+///
+/// Every failure is a SHALL finding, never an operational error: the caller
+/// has already read the bytes, so a document that does not parse is a
+/// non-conformant datastore ([`AttributionViolation::Malformed`]), not an
+/// I/O problem. This is why the return type is
+/// [`AttributionViolation`] rather than [`AttributionError`].
+pub fn validate_attribute_model_document(
+    file_name: &str,
+    content: &str,
+) -> Result<AttributeModel, AttributionViolation> {
+    let parsed = match parse_file_name(file_name)? {
+        MetadataEncoding::Xml => AttributeModel::from_xml_str(content),
+        // `parse_file_name` yields only Json or Xml; Json is the remaining
+        // case and Gpkg is unreachable, so no arm can panic.
+        _ => AttributeModel::from_json_str(content),
+    };
+    match parsed {
+        Ok(model) => Ok(model),
+        Err(AttributionError::Violation(violation)) => Err(violation),
+        Err(AttributionError::Serialization(reason)) => {
+            Err(AttributionViolation::Malformed { reason })
+        }
+        // The parsers do no I/O, so this arm is unreachable in practice; it
+        // is armed defensively as `Malformed` rather than with a panic.
+        Err(AttributionError::Io(error)) => Err(AttributionViolation::Malformed {
+            reason: error.to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -832,5 +879,48 @@ mod tests {
             Some("vector_attributes.xml")
         );
         assert_eq!(file_name_for(MetadataEncoding::Gpkg), None);
+    }
+
+    /// Requirements Attr1-C and Attr2 (§7.1.2.1/.3) — the datastore-level
+    /// entry point for the Attribution class: the document's file name
+    /// selects the parser (Attr1-C), and the parse validates the content
+    /// (Attr2). A name that is not `vector_attributes.<json|xml>` is
+    /// `InvalidFileName`; bytes that are not a parseable model are
+    /// `Malformed` (a conformance finding, not an I/O failure — the file
+    /// was read successfully, it simply is not an attribute model).
+    #[test]
+    fn req_core_attribute_model_document_entry_point_validates() {
+        let model = street_fixture();
+        let json = model.to_json_string().unwrap();
+        assert_eq!(
+            validate_attribute_model_document("vector_attributes.json", &json).unwrap(),
+            model
+        );
+
+        let xml = model.to_xml_string().unwrap();
+        assert_eq!(
+            validate_attribute_model_document("vector_attributes.xml", &xml).unwrap(),
+            model
+        );
+
+        // Attr1-C: the name is the canonical one, read literally.
+        assert_eq!(
+            validate_attribute_model_document("attributes.json", &json),
+            Err(AttributionViolation::InvalidFileName {
+                name: "attributes.json".to_owned()
+            })
+        );
+
+        // Unparseable bytes are a SHALL finding, not an operational error.
+        assert!(matches!(
+            validate_attribute_model_document("vector_attributes.json", "{not json"),
+            Err(AttributionViolation::Malformed { .. })
+        ));
+
+        // Attr2-A: a parseable but empty model is still a violation.
+        assert_eq!(
+            validate_attribute_model_document("vector_attributes.json", r#"{"attributes":[]}"#),
+            Err(AttributionViolation::EmptyModel)
+        );
     }
 }

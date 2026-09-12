@@ -11,21 +11,30 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::attribution::AttributionViolation;
 use crate::conformance::RequirementsClass;
-use crate::coverage::CoverageWarning;
+use crate::coverage::{CoverageViolation, CoverageWarning};
 use crate::crs::{CrsViolation, CrsWarning};
+use crate::geometry::GeometryViolation;
 use crate::hierarchy::{HierarchyViolation, HierarchyWarning};
 use crate::links::LinkViolation;
 use crate::metadata::MetadataViolation;
 use crate::naming::{NamingViolation, NamingWarning};
-use crate::tiling::TilingWarning;
+use crate::tiling::{TilingViolation, TilingWarning};
+use crate::topology::TopologyViolation;
+use crate::versioning::VersioningViolation;
 
 /// A datastore-wide SHALL violation, gathering every requirements module's
 /// violation plus the two profile-layer findings Annex A `/conf/minimal-core`
 /// introduces. Each variant maps to exactly one [`RequirementsClass`] via
 /// [`CdbViolation::class`], which is how a
 /// [`crate::conformance::ConformanceReport`] buckets it.
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` but deliberately **not** `Eq`: [`TilingViolation`] carries
+/// `f64` fields (`CoordinateOutOfRange`) and is itself not `Eq`, so folding
+/// it in here costs the total-equality derive. Comparison with `==` and
+/// `assert_eq!` is unaffected.
+#[derive(Debug, Error, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum CdbViolation {
     /// A File Naming violation (spec §7.4).
@@ -44,6 +53,24 @@ pub enum CdbViolation {
     /// A CRS violation (spec §7.3).
     #[error(transparent)]
     Crs(#[from] CrsViolation),
+    /// An Attribution violation (spec §7.1).
+    #[error(transparent)]
+    Attribution(#[from] AttributionViolation),
+    /// A Coverages violation (spec §7.2).
+    #[error(transparent)]
+    Coverage(#[from] CoverageViolation),
+    /// A Geometry violation (spec §7.6).
+    #[error(transparent)]
+    Geometry(#[from] GeometryViolation),
+    /// A Tiling violation (spec §7.10–§7.12).
+    #[error(transparent)]
+    Tiling(#[from] TilingViolation),
+    /// A Topology violation (spec §7.13).
+    #[error(transparent)]
+    Topology(#[from] TopologyViolation),
+    /// A Versioning violation (spec §7.14).
+    #[error(transparent)]
+    Versioning(#[from] VersioningViolation),
     /// The profile fails to declare a mandatory conformance class
     /// (Annex A `/conf/minimal-core`); filed under the undeclared class.
     #[error(
@@ -74,6 +101,14 @@ impl CdbViolation {
     /// one-to-one, except a [`MetadataViolation::Link`] — an association link
     /// carried inside a metadata record — which is a Links finding. The two
     /// profile-layer variants return their carried `class`.
+    ///
+    /// A [`MetadataViolation`] *nested inside* an optional class's violation
+    /// (`CoverageViolation::Metadata` and its siblings) is **not** re-filed:
+    /// it is that class's verdict on its instance — "this coverage is
+    /// non-conformant because its record is" — and the record's own Metadata
+    /// finding is filed separately by the metadata stage. Only the
+    /// Metadata→Links normalization crosses classes, because an association
+    /// link has no home of its own.
     pub fn class(&self) -> RequirementsClass {
         match self {
             CdbViolation::Naming(_) => RequirementsClass::FileNaming,
@@ -82,6 +117,12 @@ impl CdbViolation {
             CdbViolation::Metadata(MetadataViolation::Link(_)) => RequirementsClass::Links,
             CdbViolation::Metadata(_) => RequirementsClass::Metadata,
             CdbViolation::Crs(_) => RequirementsClass::Crs,
+            CdbViolation::Attribution(_) => RequirementsClass::Attribution,
+            CdbViolation::Coverage(_) => RequirementsClass::Coverages,
+            CdbViolation::Geometry(_) => RequirementsClass::Geometry,
+            CdbViolation::Tiling(_) => RequirementsClass::Tiling,
+            CdbViolation::Topology(_) => RequirementsClass::Topology,
+            CdbViolation::Versioning(_) => RequirementsClass::Versioning,
             CdbViolation::MissingConformanceDeclaration { class, .. } => *class,
             CdbViolation::DeclarationMismatch { class, .. } => *class,
         }
@@ -289,5 +330,41 @@ mod tests {
         let wrapped: CdbWarning = tiling_warning.clone().into();
         assert_eq!(wrapped.to_string(), tiling_warning.to_string());
         assert_eq!(wrapped.class(), RequirementsClass::Tiling);
+    }
+
+    /// Taxonomy for the six optional classes (§7.1, §7.2, §7.6, §7.10,
+    /// §7.13, §7.14): each module's violation folds into [`CdbViolation`]
+    /// via `From` and `class()` files it under its own class. A metadata
+    /// violation *nested* inside an optional-class violation stays under
+    /// that class — it is the instance's verdict, and the record's own
+    /// Metadata finding is filed separately by the metadata stage.
+    #[test]
+    fn req_core_conformance_optional_class_violations_wrap() {
+        let attribution: CdbViolation = AttributionViolation::EmptyModel.into();
+        assert_eq!(attribution.class(), RequirementsClass::Attribution);
+
+        let coverage: CdbViolation = CoverageViolation::MissingDomainSet.into();
+        assert_eq!(coverage.class(), RequirementsClass::Coverages);
+
+        let geometry: CdbViolation = GeometryViolation::MissingMUom.into();
+        assert_eq!(geometry.class(), RequirementsClass::Geometry);
+
+        let tiling: CdbViolation = TilingViolation::MissingTilesetKeywords.into();
+        assert_eq!(tiling.class(), RequirementsClass::Tiling);
+
+        let topology: CdbViolation = TopologyViolation::WindingOrderUndeclared.into();
+        assert_eq!(topology.class(), RequirementsClass::Topology);
+
+        let versioning: CdbViolation = VersioningViolation::ManifestSequenceGap {
+            expected: 2,
+            found: 3,
+        }
+        .into();
+        assert_eq!(versioning.class(), RequirementsClass::Versioning);
+
+        // A delegated metadata violation keeps its optional class.
+        let nested: CdbViolation =
+            CoverageViolation::Metadata(MetadataViolation::MissingElement { element: "ID" }).into();
+        assert_eq!(nested.class(), RequirementsClass::Coverages);
     }
 }

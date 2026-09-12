@@ -6,23 +6,37 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::attribution::{self, AttributionError};
 use crate::conformance::{CdbViolation, CdbWarning, ConformanceReport, RequirementsClass};
+use crate::coverage;
 use crate::crs::{CrsError, StorageCrs};
 use crate::datastore::{CdbDatastore, path_extension};
 use crate::error::CdbError;
+use crate::geometry;
 use crate::hierarchy::HierarchyError;
 use crate::metadata::{
     GlobalMetadata, MetadataError, MetadataViolation, ResourceMetadata, encoding_violations,
 };
 use crate::naming::{NamingWarning, StyleGuide, component_warnings, file_warnings};
 use crate::profiles::ApplicationProfile;
-use crate::versioning;
+use crate::tiling::{self, TilingScheme};
+use crate::topology::{self, TopoGraph};
+use crate::versioning::{self, VersioningError, VersioningViolation};
 
 /// Validates `datastore` against `profile`, the abstract test behind Annex A
 /// `/conf/minimal-core`: it inspects the profile's declarations and the
-/// on-disk state of the five mandatory requirements classes (CRS, File
-/// Naming, File Structure, Links, Metadata) and returns a
+/// on-disk state of the requirements classes and returns a
 /// [`ConformanceReport`] bucketing every finding by [`RequirementsClass`].
+///
+/// The five mandatory classes (CRS, File Naming, File Structure, Links,
+/// Metadata) are always checked. Each **optional** class the profile declares
+/// in [`ApplicationProfile::conformance_classes`] then gets a stage of its
+/// own, delegating to the free `validate_*` function its requirements module
+/// owns. A declared class whose content the datastore does not hold *passes*
+/// — declaring Tiling in a datastore holding no tiles is not a violation —
+/// but the report records that nothing was checked, via
+/// [`crate::conformance::ClassFindings::has_content`], so a pass on an empty
+/// datastore cannot be misread as a pass on a clean one.
 ///
 /// Conformance findings are **recorded, never returned as `Err`**: a
 /// non-conformant datastore still yields `Ok(report)` whose
@@ -81,7 +95,9 @@ pub fn validate(
 
     // Stage 4 — Metadata: read the global record and cross-check the
     // profile's Metadata2/5/8/4 declarations, then sweep every metadata
-    // file's encoding (Metadata5).
+    // file's encoding (Metadata5). The parsed record is kept: the declared
+    // optional classes read their §7.9.4.2 conditional elements off it.
+    let mut global_record = None;
     match GlobalMetadata::read_from(datastore.layout()) {
         Ok(global) => {
             if global.encoding != profile.metadata_encoding() {
@@ -144,6 +160,7 @@ pub fn validate(
                     language: global.language.as_str().to_owned(),
                 });
             }
+            global_record = Some(global);
         }
         Err(error) => record_metadata_error(&mut report, error)?,
     }
@@ -166,7 +183,9 @@ pub fn validate(
     }
 
     // Stage 5 — CRS: read the storage CRS and cross-check the profile's
-    // single-CRS declaration (CRS3).
+    // single-CRS declaration (CRS3). The parsed CRS is kept: Tiling5/6/7 and
+    // Coverages4 are judged against it.
+    let mut storage_crs = None;
     match StorageCrs::read_from(datastore.layout()) {
         Ok(on_disk) => {
             match profile.storage_crs() {
@@ -188,6 +207,7 @@ pub fn validate(
             for warning in on_disk.warnings() {
                 report.record_warning(warning.into());
             }
+            storage_crs = Some(on_disk);
         }
         Err(CrsError::Violation(violation)) => report.record_violation(violation.into()),
         // I/O (and any future operational variant) aborts inspection.
@@ -195,7 +215,13 @@ pub fn validate(
     }
 
     // Stage 6 — Resource metadata + Links: parse each recognized record and
-    // record its Metadata/Links findings.
+    // record its Metadata/Links findings. Records that parse are kept for
+    // stage 7: the conditional elements of §7.9.4.2 (`domainSet`,
+    // `windingOrder`, `uom`) are how the optional classes see their content.
+    // A record that did NOT parse is absent here by design — its finding is
+    // already filed under Metadata, and re-reporting it under an optional
+    // class would double-count one fault.
+    let mut resource_records: Vec<ResourceMetadata> = Vec::new();
     for logical_path in &file_logical_paths {
         if !profile.is_resource_metadata(logical_path) {
             continue;
@@ -219,12 +245,270 @@ pub fn validate(
             Some("xml") => ResourceMetadata::from_xml_str(&content),
             _ => ResourceMetadata::from_json_str(&content),
         };
-        if let Err(error) = parsed {
-            record_metadata_error(&mut report, error)?;
+        match parsed {
+            Ok(record) => resource_records.push(record),
+            Err(error) => record_metadata_error(&mut report, error)?,
+        }
+    }
+
+    // Stage 7 — one stage per DECLARED optional class. Declaration drives:
+    // Annex A judges a datastore against a profile's declaration, so a class
+    // the profile never declared is not checked here (content that exists
+    // anyway is the content sweep's business, not this stage's).
+    //
+    // Every declared class is listed even when its stage finds nothing: a
+    // declared class with no corresponding content PASSES — the class says
+    // what the profile supports, and nothing in Annex A requires the content
+    // to exist — but the report separates that from a clean check via
+    // `ClassFindings::has_content`.
+    for class in RequirementsClass::OPTIONAL {
+        if !declared.contains(&class) {
+            continue;
+        }
+        report.declare_class(class);
+        match class {
+            RequirementsClass::Attribution => {
+                validate_attribution(datastore, global_record.as_ref(), &mut report)?;
+            }
+            RequirementsClass::Coverages => {
+                validate_coverages(&resource_records, storage_crs.as_ref(), &mut report);
+            }
+            RequirementsClass::Geometry => {
+                validate_geometry(&resource_records, &mut report);
+            }
+            RequirementsClass::Tiling => {
+                validate_tiling(
+                    global_record.as_ref(),
+                    storage_crs.as_ref(),
+                    &resource_records,
+                    &mut report,
+                );
+            }
+            RequirementsClass::Topology => {
+                validate_topology(&resource_records, &mut report);
+            }
+            RequirementsClass::Versioning => {
+                validate_versioning(datastore, global_record.as_ref(), &mut report)?;
+            }
+            // The mandatory five are not in OPTIONAL; stages 1–6 ran them.
+            // Spelled out rather than wildcarded so a new variant is a
+            // compile error here, not a silent omission.
+            RequirementsClass::Crs
+            | RequirementsClass::FileNaming
+            | RequirementsClass::FileStructure
+            | RequirementsClass::Links
+            | RequirementsClass::Metadata => {}
         }
     }
 
     Ok(report)
+}
+
+/// Attribution stage (§7.1.2, Requirements Attr1-B/C and Attr2): the
+/// attribute model stored at `global_metadata/vector_attributes.<ext>` — the
+/// Attr1-B location and the Attr1-C name, derived from the datastore's
+/// declared metadata encoding — parses and validates.
+///
+/// No file means no attribute model, which is **not** a violation: Attr1-A
+/// binds a profile "specifying and/or implementing attribution", and a
+/// datastore that ships none simply has no attribution content. A
+/// GeoPackage-declared datastore likewise has no core-readable model
+/// ([`crate::attribution::file_name_for`] yields `None`) and counts as no
+/// content. A file that *is* present but unreadable as a model is a SHALL
+/// finding, not an I/O error — only the read itself can fail operationally.
+fn validate_attribution(
+    datastore: &CdbDatastore,
+    global: Option<&GlobalMetadata>,
+    report: &mut ConformanceReport,
+) -> Result<(), CdbError> {
+    // Without a readable global record the declared encoding is unknown —
+    // that finding is already filed under Metadata; nothing to check here.
+    let Some(global) = global else {
+        return Ok(());
+    };
+    let Some(name) = attribution::file_name_for(global.encoding) else {
+        return Ok(());
+    };
+    let path = datastore.layout().global_metadata_dir().join(&name);
+    if !path.is_file() {
+        return Ok(());
+    }
+    report.mark_content(RequirementsClass::Attribution);
+    let content = fs::read_to_string(&path).map_err(AttributionError::Io)?;
+    if let Err(violation) = attribution::validate_attribute_model_document(&name, &content) {
+        report.record_violation(violation.into());
+    }
+    Ok(())
+}
+
+/// Coverages stage (§7.2.4–.6, Requirements Coverages4/5/6): every resource
+/// metadata record carrying the Coverages6 `domainSet` conditional element is
+/// a coverage instance, and is validated as one by
+/// [`crate::coverage::validate_coverage_instance`] — Coverages5's
+/// minimum-metadata duty and Coverages6's domainSet content, with Coverages4
+/// judged against the datastore's own CRS.
+///
+/// `source_crs` is passed as `None`: a per-instance CRS claim lives in the
+/// coverage payload, which this crate does not decode, so every record here
+/// is association-via-datastore (the normal case, which Coverages4 permits).
+/// The §7.2.6.1 SHOULD on `uom` is surfaced as a warning, never a failure.
+fn validate_coverages(
+    records: &[ResourceMetadata],
+    storage_crs: Option<&StorageCrs>,
+    report: &mut ConformanceReport,
+) {
+    let datastore_crs = storage_crs.and_then(StorageCrs::authority);
+    for record in records {
+        let Some(domain_set) = record.domain_set.as_ref() else {
+            continue;
+        };
+        report.mark_content(RequirementsClass::Coverages);
+        if let Err(violation) =
+            coverage::validate_coverage_instance(Some(record), None, datastore_crs.as_ref())
+        {
+            report.record_violation(violation.into());
+        }
+        for warning in domain_set.warnings() {
+            report.record_warning(warning.into());
+        }
+    }
+}
+
+/// Geometry stage (§7.6.3, Requirement Geom4): the `uom` conditional element
+/// on geometry-bearing resource metadata records, validated by
+/// [`crate::geometry::validate_geometry_metadata`].
+///
+/// **This stage is narrow, and a reader must not over-read it.** Geometry is
+/// the one requirements class with no on-disk artifact of its own:
+/// Requirements Geom1–Geom6 govern geometry *instances*, which a datastore
+/// keeps inside payloads (GeoPackage containers, raster files) that this
+/// crate deliberately does not decode. So "Geometry: conformant" in a report
+/// means only that the Geom4 declarations the records carry are well formed —
+/// **not** that any geometry was inspected. Instance-level validation is an
+/// API-boundary duty, performed by the caller holding a decoded geometry via
+/// [`crate::geometry::CdbGeometry::validate_in`] against a
+/// [`crate::geometry::GeometryContext`]. Requirement Geom3's z unit is
+/// satisfied datastore-wide by `GlobalMetadata::uom`, which Metadata8 makes
+/// mandatory.
+fn validate_geometry(records: &[ResourceMetadata], report: &mut ConformanceReport) {
+    for record in records {
+        if record.uom.is_none() {
+            continue;
+        }
+        report.mark_content(RequirementsClass::Geometry);
+        if let Err(violation) = geometry::validate_geometry_metadata(record) {
+            report.record_violation(violation.into());
+        }
+    }
+}
+
+/// Tiling stage (§7.10.2, Requirements Tiling5/6/7 and Tiling9/10 plus
+/// Recommendation Tiling1): the `tilingScheme` element on the global record —
+/// Requirement Tiling8's §7.9.4.2 conditional element — is what makes a
+/// datastore *tiled*, and it is this class's content signal.
+///
+/// With a scheme present, [`crate::tiling::TilingScheme::validate`] judges it
+/// against the storage CRS (Tiling5 CRS identity, Tiling6 unit of measure,
+/// Tiling7 whole-earth extent), and `warnings()` surfaces Recommendation
+/// Tiling1. Each resource metadata record of a tiled datastore is tileset
+/// metadata, so [`crate::tiling::validate_tileset_metadata`] holds Tiling9/10
+/// over it.
+///
+/// A datastore with no `tilingScheme` is untiled: no content, and
+/// deliberately **no** Tiling8 finding — Requirement Tiling8 binds a *tiled*
+/// datastore, and a declared class with no content passes.
+fn validate_tiling(
+    global: Option<&GlobalMetadata>,
+    storage_crs: Option<&StorageCrs>,
+    records: &[ResourceMetadata],
+    report: &mut ConformanceReport,
+) {
+    let Some(global) = global else {
+        return;
+    };
+    // Tiling8's own accessor: `Err` here means "untiled", not "faulty".
+    let Ok(scheme) = TilingScheme::require(global) else {
+        return;
+    };
+    report.mark_content(RequirementsClass::Tiling);
+    // Without a readable storage CRS, Tiling5/6/7 have no yardstick; that
+    // finding is already filed under Crs.
+    if let Some(crs) = storage_crs
+        && let Err(violation) = scheme.validate(crs)
+    {
+        report.record_violation(violation.into());
+    }
+    for warning in scheme.warnings() {
+        report.record_warning(warning.into());
+    }
+    for record in records {
+        if let Err(violation) = tiling::validate_tileset_metadata(record) {
+            report.record_violation(violation.into());
+        }
+    }
+}
+
+/// Topology stage (§7.13.5.5, Face Topology Requirement 4): every resource
+/// metadata record carrying the `windingOrder` conditional element declares a
+/// topologically structured dataset, validated through the topology module's
+/// own entry point, [`crate::topology::validate_topology_dataset`].
+///
+/// The graph passed is empty, and that is not a shortcut but the honest
+/// boundary: a topological graph lives in the dataset payload, which this
+/// crate does not decode, so the face-count arm of Face4 ("once the graph
+/// contains faces, the record SHALL declare a `windingOrder`") cannot fire
+/// from the datastore level. It stays an API-boundary duty for a caller
+/// holding a decoded [`crate::topology::TopoGraph`]. What *is* checkable here
+/// is the converse and it holds by construction: a record that declares a
+/// winding order declares a valid one, since `WindingOrder` is a closed enum
+/// the parse already rejected bad values for.
+fn validate_topology(records: &[ResourceMetadata], report: &mut ConformanceReport) {
+    let empty = TopoGraph::new();
+    for record in records {
+        if record.winding_order.is_none() {
+            continue;
+        }
+        report.mark_content(RequirementsClass::Topology);
+        if let Err(violation) = topology::validate_topology_dataset(&empty, record) {
+            report.record_violation(violation.into());
+        }
+    }
+}
+
+/// Versioning stage (§7.14.2–.3, Requirements V1/V2): journal integrity —
+/// every `versions/v######/` manifest parses, and the sequence they form is
+/// contiguous from 1 ([`crate::versioning::validate_journal`], which
+/// [`CdbDatastore::versions`] applies on the reader's behalf).
+///
+/// The `versions/` directory is the content signal: a datastore that has
+/// applied no collection has no journal, which is no content rather than a
+/// fault. A manifest that fails to parse, or a hole in the sequence, is a
+/// SHALL finding; an unreadable directory is operational and returns `Err`.
+///
+/// `global` is required because the journal is written in the datastore's
+/// declared metadata encoding: without a readable global record the manifest
+/// file names are unknown, and that finding already sits under Metadata.
+fn validate_versioning(
+    datastore: &CdbDatastore,
+    global: Option<&GlobalMetadata>,
+    report: &mut ConformanceReport,
+) -> Result<(), CdbError> {
+    if global.is_none() || !datastore.root().join(versioning::VERSIONS_DIR).is_dir() {
+        return Ok(());
+    }
+    report.mark_content(RequirementsClass::Versioning);
+    match datastore.versions() {
+        Ok(_) => Ok(()),
+        Err(CdbError::Versioning(VersioningError::Violation(violation))) => {
+            report.record_violation(violation.into());
+            Ok(())
+        }
+        Err(CdbError::Versioning(VersioningError::Serialization(reason))) => {
+            report.record_violation(VersioningViolation::MalformedManifest { reason }.into());
+            Ok(())
+        }
+        Err(other) => Err(other),
+    }
 }
 
 /// The File Naming walk of [`validate`] (stage 3): a single
@@ -355,13 +639,422 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
+    use crate::attribution::{AttributeDef, AttributeModel, AttributionViolation};
+    use crate::coverage::{CoverageViolation, CoverageWarning, DomainSet};
     use crate::crs::CrsViolation;
     use crate::datastore::DatastoreSeed;
     use crate::hierarchy::{DatastoreLayout, HierarchyWarning};
     use crate::metadata::{MetadataEncoding, MetadataStandard, UnitOfMeasure};
     use crate::naming::{CaseRule, StyleGuide};
     use crate::profiles::{SimulationProfile, StorageTechnology};
+    use crate::tiling::{TilingScheme, TilingViolation, TilingWarning};
+    use crate::topology::WindingOrder;
+    use crate::versioning::{PendingCollection, VersioningViolation};
     use tempfile::tempdir;
+
+    /// A profile that delegates every policy to the default simulation
+    /// profile but declares an arbitrary set of requirements classes, so the
+    /// declared-class stages can be driven. (`SimulationProfile` itself
+    /// declares only the mandatory five, which is why every test below needs
+    /// this wrapper.)
+    struct DeclaringProfile {
+        inner: SimulationProfile,
+        classes: Vec<RequirementsClass>,
+    }
+
+    impl DeclaringProfile {
+        /// Declares every class the core defines.
+        fn all() -> Self {
+            DeclaringProfile {
+                inner: SimulationProfile::json(),
+                classes: RequirementsClass::ALL.to_vec(),
+            }
+        }
+    }
+
+    impl ApplicationProfile for DeclaringProfile {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+        fn style_guide(&self) -> StyleGuide {
+            self.inner.style_guide()
+        }
+        fn storage_crs(&self) -> Result<StorageCrs, CrsViolation> {
+            self.inner.storage_crs()
+        }
+        fn metadata_standard(&self) -> MetadataStandard {
+            self.inner.metadata_standard()
+        }
+        fn metadata_encoding(&self) -> MetadataEncoding {
+            self.inner.metadata_encoding()
+        }
+        fn uom(&self) -> UnitOfMeasure {
+            self.inner.uom()
+        }
+        fn storage_technology(&self) -> StorageTechnology {
+            self.inner.storage_technology()
+        }
+        fn conformance_classes(&self) -> Vec<RequirementsClass> {
+            self.classes.clone()
+        }
+        fn is_resource_metadata(&self, logical_path: &str) -> bool {
+            self.inner.is_resource_metadata(logical_path)
+        }
+        fn known_extensions(&self) -> Vec<String> {
+            self.inner.known_extensions()
+        }
+    }
+
+    /// Creates a fresh JSON datastore for the optional-class stage tests.
+    fn fresh_store(tmp: &tempfile::TempDir) -> CdbDatastore {
+        CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("id", "Title", "Description", "contact"),
+        )
+        .unwrap()
+    }
+
+    /// Design spec §4 — **a declared class with no corresponding content
+    /// passes.** A profile declaring all eleven classes against a freshly
+    /// created datastore (no attribute model, no tiling scheme, no resource
+    /// records, no journal) is conformant: every optional class is listed and
+    /// passing, and every one reports *no content*, so the report cannot be
+    /// mistaken for a clean check of content that was never there. The
+    /// mandatory five are content-bearing by construction.
+    #[test]
+    fn conf_core_declared_optional_class_with_no_content_passes() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        let listed: Vec<RequirementsClass> = report.classes().map(|(class, _)| class).collect();
+        for class in RequirementsClass::OPTIONAL {
+            assert!(listed.contains(&class), "{class} not listed: {report}");
+            assert!(report.class_passed(class), "{class}: {report}");
+            assert!(
+                !report.class_has_content(class),
+                "{class} should have no content: {report}"
+            );
+        }
+        for class in RequirementsClass::MANDATORY {
+            assert!(report.class_has_content(class), "{class}: {report}");
+        }
+        assert!(report.to_string().contains("(no content)"), "{report}");
+    }
+
+    /// Requirements Attr1-B/C and Attr2 (§7.1.2) — the Attribution stage
+    /// reads `global_metadata/vector_attributes.<declared-enc>` and validates
+    /// the model it holds. A written model gives the class content and
+    /// passes; bytes that are not a parseable model fail the class as
+    /// `AttributionViolation::Malformed` (a SHALL finding — the read
+    /// succeeded).
+    #[test]
+    fn req_core_attribution_stage_validates_model_document() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        store
+            .write_attribute_model(&AttributeModel {
+                schema_uri: None,
+                attributes: vec![AttributeDef {
+                    id: "1".to_owned(),
+                    name: "StreetName".to_owned(),
+                    description: "Name of a street as an alphanumeric string".to_owned(),
+                }],
+            })
+            .unwrap();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Attribution),
+            "{report}"
+        );
+
+        // Corrupt the document: the class fails, nothing else does.
+        fs::write(
+            store
+                .layout()
+                .global_metadata_dir()
+                .join("vector_attributes.json"),
+            "{not json",
+        )
+        .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            !report.class_passed(RequirementsClass::Attribution),
+            "{report}"
+        );
+        assert!(matches!(
+            report.violations(RequirementsClass::Attribution),
+            [CdbViolation::Attribution(
+                AttributionViolation::Malformed { .. }
+            )]
+        ));
+        assert!(report.class_passed(RequirementsClass::Metadata), "{report}");
+    }
+
+    /// Requirements Coverages4/5/6 (§7.2.4–.6) — the Coverages stage treats
+    /// every resource metadata record carrying the Coverages6 `domainSet`
+    /// conditional element as a coverage instance (the §7.9.4.2 mechanism)
+    /// and validates it. A well-formed domainSet passes and marks content; a
+    /// URI-shaped `uom` earns the §7.2.6.1 SHOULD warning without failing;
+    /// an empty `uom` fails the class with `EmptyUom`.
+    #[test]
+    fn req_core_coverages_stage_validates_domain_set_records() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        let mut record = ResourceMetadata::new("Elevation", "Terrain Elevation", "Gridded DEM");
+        record.domain_set = Some(DomainSet::new("m"));
+        store
+            .write_resource_metadata("/Tiles/metadata/Elevation.json", &record)
+            .unwrap();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Coverages),
+            "{report}"
+        );
+        assert!(report.warnings(RequirementsClass::Coverages).is_empty());
+
+        // Recommendation §7.2.6.1: a URN-shaped uom warns, never fails.
+        record.domain_set = Some(DomainSet::new("urn:ogc:def:uom:EPSG::9001"));
+        store
+            .write_resource_metadata("/Tiles/metadata/Elevation.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_passed(RequirementsClass::Coverages),
+            "{report}"
+        );
+        assert!(matches!(
+            report.warnings(RequirementsClass::Coverages),
+            [CdbWarning::Coverage(
+                CoverageWarning::UomLooksLikeUri { .. }
+            )]
+        ));
+
+        // Coverages6-A: the one mandatory domainSet element cannot be empty.
+        record.domain_set = Some(DomainSet::new(""));
+        store
+            .write_resource_metadata("/Tiles/metadata/Elevation.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            !report.class_passed(RequirementsClass::Coverages),
+            "{report}"
+        );
+        assert!(matches!(
+            report.violations(RequirementsClass::Coverages),
+            [CdbViolation::Coverage(CoverageViolation::EmptyUom)]
+        ));
+    }
+
+    /// Requirements Tiling5/6/7, Tiling9/10 and Recommendation Tiling1
+    /// (§7.10) — the Tiling stage fires on the `tilingScheme` element the
+    /// global record carries (Requirement Tiling8's §7.9.4.2 conditional
+    /// element): it validates the scheme against the storage CRS, surfaces
+    /// Rec Tiling1 as a warning, and holds Tiling9/10 over each tileset
+    /// metadata record. A datastore with no scheme is untiled — no content,
+    /// and no Tiling8 finding, because §4 makes an undeclared-content class
+    /// pass.
+    #[test]
+    fn req_core_tiling_stage_validates_scheme_and_tileset_metadata() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        // Untiled: declared, no content, no finding.
+        let report = store.validate(&profile).unwrap();
+        assert!(report.class_passed(RequirementsClass::Tiling), "{report}");
+        assert!(!report.class_has_content(RequirementsClass::Tiling));
+
+        // Tiled, with a well-formed tileset record (Tiling10: Keywords).
+        let mut global = store.global_metadata().unwrap();
+        global.tiling_scheme = Some(TilingScheme::cdb1_global_grid());
+        global.write_to(store.layout()).unwrap();
+        let mut record = ResourceMetadata::new("Roads", "Road Network", "Tiled roads");
+        record.keywords = vec!["transportation".to_owned()];
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Tiling),
+            "{report}"
+        );
+        assert!(report.warnings(RequirementsClass::Tiling).is_empty());
+
+        // Tiling10: a tileset record without Keywords fails the class.
+        record.keywords.clear();
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(matches!(
+            report.violations(RequirementsClass::Tiling),
+            [CdbViolation::Tiling(
+                TilingViolation::MissingTilesetKeywords
+            )]
+        ));
+
+        // Recommendation Tiling1: a non-extension scheme warns, never fails.
+        let mut custom = TilingScheme::cdb1_global_grid();
+        custom.id = "MyOwnGrid".to_owned();
+        let mut global = store.global_metadata().unwrap();
+        global.tiling_scheme = Some(custom);
+        global.write_to(store.layout()).unwrap();
+        record.keywords = vec!["transportation".to_owned()];
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(matches!(
+            report.warnings(RequirementsClass::Tiling),
+            [CdbWarning::Tiling(TilingWarning::NonExtensionScheme { .. })]
+        ));
+    }
+
+    /// Face Topology Requirement 4 (/req/core/topology-winding, §7.13.5.5) —
+    /// the Topology stage fires on the `windingOrder` conditional element a
+    /// resource metadata record carries and validates the record through
+    /// [`crate::topology::validate_topology_dataset`]. The topological graph
+    /// itself lives in an opaque payload, so the face-bearing arm of Face4 is
+    /// an API-boundary duty; see the stage's doc comment.
+    #[test]
+    fn req_core_topology_stage_validates_winding_order_records() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        let mut record = ResourceMetadata::new("Roads", "Road Topology", "Topological roads");
+        record.winding_order = Some(WindingOrder::Counterclockwise);
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Topology),
+            "{report}"
+        );
+        // §7.13 has no SHOULD, so the class can never carry a warning.
+        assert!(report.warnings(RequirementsClass::Topology).is_empty());
+    }
+
+    /// Requirement Geom4 /req/core/geometry-mvalue (§7.6.3) — the Geometry
+    /// stage fires on the `uom` conditional element a resource metadata
+    /// record carries, and checks only that. Geometry *instances* live in
+    /// payloads this crate does not decode, so a passing Geometry class means
+    /// the records' Geom4 declarations are well formed and nothing more.
+    #[test]
+    fn req_core_geometry_stage_checks_geom4_uom_element_only() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        // A record with no `uom` gives the class no content.
+        let mut record = ResourceMetadata::new("Roads", "Road Network", "Vector roads");
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            !report.class_has_content(RequirementsClass::Geometry),
+            "{report}"
+        );
+
+        // Declaring the Geom4 element makes the record geometry-bearing.
+        record.uom = Some(UnitOfMeasure::Meters);
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.json", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Geometry),
+            "{report}"
+        );
+    }
+
+    /// Requirements V1/V2 (§7.14.2–.3) — the Versioning stage checks journal
+    /// integrity: the `versions/` manifests parse and their sequence is
+    /// contiguous from 1. Applying collections gives the class content; a
+    /// corrupt manifest fails it with `MalformedManifest` and a hole punched
+    /// in the sequence with `ManifestSequenceGap`. Both are SHALL findings —
+    /// the files were read, they are simply not a coherent journal.
+    #[test]
+    fn req_core_versioning_stage_checks_journal_integrity() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let profile = DeclaringProfile::all();
+
+        // A corrupt manifest is a conformance finding, not an I/O error.
+        let corrupt_tmp = tempdir().unwrap();
+        let corrupt = fresh_store(&corrupt_tmp);
+        corrupt
+            .apply_collection(PendingCollection::new().create("/Tiles/A.gpkg", *b"a1"))
+            .unwrap();
+        fs::write(
+            corrupt
+                .root()
+                .join("versions")
+                .join("v000001")
+                .join("manifest.json"),
+            "{not json",
+        )
+        .unwrap();
+        let report = corrupt.validate(&profile).unwrap();
+        assert!(matches!(
+            report.violations(RequirementsClass::Versioning),
+            [CdbViolation::Versioning(
+                VersioningViolation::MalformedManifest { .. }
+            )]
+        ));
+
+        store
+            .apply_collection(PendingCollection::new().create("/Tiles/A.gpkg", *b"a1"))
+            .unwrap();
+        store
+            .apply_collection(PendingCollection::new().create("/Tiles/B.gpkg", *b"b1"))
+            .unwrap();
+
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert!(
+            report.class_has_content(RequirementsClass::Versioning),
+            "{report}"
+        );
+
+        // Punch a hole in the journal: sequence 2 with no sequence 1.
+        fs::remove_dir_all(store.root().join("versions").join("v000001")).unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            !report.class_passed(RequirementsClass::Versioning),
+            "{report}"
+        );
+        assert!(matches!(
+            report.violations(RequirementsClass::Versioning),
+            [CdbViolation::Versioning(
+                VersioningViolation::ManifestSequenceGap {
+                    expected: 1,
+                    found: 2
+                }
+            )]
+        ));
+    }
 
     /// Annex A `/conf/minimal-core` — all five mandatory classes: a datastore
     /// freshly created from `SimulationProfile::json()` validates clean —
