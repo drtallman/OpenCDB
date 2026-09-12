@@ -275,7 +275,8 @@ pub fn file_warnings(name: &str) -> Vec<NamingWarning> {
 /// datastore-wide case rule (Name6) and language (Name3).
 ///
 /// Names mandated verbatim by the spec (e.g. `global_metadata`, Requirement
-/// File6; `vector_attributes`, Requirement Attr1-C) — or by this crate's
+/// File6; `vector_attributes`, Requirement Attr1-C, realized by
+/// [`crate::attribution::VECTOR_ATTRIBUTES_STEM`]) — or by this crate's
 /// persistence of spec-mandated records (`crs.wkt`, Requirement CRS5, written
 /// by [`crate::crs::StorageCrs::write_to`]; the `versions` journal dir,
 /// Requirement V1 §7.14.2, written by the versioning facade) — are reserved and exempt from

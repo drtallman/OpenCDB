@@ -15,6 +15,7 @@ pub use simulation::SimulationProfile;
 
 use std::fmt;
 
+use crate::attribution::AttributeModel;
 use crate::crs::{CrsViolation, StorageCrs};
 use crate::hierarchy::RECOMMENDED_ROOT_NAME;
 use crate::metadata::{
@@ -168,6 +169,14 @@ pub trait ApplicationProfile {
         None
     }
 
+    /// The attribute model, if the profile declares the optional
+    /// attribution class — Requirement Attr1-A (§7.1.2.1): any profile
+    /// "specifying and/or implementing attribution for features SHALL
+    /// specify an attribute model".
+    fn attribute_model(&self) -> Option<AttributeModel> {
+        None
+    }
+
     /// Extensions outside the Requirement Name7 table that this profile
     /// vouches for as industry standard (Requirement Name7-B), suppressing the
     /// `NonSpecExtension` warning for them.
@@ -179,6 +188,7 @@ pub trait ApplicationProfile {
 #[cfg(test)]
 mod tests {
     use super::{ApplicationProfile, RequirementsClass, StorageTechnology};
+    use crate::attribution::{AttributeDef, AttributeModel};
     use crate::crs::{CrsViolation, StorageCrs};
     use crate::metadata::{MetadataEncoding, MetadataStandard, MetadataViolation, UnitOfMeasure};
     use crate::naming::{CaseRule, StyleGuide};
@@ -374,5 +384,84 @@ mod tests {
         let profile = TestProfile::new();
         assert_eq!(profile.tiling_scheme(), None);
         assert!(profile.known_extensions().is_empty());
+    }
+
+    /// A profile that implements attribution, exercising the Attr1-A
+    /// duty through the hook.
+    struct AttributedProfile;
+
+    impl ApplicationProfile for AttributedProfile {
+        fn name(&self) -> &str {
+            "attributed"
+        }
+
+        fn style_guide(&self) -> StyleGuide {
+            StyleGuide::new(CaseRule::PascalCase, "en")
+        }
+
+        fn storage_crs(&self) -> Result<StorageCrs, CrsViolation> {
+            StorageCrs::from_wkt(TEST_WKT)
+        }
+
+        fn metadata_standard(&self) -> MetadataStandard {
+            MetadataStandard::Dcat
+        }
+
+        fn metadata_encoding(&self) -> MetadataEncoding {
+            MetadataEncoding::Json
+        }
+
+        fn uom(&self) -> UnitOfMeasure {
+            UnitOfMeasure::Meters
+        }
+
+        fn storage_technology(&self) -> StorageTechnology {
+            StorageTechnology::FileSystem
+        }
+
+        fn conformance_classes(&self) -> Vec<RequirementsClass> {
+            RequirementsClass::MANDATORY.to_vec()
+        }
+
+        fn is_resource_metadata(&self, logical_path: &str) -> bool {
+            logical_path.contains("/metadata/")
+        }
+
+        fn attribute_model(&self) -> Option<AttributeModel> {
+            Some(AttributeModel {
+                schema_uri: Some("https://example.org/schemas/street.xsd".to_owned()),
+                attributes: vec![AttributeDef {
+                    id: "1".to_owned(),
+                    name: "StreetName".to_owned(),
+                    description: "Name of a street as an alphanumeric string".to_owned(),
+                }],
+            })
+        }
+    }
+
+    /// Requirement Attr1-A (§7.1.2.1) — attribution is an optional
+    /// class: a bare profile (and the default simulation profile)
+    /// declares no attribute model.
+    #[test]
+    fn req_core_attribute_model_profile_default_none() {
+        assert!(TestProfile::new().attribute_model().is_none());
+        assert!(
+            crate::profiles::SimulationProfile::json()
+                .attribute_model()
+                .is_none()
+        );
+    }
+
+    /// Requirement Attr1-A (§7.1.2.1) — a profile "specifying and/or
+    /// implementing attribution for features" specifies its attribute
+    /// model through the hook, reachable through the object-safe handle.
+    #[test]
+    fn req_core_attribute_model_profile_declares() {
+        let profile = AttributedProfile;
+        let handle: &dyn ApplicationProfile = &profile;
+        let model = handle.attribute_model().expect("declared model");
+        assert!(model.validate().is_ok());
+        assert_eq!(model.attributes[0].name, "StreetName");
+        assert!(model.schema_uri.is_some());
     }
 }
