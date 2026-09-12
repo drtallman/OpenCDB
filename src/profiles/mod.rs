@@ -8,11 +8,19 @@
 //! The class vocabulary a profile declares *from* is
 //! [`crate::conformance::RequirementsClass`]: conformance owns it, profiles
 //! cite it.
+//!
+//! Two profiles ship: [`SimulationProfile`], the CDB 1.x-compatible default,
+//! and [`GnosisProfile`], identical to it but for pinning the §7.12
+//! GNOSISGlobalGrid tiling scheme. The second exists to exercise the trait —
+//! its premise is that profiles vary, and a trait only one type implements
+//! has never had that premise tested.
 
+pub mod gnosis;
 pub mod simulation;
 
 pub use crate::conformance::RequirementsClass;
 pub use crate::tiling::TilingSchemeId;
+pub use gnosis::GnosisProfile;
 pub use simulation::SimulationProfile;
 
 use std::fmt;

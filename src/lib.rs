@@ -57,7 +57,7 @@ pub use geometry::{
     CdbGeometry, GeometryCode, GeometryContext, GeometryViolation, LineStringM, LineStringZ,
     MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ, validate_geometry_metadata,
 };
-pub use profiles::{ApplicationProfile, SimulationProfile};
+pub use profiles::{ApplicationProfile, GnosisProfile, SimulationProfile};
 pub use tiling::{
     Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress, GnosisGlobalGrid, GnosisLevel, GnosisTileAddress,
     TilingScheme, TilingSchemeId, TilingViolation, TilingWarning, validate_tileset_metadata,

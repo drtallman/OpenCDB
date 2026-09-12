@@ -106,7 +106,7 @@ pub enum AttributionViolation {
     EmptyDescription { id: String },
     /// Permission PAttr1 (§7.1.2.2): a present external-schema URI must
     /// be a URI — an RFC 3986 scheme, a non-empty remainder, no control
-    /// characters.
+    /// characters, and no whitespace inside it.
     #[error("schema URI {uri:?} is not a valid URI (per/core/attribute-schema-uri, §7.1.2.2)")]
     InvalidSchemaUri { uri: String },
     /// Attr1-C (§7.1.2.1): the schema file is `vector_attributes.<ext>`
@@ -185,12 +185,18 @@ fn is_blank(value: &str) -> bool {
 }
 
 /// RFC 3986 scheme well-formedness: `ALPHA *( ALPHA / DIGIT / "+" / "-"
-/// / "." )`, a `:`, and a remainder with visible content — a blank
-/// remainder is no more a value than a blank name is ([`is_blank`]'s
-/// posture). The check stays scoped to the scheme and the remainder's
-/// presence (design decision 6); it is not a full RFC 3986 parser, so a
-/// space *inside* an otherwise well-formed remainder is not this
-/// module's finding.
+/// / "." )`, a `:`, and a remainder that has visible content and **no
+/// whitespace anywhere in it** — a blank remainder is no more a value than
+/// a blank name is ([`is_blank`]'s posture), and no RFC 3986 production
+/// admits a whitespace character at any position, so `https://exa mple.org`
+/// is not a URI under any reading.
+///
+/// The check stays scoped to the scheme and the remainder's shape (design
+/// decision 6); it is deliberately not a full RFC 3986 parser, so a
+/// remainder built from legal characters is taken at face value — a
+/// percent-escape this module cannot decode, for instance, is not its
+/// finding. Whitespace is the one interior property it does judge, because
+/// it is the one no URI may have.
 fn has_uri_shape(uri: &str) -> bool {
     match uri.split_once(':') {
         Some((scheme, rest)) => {
@@ -200,6 +206,7 @@ fn has_uri_shape(uri: &str) -> bool {
                 .is_some_and(|first| first.is_ascii_alphabetic())
                 && characters.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
                 && !rest.trim().is_empty()
+                && !rest.chars().any(char::is_whitespace)
         }
         None => false,
     }
@@ -590,6 +597,59 @@ mod tests {
                 }),
                 "expected invalid URI: {invalid:?}"
             );
+        }
+    }
+
+    /// `per/core/attribute-schema-uri` (Permission PAttr1, §7.1.2.2) with
+    /// the 14b tightening: **interior whitespace is refused**. No RFC 3986
+    /// production admits a whitespace character anywhere in a URI, yet the
+    /// previous "scheme + non-blank remainder" check accepted
+    /// `https://exa mple.org/s` — the remainder was non-blank, so nothing
+    /// looked at what was inside it. Doc-noted in Phase 13 and fenced to
+    /// 14b because it is a hard behavioral tightening on a 1.0 surface.
+    ///
+    /// The rule is whitespace-free, not ASCII-space-free: tabs, newlines,
+    /// and the non-breaking space are all refused. Leading and trailing
+    /// whitespace was already refused in memory (the scheme check rejects a
+    /// leading one, `rest.trim()` a trailing one) and is trimmed away by
+    /// both parse functions before validation, so a file whose URI carries
+    /// indentation is unaffected — only whitespace *between* characters of
+    /// the URI itself is newly fatal.
+    #[test]
+    fn per_core_attribute_schema_uri_rejects_interior_whitespace() {
+        for invalid in [
+            "https://exa mple.org/s",
+            "https://example.org/schemas/air temperature.xsd",
+            "https://example.org/a\tb",
+            "https://example.org/a\nb",
+            "urn:ogc:def:crs:EPSG:: 4326",
+            "https://example.org/a\u{a0}b",
+        ] {
+            let model = AttributeModel {
+                schema_uri: Some(invalid.to_owned()),
+                ..street_fixture()
+            };
+            assert_eq!(
+                model.validate(),
+                Err(AttributionViolation::InvalidSchemaUri {
+                    uri: invalid.to_owned()
+                }),
+                "expected invalid URI: {invalid:?}"
+            );
+        }
+
+        // The whitespace-free neighbours of those values stay valid: the
+        // tightening rejects whitespace, not the characters around it.
+        for valid in [
+            "https://example.org/s",
+            "https://example.org/schemas/air_temperature.xsd",
+            "urn:ogc:def:crs:EPSG::4326",
+        ] {
+            let model = AttributeModel {
+                schema_uri: Some(valid.to_owned()),
+                ..street_fixture()
+            };
+            assert!(model.validate().is_ok(), "expected valid URI: {valid}");
         }
     }
 
