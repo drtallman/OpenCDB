@@ -2,7 +2,13 @@
 //!
 //! Implements the `/req/core/naming-system` requirements class (spec §7.4).
 //! SHALL requirements surface as [`NamingViolation`] errors; SHOULD
-//! recommendations surface as [`NamingWarning`]s. The two are never conflated.
+//! recommendations surface as [`NamingWarning`]s. The two are never
+//! conflated — with one deliberate exception: Requirement Name7-B (§7.4.8)
+//! is a SHALL, but its predicate ("is this extension industry standard?")
+//! is undecidable by this crate, so it too surfaces as a [`NamingWarning`]
+//! that a profile can silence by vouching via
+//! [`crate::profiles::ApplicationProfile::known_extensions`]. That is the
+//! honest handling of an unevaluable SHALL, not a demotion of its force.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -45,15 +51,20 @@ pub enum NamingViolation {
     PathTraversal { path: String, component: String },
 }
 
-/// A finding against a SHOULD recommendation in the naming module.
+/// A naming finding reported as a warning rather than a hard error. Most are
+/// SHOULD recommendations; [`NamingWarning::NonSpecExtension`] is the one
+/// exception (a SHALL with an undecidable predicate — see its own doc).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum NamingWarning {
     /// Recommendation Name1-A (spec §7.4.3): unicode SHOULD not be used.
     NonAscii { name: String },
-    /// Requirement Name7-B (spec §7.4.8): extensions outside the spec table
-    /// must be industry standard; that cannot be checked mechanically, so
-    /// unknown extensions warn rather than fail.
+    /// Requirement Name7-B (spec §7.4.8): industry standard extensions
+    /// SHALL be used — a SHALL, not a SHOULD. Its predicate ("is this
+    /// extension industry standard?") cannot be checked mechanically, so it
+    /// surfaces as a warning a profile can silence by vouching for the
+    /// extension, rather than as a hard error the crate cannot honestly
+    /// decide.
     NonSpecExtension { name: String, extension: String },
 }
 
@@ -255,8 +266,10 @@ pub fn known_extension(extension: &str) -> Option<&'static str> {
     })
 }
 
-/// SHOULD-level findings for a file name: non-ASCII and extensions outside
-/// the Name7 table.
+/// Warning-level findings for a file name: non-ASCII (Recommendation
+/// Name1-A, a SHOULD) and extensions outside the Name7 table (Requirement
+/// Name7-B, a SHALL with an undecidable predicate — see
+/// [`NamingWarning::NonSpecExtension`]).
 pub fn file_warnings(name: &str) -> Vec<NamingWarning> {
     let mut warnings = component_warnings(name);
     if let (_, Some(extension)) = split_extension(name)
