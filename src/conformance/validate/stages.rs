@@ -116,12 +116,23 @@ pub(super) fn validate_coverages(
 /// [`crate::geometry::GeometryContext`]. Requirement Geom3's z unit is
 /// satisfied datastore-wide by `GlobalMetadata::uom`, which Metadata8 makes
 /// mandatory.
+///
+/// **This stage cannot produce a finding, and the report says so.** Every
+/// record reaching it was parsed by `ResourceMetadata::from_{json,xml}_str`,
+/// which validates before returning, and stage 6 drops the ones that failed —
+/// so [`crate::geometry::validate_geometry_metadata`] re-checks a record
+/// already known valid. Content here is therefore marked
+/// [`crate::conformance::ContentCoverage::Unchecked`], not `Checked`: a machine consumer reading
+/// `"passed": true` for Geometry is told "we did not look", which is true,
+/// rather than "we looked and it was fine", which would not be. The call is
+/// kept rather than deleted because it is the correct entry point the day a
+/// profile supplies decoded geometry.
 pub(super) fn validate_geometry(records: &[ResourceMetadata], report: &mut ConformanceReport) {
     for record in records {
         if record.uom.is_none() {
             continue;
         }
-        report.mark_content(RequirementsClass::Geometry);
+        report.mark_unchecked_content(RequirementsClass::Geometry);
         if let Err(violation) = geometry::validate_geometry_metadata(record) {
             report.record_violation(violation.into());
         }
@@ -200,13 +211,19 @@ pub(super) fn validate_tiling(
 /// is the converse and it holds by construction: a record that declares a
 /// winding order declares a valid one, since `WindingOrder` is a closed enum
 /// the parse already rejected bad values for.
+///
+/// Holding by construction means **this stage cannot produce a finding**, and
+/// the report says so: content here is marked [`crate::conformance::ContentCoverage::Unchecked`]
+/// rather than `Checked`, so `"passed": true` for Topology reads as "we did
+/// not look" — the truth — instead of "we looked and it was fine". Geometry's
+/// stage carries the same marking for the same reason.
 pub(super) fn validate_topology(records: &[ResourceMetadata], report: &mut ConformanceReport) {
     let empty = TopoGraph::new();
     for record in records {
         if record.winding_order.is_none() {
             continue;
         }
-        report.mark_content(RequirementsClass::Topology);
+        report.mark_unchecked_content(RequirementsClass::Topology);
         if let Err(violation) = topology::validate_topology_dataset(&empty, record) {
             report.record_violation(violation.into());
         }
@@ -255,7 +272,7 @@ mod tests {
 
     use super::super::support::{DeclaringProfile, fresh_store};
     use crate::attribution::{AttributeDef, AttributionViolation};
-    use crate::conformance::{CdbViolation, CdbWarning};
+    use crate::conformance::{CdbViolation, CdbWarning, ContentCoverage};
     use crate::coverage::{CoverageViolation, CoverageWarning, DomainSet};
     use crate::metadata::UnitOfMeasure;
     use crate::tiling::{TilingViolation, TilingWarning};
@@ -279,7 +296,7 @@ mod tests {
         let report = store.validate(&profile).unwrap();
         assert!(report.is_conformant(), "{report}");
         let listed: Vec<RequirementsClass> = report.classes().map(|(class, _)| class).collect();
-        for class in RequirementsClass::OPTIONAL {
+        for &class in RequirementsClass::OPTIONAL {
             assert!(listed.contains(&class), "{class} not listed: {report}");
             assert!(report.class_passed(class), "{class}: {report}");
             assert!(
@@ -287,7 +304,7 @@ mod tests {
                 "{class} should have no content: {report}"
             );
         }
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(report.class_has_content(class), "{class}: {report}");
         }
         assert!(report.to_string().contains("(no content)"), "{report}");
@@ -498,6 +515,20 @@ mod tests {
             report.class_has_content(RequirementsClass::Topology),
             "{report}"
         );
+        // ... but the content went *unjudged*: with the graph in an opaque
+        // payload the stage reduces to a re-validation of an already-valid
+        // record, so the report must not claim Topology was checked.
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Topology),
+            ContentCoverage::Unchecked,
+            "{report}"
+        );
+        assert!(
+            report
+                .to_string()
+                .contains("[PASS] topology (content not checked)"),
+            "{report}"
+        );
         // §7.13 has no SHOULD, so the class can never carry a warning.
         assert!(report.warnings(RequirementsClass::Topology).is_empty());
     }
@@ -533,6 +564,28 @@ mod tests {
         assert!(report.is_conformant(), "{report}");
         assert!(
             report.class_has_content(RequirementsClass::Geometry),
+            "{report}"
+        );
+        // ... and the report says, in its own vocabulary rather than only in
+        // prose, that nothing was judged: the geometry instances Geom1–Geom6
+        // govern live in payloads this crate does not decode.
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Geometry),
+            ContentCoverage::Unchecked,
+            "{report}"
+        );
+        assert!(
+            report
+                .to_string()
+                .contains("[PASS] geometry (content not checked)"),
+            "{report}"
+        );
+
+        // Every other content-bearing class is genuinely checked, so the
+        // third state marks the two weak stages and nothing else.
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Metadata),
+            ContentCoverage::Checked,
             "{report}"
         );
     }

@@ -62,7 +62,12 @@ impl fmt::Display for HierarchyWarning {
             HierarchyWarning::EmptyFolder(path) => {
                 write!(
                     f,
-                    "empty folder {path:?} (recommendation /req/core/name-empty-folders A)"
+                    // The code, hyphen-joined exactly as `CdbWarning::code`
+                    // emits it: a reader who greps the rendered text for the
+                    // code must find it, which is the whole point of putting
+                    // it here. (Errata §7 row 6: the draft spaces part
+                    // letters in *display* prose; this is quoting a code.)
+                    "empty folder {path:?} (recommendation /req/core/name-empty-folders-A)"
                 )
             }
             HierarchyWarning::RootNameNotCdb { name } => write!(
@@ -357,7 +362,7 @@ mod tests {
         // the human-readable text should be able to look the same clause up.
         let rendered = HierarchyWarning::EmptyFolder(empty).to_string();
         assert!(
-            rendered.contains("/req/core/name-empty-folders A"),
+            rendered.contains("/req/core/name-empty-folders-A"),
             "{rendered}"
         );
     }

@@ -50,8 +50,12 @@ use sweep::sweep_content;
 /// owns. A declared class whose content the datastore does not hold *passes*
 /// — declaring Tiling in a datastore holding no tiles is not a violation —
 /// but the report records that nothing was checked, via
-/// [`crate::conformance::ClassFindings::has_content`], so a pass on an empty
-/// datastore cannot be misread as a pass on a clean one.
+/// [`crate::conformance::ClassFindings::coverage`], so a pass on an empty
+/// datastore cannot be misread as a pass on a clean one. The same field
+/// carries the third case, [`crate::conformance::ContentCoverage::Unchecked`]:
+/// the Geometry and Topology stages have content to look at but no
+/// datastore-level check that could fail, and the report says so rather than
+/// reporting them as checked.
 ///
 /// A final **content sweep** closes the other half:
 /// content whose class the profile never declared is reported as a
@@ -79,7 +83,7 @@ pub fn validate(
 
     // Stage 1 — /conf/minimal-core: every mandatory class must be declared.
     let declared = profile.conformance_classes();
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         if !declared.contains(&class) {
             report.record_violation(CdbViolation::MissingConformanceDeclaration {
                 profile: profile.name().to_owned(),
@@ -301,14 +305,14 @@ pub fn validate(
     // Every declared class is listed even when its stage finds nothing: a
     // declared class with no corresponding content PASSES — the class says
     // what the profile supports, and nothing in Annex A requires the content
-    // to exist — but the report separates that from a clean check via
-    // `ClassFindings::has_content`.
+    // to exist — but the report separates that from a clean check, and from
+    // an uncheckable one, via `ClassFindings::coverage`.
     //
     // `attribute_model` keeps what the Attribution stage parsed: stage 8
     // cross-checks it against the profile's own declaration, and it is the
     // only reader of that file.
     let mut attribute_model = None;
-    for class in RequirementsClass::OPTIONAL {
+    for &class in RequirementsClass::OPTIONAL {
         if !declared.contains(&class) {
             continue;
         }
@@ -592,7 +596,7 @@ mod tests {
 
         let report = store.validate(&profile).unwrap();
         assert!(report.is_conformant(), "{report}");
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(report.class_passed(class), "{class}: {report}");
             assert!(
                 report.warnings(class).is_empty(),

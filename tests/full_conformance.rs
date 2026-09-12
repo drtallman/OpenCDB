@@ -36,7 +36,7 @@ use std::fs;
 
 use chrono::{DateTime, Utc};
 use rusty_cdb::attribution::{AttributeDef, AttributeModel};
-use rusty_cdb::conformance::{CdbViolation, RequirementsClass};
+use rusty_cdb::conformance::{CdbViolation, ContentCoverage, RequirementsClass};
 use rusty_cdb::coverage::DomainSet;
 use rusty_cdb::crs::{CrsViolation, StorageCrs};
 use rusty_cdb::links::Link;
@@ -102,7 +102,10 @@ impl Fixture {
 }
 
 /// The spec's §7.1.2.3 example attribute model (Requirement Attr2), the same
-/// fixture `tests/attribution_roundtrip.rs` uses.
+/// fixture `tests/attribution_roundtrip.rs` uses — all three rows verbatim,
+/// including `StreetWidth`'s stray closing parenthesis (errata §7 row 17), so
+/// the defect-bearing string travels the full write → reopen → read path
+/// here too.
 fn street_model() -> AttributeModel {
     AttributeModel {
         schema_uri: Some("https://example.org/schemas/street.xsd".to_owned()),
@@ -117,6 +120,11 @@ fn street_model() -> AttributeModel {
                 name: "StreetType".to_owned(),
                 description: "Type street as an alphanumeric string (Interstate, Arterial, . . .)"
                     .to_owned(),
+            },
+            AttributeDef {
+                id: "3".to_owned(),
+                name: "StreetWidth".to_owned(),
+                description: "Width of street in feet as an integer number)".to_owned(),
             },
         ],
     }
@@ -331,11 +339,21 @@ fn read_back(root: &std::path::Path, profile: &dyn ApplicationProfile, fixtures:
 /// Validates the reopened datastore and asserts the exit state every pass
 /// must reach: all eleven classes conformant, **zero** warnings, and every
 /// class carrying real content rather than passing vacuously.
+///
+/// The content check is by [`ContentCoverage`], not by the coarse boolean,
+/// so the fixture set is pinned to *which* kind of pass each class earns.
+/// Nine classes are `Checked` — their content was judged. Geometry and
+/// Topology are `Unchecked`, and that asymmetry is asserted rather than
+/// tolerated: their subjects live in payloads this crate does not decode
+/// (`docs/CONFORMANCE.md` §6), so a report claiming they were *checked*
+/// would be the false green the whole third state exists to prevent. If a
+/// later phase gives either class a real datastore-level check, this
+/// assertion is what will fail and demand the claim be updated.
 fn assert_fully_conformant(root: &std::path::Path, profile: &dyn ApplicationProfile) {
     let store = CdbDatastore::open(root).unwrap();
     let report = store.validate(profile).unwrap();
     assert!(report.is_conformant(), "report: {report}");
-    for class in RequirementsClass::ALL {
+    for &class in RequirementsClass::ALL {
         assert!(
             report.class_passed(class),
             "{class} must pass: {:?}",
@@ -346,11 +364,31 @@ fn assert_fully_conformant(root: &std::path::Path, profile: &dyn ApplicationProf
             "{class} must have no warnings: {:?}",
             report.warnings(class)
         );
+        let expected = match class {
+            RequirementsClass::Geometry | RequirementsClass::Topology => ContentCoverage::Unchecked,
+            _ => ContentCoverage::Checked,
+        };
+        assert_eq!(
+            report.class_coverage(class),
+            expected,
+            "{class} must carry content and report the right kind of pass"
+        );
         assert!(
             report.class_has_content(class),
             "{class} must have been checked against real content, not pass vacuously"
         );
     }
+    // ... and the honest verdict reaches the rendered report too.
+    let text = report.to_string();
+    assert!(
+        text.contains("[PASS] geometry (content not checked)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[PASS] topology (content not checked)"),
+        "{text}"
+    );
+    assert!(!text.contains("(no content)"), "{text}");
 }
 
 /// Requirement TCE6/TCE7 (§7.11.3): a CDB1GlobalGrid tile's logical name
@@ -572,6 +610,15 @@ impl ApplicationProfile for RestrictedProfile {
         self.base.storage_technology()
     }
 
+    /// Forwarded like every other restriction, and load-bearing: without it
+    /// this profile silently takes the trait default (`None`) where
+    /// [`SimulationProfile`] pins `Cdb1GlobalGrid`, and the sweep's Tiling4
+    /// cross-check never runs. Forwarding it means the undeclared-Tiling path
+    /// is exercised **with a scheme pinned**, which is the realistic shape.
+    fn tiling_scheme(&self) -> Option<TilingSchemeId> {
+        self.base.tiling_scheme()
+    }
+
     /// The mandatory five and nothing else — Annex A's floor. The datastore
     /// it is pointed at holds attribution, coverage, tiling, topology and
     /// versioning content none of which this profile claims.
@@ -593,10 +640,15 @@ impl ApplicationProfile for RestrictedProfile {
 /// [`CdbViolation::DeclarationMismatch`] filed under that class, so a report
 /// lists every class *declared* plus every class *betrayed by content*.
 ///
-/// The datastore is byte-identical to the one the simulation pass builds and
-/// found fully conformant; only the yardstick changes. That is the point:
-/// Annex A judges a datastore against a profile declaration, and the same
-/// bytes are conformant or not depending on what was claimed.
+/// **The same datastore is judged twice, and the test establishes that
+/// within itself**: it is asserted fully conformant under
+/// [`SimulationProfile`] first, then re-validated at the same root under
+/// `RestrictedProfile`. Only the yardstick changes between the two calls.
+/// That is the point: Annex A judges a datastore against a profile
+/// declaration, and the same bytes are conformant or not depending on what
+/// was claimed. (The fixtures here are this test's own — not a byte copy of
+/// the simulation pass's — which is why the conformance of these bytes is
+/// proven here rather than borrowed.)
 #[test]
 fn req_core_conformance_restricted_profile_reports_declaration_mismatch() {
     let simulation = SimulationProfile::json();
@@ -700,7 +752,7 @@ fn req_core_conformance_restricted_profile_reports_declaration_mismatch() {
 
     // The mandatory five are untouched by the sweep — nothing about the
     // datastore changed, only what was claimed about it.
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         assert!(report.class_passed(class), "{class}: {report}");
         assert!(report.warnings(class).is_empty(), "{class}: {report}");
     }

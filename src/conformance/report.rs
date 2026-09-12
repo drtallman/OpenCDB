@@ -7,42 +7,133 @@ use std::path::{Path, PathBuf};
 use crate::conformance::{CdbViolation, CdbWarning, RequirementsClass};
 use crate::metadata::MetadataViolation;
 
+/// How much a requirements class's content was actually judged — the third
+/// state a `has_content` boolean could not express.
+///
+/// A class that *passes* has done so in one of three ways, and a machine
+/// consumer reading `"passed": true` needs to know which:
+///
+/// | State | Meaning |
+/// |---|---|
+/// | [`Self::Checked`] | content was present and this crate's datastore-level check ran over it |
+/// | [`Self::NoContent`] | the datastore held nothing this class governs |
+/// | [`Self::Unchecked`] | content was present, but this crate has **no** datastore-level check that could judge it |
+///
+/// The third state is not a gap to be closed later: it is the honest reading
+/// of Geometry and Topology, whose subjects (geometry instances, topological
+/// graphs) live inside payloads this crate deliberately does not decode
+/// (`docs/CONFORMANCE.md` §6). Their stages therefore cannot produce a
+/// finding, and reporting them as `Checked` would assert a check that
+/// provably never ran.
+///
+/// None of the three affects pass/fail
+/// ([`ConformanceReport::class_passed`], [`ConformanceReport::is_conformant`]).
+///
+/// **Closed, not `#[non_exhaustive]`**, unlike the class and finding
+/// vocabularies: those track a draft standard that can grow, whereas these
+/// three states are a complete partition of what this crate can know about a
+/// class — content was judged, was absent, or was beyond the validator's
+/// reach. A consumer is meant to `match` all three exhaustively.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContentCoverage {
+    /// The datastore holds no content this class governs. A **declared**
+    /// class in this state passes (design spec §4: the class describes what
+    /// the profile *supports*, and Annex A nowhere requires the content to
+    /// exist) — but the report says so rather than rendering a silent pass,
+    /// which is the likeliest source of a false green.
+    #[default]
+    NoContent,
+    /// Content was present and a datastore-level check ran over it: the
+    /// class is *clean*, not merely quiet. The five mandatory classes are in
+    /// this state by construction — the datastore root, its names, its
+    /// global metadata record and its storage CRS are precisely their
+    /// content, and `/conf/minimal-core` requires all four.
+    Checked,
+    /// Content was present and went **unjudged**: this crate has no
+    /// datastore-level check for it. Geometry and Topology are the two
+    /// classes in this state; see the type's own documentation and
+    /// `docs/CONFORMANCE.md` §6. A pass here means "we did not look", never
+    /// "we looked and it was fine".
+    Unchecked,
+}
+
+impl ContentCoverage {
+    /// The stable wire token: `"none"`, `"checked"`, or `"unchecked"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ContentCoverage::NoContent => "none",
+            ContentCoverage::Checked => "checked",
+            ContentCoverage::Unchecked => "unchecked",
+        }
+    }
+
+    /// Whether the datastore held content this class governs at all —
+    /// [`Self::Checked`] or [`Self::Unchecked`]. This is the question
+    /// [`ConformanceReport::class_has_content`] answers; it deliberately does
+    /// **not** distinguish judged content from unjudged.
+    pub fn has_content(self) -> bool {
+        !matches!(self, ContentCoverage::NoContent)
+    }
+}
+
+impl fmt::Display for ContentCoverage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The token — [`ContentCoverage::as_str`] — is the wire form. Hand-written
+/// rather than derived for the same reason [`RequirementsClass`]'s is: the
+/// Rust variant names must never leak into a shape that freezes at 1.0.
+impl serde::Serialize for ContentCoverage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// The violations and warnings recorded against a single requirements class,
-/// plus whether the datastore held any content that class governs.
+/// plus how far the datastore's content for that class was actually judged.
 /// Fields are open, mirroring [`crate::hierarchy::HierarchyReport`].
 ///
 /// `#[non_exhaustive]`: the fields are public and 1.0 freezes them, so the
-/// struct must stay open to fields a later class needs — [`Self::has_content`]
+/// struct must stay open to fields a later class needs — [`Self::coverage`]
 /// is itself exactly such a field. Downstream code reads the fields and
 /// constructs values through [`Default`] rather than with a struct literal.
-/// `Serialize` but **not** `Deserialize`: findings are output, and
-/// `#[non_exhaustive]` means the field set is deliberately still open (see
-/// [`ConformanceReport`]'s `Serialize` for the full reasoning). A report's
-/// own class entry writes these three fields alongside the class token, its
-/// requirements URI, and the derived verdict.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+///
+/// Deliberately **neither `Serialize` nor `Deserialize`**. A derived
+/// `Serialize` on a `#[non_exhaustive]` struct is a second public wire shape
+/// that silently gains a field the day a later class needs one — exactly the
+/// drift [`ConformanceReport`]'s hand-written impl exists to avoid, and it
+/// would disagree with that impl besides (no `class`, no `passed`). The one
+/// serialized form of these findings is the report's own class entry, which
+/// writes them alongside the class token, its requirements URI and the
+/// derived verdict.
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ClassFindings {
     /// SHALL violations for this class.
     pub violations: Vec<CdbViolation>,
     /// SHOULD warnings for this class.
     pub warnings: Vec<CdbWarning>,
-    /// Whether the datastore holds content this class governs — a tiling
-    /// scheme for Tiling, a `domainSet`-bearing record for Coverages, a
-    /// `versions/` journal for Versioning, and so on.
+    /// How far the datastore's content for this class was judged: checked,
+    /// absent, or present-but-unjudged. See [`ContentCoverage`]. Never
+    /// affects pass/fail.
     ///
-    /// A declared class with no such content **passes** (design spec §4: the
-    /// class describes what the profile *supports*, and Annex A nowhere
-    /// requires the content to exist), so this flag never affects pass/fail.
-    /// It exists to separate *checked-and-clean* from
-    /// *checked-with-no-content*, the reading a silent pass on an empty
-    /// datastore would otherwise conflate — the likeliest source of a false
-    /// green.
+    /// The content signal is per class — a tiling scheme for Tiling, a
+    /// `domainSet`-bearing record for Coverages, a `versions/` journal for
+    /// Versioning, and so on.
     ///
-    /// `true` for the five mandatory classes by construction: the datastore
-    /// root, its names, its global metadata record, and its storage CRS are
-    /// precisely their content, and `/conf/minimal-core` requires all four.
-    pub has_content: bool,
+    /// **What [`ContentCoverage::NoContent`] does and does not mean.** It
+    /// means *this run found no such content*, which is not the same as the
+    /// datastore holding none. A resource metadata record that fails to parse
+    /// is dropped before the optional stages see it, and a `GlobalMetadata`
+    /// or storage CRS that cannot be read makes the stages that depend on it
+    /// return early — so a store whose records do carry `domainSet`, `uom` or
+    /// `windingOrder` can still render `(no content)` for those classes. In
+    /// every such case the *reason* is filed as a violation under Metadata or
+    /// CRS, so the report is never silently wrong overall; but this field
+    /// alone cannot tell "absent" from "unreadable".
+    pub coverage: ContentCoverage,
 }
 
 /// The outcome of validating a datastore against a profile (Annex A
@@ -54,7 +145,7 @@ pub struct ClassFindings {
 /// - the five mandatory classes, always;
 /// - every optional class the profile declares, checked by its own stage
 ///   whether or not the datastore holds matching content (see
-///   [`ClassFindings::has_content`]);
+///   [`ClassFindings::coverage`]);
 /// - **plus any class that turns out to govern content the profile did not
 ///   declare.** The content sweep records such content as a
 ///   [`CdbViolation::DeclarationMismatch`] filed under that class, which
@@ -67,7 +158,8 @@ pub struct ClassFindings {
 ///
 /// Conformance is decided by violations alone; warnings never affect
 /// [`Self::is_conformant`] or [`Self::class_passed`], and neither does
-/// [`Self::class_has_content`].
+/// [`Self::class_coverage`] (nor its coarser form,
+/// [`Self::class_has_content`]).
 #[derive(Debug, Clone)]
 pub struct ConformanceReport {
     profile: String,
@@ -81,15 +173,15 @@ impl ConformanceReport {
     /// A fresh report for `profile` at datastore `root`, pre-seeding the five
     /// mandatory classes with empty findings so they are always listed (the
     /// invariant behind `/conf/minimal-core`). They are seeded
-    /// content-bearing: their content is the datastore's own mandatory
-    /// artifacts (see [`ClassFindings::has_content`]).
+    /// [`ContentCoverage::Checked`]: their content is the datastore's own
+    /// mandatory artifacts, and the mandatory stages do judge it.
     pub(crate) fn new(profile: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         let mut classes = BTreeMap::new();
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             classes.insert(
                 class,
                 ClassFindings {
-                    has_content: true,
+                    coverage: ContentCoverage::Checked,
                     ..ClassFindings::default()
                 },
             );
@@ -109,11 +201,29 @@ impl ConformanceReport {
         self.classes.entry(class).or_default();
     }
 
-    /// Records that the datastore holds content `class` governs, listing the
-    /// class if it was not listed already. Pass/fail is untouched: this is
-    /// the checked-and-clean vs. checked-with-no-content distinction only.
+    /// Records that the datastore holds content `class` governs **and that a
+    /// datastore-level check ran over it** ([`ContentCoverage::Checked`]),
+    /// listing the class if it was not listed already. Pass/fail is
+    /// untouched.
+    ///
+    /// Does not overwrite [`ContentCoverage::Unchecked`]: a class with any
+    /// unjudged content must never go on to claim it was checked. The
+    /// pessimistic direction is the only safe one — over-claiming a check is
+    /// precisely the false green this vocabulary exists to prevent.
     pub(crate) fn mark_content(&mut self, class: RequirementsClass) {
-        self.classes.entry(class).or_default().has_content = true;
+        let findings = self.classes.entry(class).or_default();
+        if findings.coverage == ContentCoverage::NoContent {
+            findings.coverage = ContentCoverage::Checked;
+        }
+    }
+
+    /// Records that the datastore holds content `class` governs for which
+    /// this crate has **no** datastore-level check
+    /// ([`ContentCoverage::Unchecked`]) — the Geometry and Topology case.
+    /// Listing and pass/fail behave exactly as [`Self::mark_content`]; only
+    /// the honesty of the report changes. Sticky, per that method's note.
+    pub(crate) fn mark_unchecked_content(&mut self, class: RequirementsClass) {
+        self.classes.entry(class).or_default().coverage = ContentCoverage::Unchecked;
     }
 
     /// Records a violation under its [`CdbViolation::class`]. A nested
@@ -179,15 +289,29 @@ impl ConformanceReport {
         }
     }
 
-    /// Whether the datastore held content `class` governs
-    /// ([`ClassFindings::has_content`]); `false` for an unlisted class. A
-    /// class that passed with `false` was checked against nothing — the
-    /// distinction between a clean datastore and an empty one. Never affects
-    /// [`Self::class_passed`] or [`Self::is_conformant`].
+    /// Whether this run found content `class` governs; `false` for an
+    /// unlisted class. A class that passed with `false` was checked against
+    /// nothing — the distinction between a clean datastore and an empty one.
+    /// Never affects [`Self::class_passed`] or [`Self::is_conformant`].
+    ///
+    /// This is the coarse question. It does **not** distinguish content that
+    /// was judged from content that this crate has no datastore-level check
+    /// for, nor "no such content" from "content that could not be read" — see
+    /// [`Self::class_coverage`] for the first and [`ClassFindings::coverage`]
+    /// for the second.
     pub fn class_has_content(&self, class: RequirementsClass) -> bool {
+        self.class_coverage(class).has_content()
+    }
+
+    /// How far `class`'s content was judged: checked, absent, or
+    /// present-but-unjudged ([`ContentCoverage`]). An unlisted class is
+    /// [`ContentCoverage::NoContent`]. Never affects
+    /// [`Self::class_passed`] or [`Self::is_conformant`] — it is how a
+    /// consumer tells a *clean* pass from a *vacuous* one.
+    pub fn class_coverage(&self, class: RequirementsClass) -> ContentCoverage {
         match self.classes.get(&class) {
-            Some(findings) => findings.has_content,
-            None => false,
+            Some(findings) => findings.coverage,
+            None => ContentCoverage::NoContent,
         }
     }
 
@@ -208,14 +332,20 @@ impl ConformanceReport {
 }
 
 /// One class's entry in a serialized [`ConformanceReport`]: the class token,
-/// its §7 requirements-module URI, the two flags a reader needs to interpret
-/// the entry, and the findings themselves.
+/// its §7 requirements-module URI, the three flags a reader needs to
+/// interpret the entry, and the findings themselves.
 ///
-/// `passed` and `requirements_uri` are *derived* — [`Self::passed`] is
-/// "`violations` is empty" and the URI is a function of the class — and are
-/// written out anyway. A report is read by tools that are not this crate, and
-/// asking every one of them to re-derive the verdict is how two consumers end
-/// up disagreeing about whether a datastore conformed.
+/// `passed`, `requirements_uri` and `has_content` are *derived* — `passed` is
+/// "`violations` is empty", the URI is a function of the class, and
+/// `has_content` is `content != "none"` — and are written out anyway. A
+/// report is read by tools that are not this crate, and asking every one of
+/// them to re-derive the verdict is how two consumers end up disagreeing
+/// about whether a datastore conformed.
+///
+/// `content` is the load-bearing one: it is the only field that separates
+/// `passed: true` because the content was judged clean from `passed: true`
+/// because nothing was, or could be, judged. `has_content` is kept beside it
+/// for the consumer that only needs the coarse question answered.
 struct ClassEntry<'a> {
     class: RequirementsClass,
     findings: &'a ClassFindings,
@@ -225,11 +355,12 @@ impl serde::Serialize for ClassEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
-        let mut entry = serializer.serialize_struct("ClassEntry", 6)?;
+        let mut entry = serializer.serialize_struct("ClassEntry", 7)?;
         entry.serialize_field("class", &self.class)?;
         entry.serialize_field("requirements_uri", self.class.requirements_uri())?;
         entry.serialize_field("passed", &self.findings.violations.is_empty())?;
-        entry.serialize_field("has_content", &self.findings.has_content)?;
+        entry.serialize_field("content", &self.findings.coverage)?;
+        entry.serialize_field("has_content", &self.findings.coverage.has_content())?;
         entry.serialize_field("violations", &self.findings.violations)?;
         entry.serialize_field("warnings", &self.findings.warnings)?;
         entry.end()
@@ -245,12 +376,20 @@ impl serde::Serialize for ClassEntry<'_> {
 ///   "root": "/tmp/cdb",
 ///   "conformant": false,
 ///   "classes": [ { "class": "crs", "requirements_uri": "/req/core/data-representation",
-///                  "passed": true, "has_content": true,
+///                  "passed": true, "content": "checked", "has_content": true,
 ///                  "violations": [], "warnings": [] }, … ]
 /// }
 /// ```
 ///
-/// Three decisions worth stating, since they are permanent:
+/// Four decisions worth stating, since they are permanent:
+///
+/// - **A class entry carries `content`, not just `has_content`.** A verdict
+///   of `"passed": true` has three quite different meanings — the content was
+///   judged clean, there was no content, or there was content this crate has
+///   no datastore-level check for ([`ContentCoverage`]) — and a machine
+///   consumer that cannot tell them apart will read the third as the first.
+///   That is the false green the whole report layer is built to avoid, so the
+///   distinction is on the wire rather than only in `docs/CONFORMANCE.md`.
 ///
 /// - **Classes are an array, not a JSON object keyed by class.** [`Ord`]
 ///   order is the documented listing order of a report, and an array is the
@@ -303,12 +442,13 @@ impl fmt::Display for ConformanceReport {
             } else {
                 "FAIL"
             };
-            // §4: a declared class with no content passes — but say so, so a
-            // pass on an empty datastore cannot read as a pass on a clean one.
-            let content = if findings.has_content {
-                ""
-            } else {
-                " (no content)"
+            // §4: a declared class with no content passes, and so does one
+            // whose content this crate cannot judge — but say which, so
+            // neither can read as a pass on content that was checked clean.
+            let content = match findings.coverage {
+                ContentCoverage::Checked => "",
+                ContentCoverage::NoContent => " (no content)",
+                ContentCoverage::Unchecked => " (content not checked)",
             };
             writeln!(f, "  [{status}] {class}{content}")?;
             for violation in &findings.violations {
@@ -341,16 +481,16 @@ mod tests {
         // no optional class it was never told about. (Once `validate` seeds
         // the profile's declared optional classes, an index-keyed assertion
         // would break for reasons that have nothing to do with this test.)
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(listed.contains(&class), "{class} not listed");
         }
-        for class in RequirementsClass::OPTIONAL {
+        for &class in RequirementsClass::OPTIONAL {
             assert!(!listed.contains(&class), "{class} listed unbidden");
         }
         assert_eq!(report.profile(), "simulation");
         assert_eq!(report.root(), Path::new("/tmp/cdb"));
         assert!(report.is_conformant());
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(report.class_passed(class), "{class}");
         }
 
@@ -475,7 +615,7 @@ mod tests {
     #[test]
     fn conformance_report_distinguishes_no_content_from_clean() {
         let mut report = ConformanceReport::new("simulation", "/tmp/cdb");
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(report.class_has_content(class), "{class}");
         }
         // An unlisted class has no content and no findings.
@@ -498,5 +638,118 @@ mod tests {
         let text = report.to_string();
         assert!(text.contains("[PASS] tiling\n"), "{text}");
         assert!(text.contains("[PASS] topology (no content)"), "{text}");
+    }
+
+    /// Design spec §4 (as-built amendment: the third content state) — a class
+    /// is in one of **three** states, not two: it was checked against content,
+    /// it was declared and had no content, or it carries content this crate
+    /// has no datastore-level check for. The third is the honest reading of
+    /// the Geometry and Topology stages, whose subjects live in payloads the
+    /// crate does not decode. All three pass; none affects
+    /// [`ConformanceReport::is_conformant`]. `Unchecked` is sticky: once any
+    /// of a class's content has gone unjudged, the class never claims to have
+    /// been checked.
+    #[test]
+    fn req_core_conformance_report_three_content_states() {
+        let mut report = ConformanceReport::new("simulation", "/tmp/cdb");
+
+        // Unlisted: no content, and no claim of a check.
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Geometry),
+            ContentCoverage::NoContent
+        );
+        assert!(!ContentCoverage::NoContent.has_content());
+
+        // Declared: listed, passing, still no content.
+        report.declare_class(RequirementsClass::Geometry);
+        report.declare_class(RequirementsClass::Tiling);
+        report.declare_class(RequirementsClass::Topology);
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Geometry),
+            ContentCoverage::NoContent
+        );
+
+        // Checked content: the class was judged and came back clean.
+        report.mark_content(RequirementsClass::Tiling);
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Tiling),
+            ContentCoverage::Checked
+        );
+        assert!(report.class_has_content(RequirementsClass::Tiling));
+
+        // Unchecked content: content is real, the check is not.
+        report.mark_unchecked_content(RequirementsClass::Geometry);
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Geometry),
+            ContentCoverage::Unchecked
+        );
+        assert!(
+            report.class_has_content(RequirementsClass::Geometry),
+            "unchecked content is still content"
+        );
+        assert!(report.class_passed(RequirementsClass::Geometry));
+        assert!(report.is_conformant());
+
+        // Sticky pessimism, both orders: a class that has any unchecked
+        // content never reports itself checked.
+        report.mark_content(RequirementsClass::Geometry);
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Geometry),
+            ContentCoverage::Unchecked
+        );
+        report.mark_unchecked_content(RequirementsClass::Tiling);
+        assert_eq!(
+            report.class_coverage(RequirementsClass::Tiling),
+            ContentCoverage::Unchecked
+        );
+
+        // `Display` renders all three distinguishably.
+        let text = report.to_string();
+        assert!(
+            text.contains("[PASS] geometry (content not checked)"),
+            "{text}"
+        );
+        assert!(text.contains("[PASS] topology (no content)"), "{text}");
+        assert!(text.contains("[PASS] crs\n"), "{text}");
+
+        // ... and so does the wire shape, which carries the token alongside
+        // the derived boolean rather than in place of it.
+        let value = serde_json::to_value(&report).unwrap();
+        let entry = |name: &str| {
+            value["classes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["class"] == name)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(entry("geometry")["content"], "unchecked");
+        assert_eq!(entry("geometry")["has_content"], true);
+        assert_eq!(entry("topology")["content"], "none");
+        assert_eq!(entry("topology")["has_content"], false);
+        assert_eq!(entry("crs")["content"], "checked");
+        assert_eq!(entry("crs")["has_content"], true);
+    }
+
+    /// Design spec §7 — [`ContentCoverage`]'s three tokens are the wire form
+    /// and are stable: a consumer keys on them. Hand-written like
+    /// [`RequirementsClass`]'s so the Rust variant names never leak.
+    #[test]
+    fn req_core_conformance_content_coverage_tokens() {
+        for (coverage, token, has_content) in [
+            (ContentCoverage::NoContent, "none", false),
+            (ContentCoverage::Checked, "checked", true),
+            (ContentCoverage::Unchecked, "unchecked", true),
+        ] {
+            assert_eq!(coverage.as_str(), token);
+            assert_eq!(coverage.to_string(), token);
+            assert_eq!(coverage.has_content(), has_content);
+            assert_eq!(
+                serde_json::to_string(&coverage).unwrap(),
+                format!("\"{token}\"")
+            );
+        }
+        assert_eq!(ContentCoverage::default(), ContentCoverage::NoContent);
     }
 }

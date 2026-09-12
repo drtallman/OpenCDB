@@ -53,7 +53,7 @@ fn req_core_attributes_roundtrip_json() {
     assert_eq!(reopened.attribute_model().unwrap(), Some(model));
     let report = reopened.validate(&profile).unwrap();
     assert!(report.is_conformant(), "report: {report}");
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         assert!(
             report.warnings(class).is_empty(),
             "{class} should have no warnings with the schema file present: {report}"
@@ -78,7 +78,7 @@ fn req_core_attributes_roundtrip_xml() {
     assert_eq!(reopened.attribute_model().unwrap(), Some(model));
     let report = reopened.validate(&profile).unwrap();
     assert!(report.is_conformant(), "report: {report}");
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         assert!(
             report.warnings(class).is_empty(),
             "{class} should have no warnings with the schema file present: {report}"

@@ -47,7 +47,14 @@ impl RequirementsClass {
     /// The five classes Annex A `/conf/minimal-core` makes mandatory for every
     /// profile. Declaration order equals [`Ord`] order — the order a
     /// conformance report lists them.
-    pub const MANDATORY: [RequirementsClass; 5] = [
+    ///
+    /// A **slice**, not a fixed-size array, and deliberately so: an array's
+    /// length is part of its type, so `[RequirementsClass; 5]` would make
+    /// adding a twelfth class a `2.0` break and quietly contradict both the
+    /// enum's `#[non_exhaustive]` and the promise `src/lib.rs` makes that new
+    /// variants arrive within `1.x`. The same holds for [`Self::OPTIONAL`]
+    /// and [`Self::ALL`].
+    pub const MANDATORY: &'static [RequirementsClass] = &[
         RequirementsClass::Crs,
         RequirementsClass::FileNaming,
         RequirementsClass::FileStructure,
@@ -59,7 +66,7 @@ impl RequirementsClass {
     /// the content it governs, at which point its requirements bind in full.
     /// A profile declares the ones it supports; declaring one costs nothing
     /// when the datastore holds no such content. In [`Ord`] order.
-    pub const OPTIONAL: [RequirementsClass; 6] = [
+    pub const OPTIONAL: &'static [RequirementsClass] = &[
         RequirementsClass::Attribution,
         RequirementsClass::Coverages,
         RequirementsClass::Geometry,
@@ -70,7 +77,7 @@ impl RequirementsClass {
 
     /// Every class the core defines — [`Self::MANDATORY`] and
     /// [`Self::OPTIONAL`] merged, in [`Ord`] order.
-    pub const ALL: [RequirementsClass; 11] = [
+    pub const ALL: &'static [RequirementsClass] = &[
         RequirementsClass::Attribution,
         RequirementsClass::Coverages,
         RequirementsClass::Crs,
@@ -167,7 +174,8 @@ impl<'de> serde::Deserialize<'de> for RequirementsClass {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let token = String::deserialize(deserializer)?;
         RequirementsClass::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .find(|class| class.as_str() == token)
             .ok_or_else(|| {
                 serde::de::Error::custom(format!(
@@ -207,7 +215,7 @@ mod tests {
     /// them to the well-formed OGC pattern.
     #[test]
     fn conf_core_conformance_uri_pattern() {
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert_eq!(
                 class.conformance_uri("simulation"),
                 format!(
@@ -272,25 +280,47 @@ mod tests {
             ]
         );
         // `ALL` is sorted: Ord order is the report's listing order.
-        let mut sorted = RequirementsClass::ALL;
+        let mut sorted = RequirementsClass::ALL.to_vec();
         sorted.sort();
         assert_eq!(sorted, RequirementsClass::ALL);
 
         // MANDATORY (5) and OPTIONAL (6) partition ALL, disjointly.
         assert_eq!(RequirementsClass::MANDATORY.len(), 5);
         assert_eq!(RequirementsClass::OPTIONAL.len(), 6);
-        for class in RequirementsClass::ALL {
+        for &class in RequirementsClass::ALL {
             let mandatory = RequirementsClass::MANDATORY.contains(&class);
             let optional = RequirementsClass::OPTIONAL.contains(&class);
             assert!(mandatory ^ optional, "{class}");
         }
         // Both consts are themselves in Ord order.
-        let mut mandatory = RequirementsClass::MANDATORY;
+        let mut mandatory = RequirementsClass::MANDATORY.to_vec();
         mandatory.sort();
         assert_eq!(mandatory, RequirementsClass::MANDATORY);
-        let mut optional = RequirementsClass::OPTIONAL;
+        let mut optional = RequirementsClass::OPTIONAL.to_vec();
         optional.sort();
         assert_eq!(optional, RequirementsClass::OPTIONAL);
+    }
+
+    /// `src/lib.rs` "What 1.0 guarantees" — the crate promises a new
+    /// [`RequirementsClass`] variant can arrive within `1.x`, which is why
+    /// the enum is `#[non_exhaustive]`. That promise binds the *class lists*
+    /// too: an array's length is part of its type, so a `[RequirementsClass;
+    /// 11]` constant would make a twelfth class a `2.0` break and quietly
+    /// contradict the enum's own openness. Publishing them as
+    /// `&'static [RequirementsClass]` is what makes the promise true — this
+    /// test pins the types so the promise cannot be undone by a later
+    /// "tidy-up" back to arrays.
+    #[test]
+    fn req_core_conformance_class_lists_are_length_agnostic() {
+        let mandatory: &'static [RequirementsClass] = RequirementsClass::MANDATORY;
+        let optional: &'static [RequirementsClass] = RequirementsClass::OPTIONAL;
+        let all: &'static [RequirementsClass] = RequirementsClass::ALL;
+        assert_eq!(mandatory.len() + optional.len(), all.len());
+        // A slice binds by reference, so adding a class changes no type.
+        fn count(classes: &'static [RequirementsClass]) -> usize {
+            classes.len()
+        }
+        assert_eq!(count(RequirementsClass::ALL), 11);
     }
 
     /// Design spec §7 — the class token is the serde surface's key, and it
@@ -301,7 +331,7 @@ mod tests {
     /// error, never a silent default.
     #[test]
     fn req_core_conformance_class_token_round_trips() {
-        for class in RequirementsClass::ALL {
+        for &class in RequirementsClass::ALL {
             let json = serde_json::to_string(&class).unwrap();
             assert_eq!(json, format!("\"{}\"", class.as_str()));
             let back: RequirementsClass = serde_json::from_str(&json).unwrap();

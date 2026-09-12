@@ -17,8 +17,12 @@
 //! Conformance is decided by violations alone:
 //! [`ConformanceReport::is_conformant`] and
 //! [`ConformanceReport::class_passed`] ignore warnings — and so does
-//! [`ConformanceReport::class_has_content`], which separates a class checked
-//! against real content from one checked against none.
+//! [`ConformanceReport::class_coverage`], which separates the three ways a
+//! class can pass ([`ContentCoverage`]): its content was checked and is
+//! clean, there was no such content, or there was content this crate has no
+//! datastore-level check for. The last is not a defect to be closed but the
+//! honest position of Geometry and Topology, whose subjects live in payloads
+//! the crate does not decode.
 //!
 //! Each optional class's stage delegates to a free `validate_*` function
 //! owned by the requirements module itself
@@ -37,5 +41,5 @@ mod validate;
 
 pub use class::RequirementsClass;
 pub use finding::{CdbViolation, CdbWarning};
-pub use report::{ClassFindings, ConformanceReport};
+pub use report::{ClassFindings, ConformanceReport, ContentCoverage};
 pub use validate::validate;

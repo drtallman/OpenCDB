@@ -69,7 +69,7 @@ fn full_datastore() -> (TempDir, CdbDatastore, SimulationProfile) {
 #[test]
 fn conf_core_minimal_profile_declaration_inspection() {
     let declared = SimulationProfile::json().conformance_classes();
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         assert!(
             declared.contains(&class),
             "profile must declare mandatory class {class}"
@@ -89,7 +89,7 @@ fn conf_core_minimal_full_datastore_all_mandatory_classes_pass() {
 
     let report = store.validate(&profile).unwrap();
     assert!(report.is_conformant(), "{report}");
-    for class in RequirementsClass::MANDATORY {
+    for &class in RequirementsClass::MANDATORY {
         assert!(report.class_passed(class), "{class}: {report}");
         assert!(
             report.warnings(class).is_empty(),
@@ -133,7 +133,8 @@ fn conf_core_minimal_missing_declaration_fails_class() {
         }
         fn conformance_classes(&self) -> Vec<RequirementsClass> {
             RequirementsClass::MANDATORY
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(|class| *class != RequirementsClass::Links)
                 .collect()
         }

@@ -357,8 +357,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// The spec's compound-CRS example (§7.3.1.9), verbatim — including its
-    /// missing comma between member CRSs and the space before `[`.
+    /// The spec's compound-CRS example (§7.3.1.9) — including its missing
+    /// comma between member CRSs and the space before `[`, both of which the
+    /// reader is lenient about. **One correction**: the draft's §7.3.1.9 copy
+    /// closes `VERTCRS` and then stops, leaving `COMPOUNDCRS` open, where the
+    /// otherwise identical §7.3.1.4 copy closes both. The balanced spelling is
+    /// used here — an unclosed node is not a leniency question but an
+    /// unreadable document. Errata §7 row 16.
     const SPEC_COMPOUND: &str = r#"COMPOUNDCRS ["CDB Compound CRS",
 GEODCRS["WGS 84",
   DATUM["World Geodetic System 1984",

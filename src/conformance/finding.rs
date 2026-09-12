@@ -382,8 +382,13 @@ fn topology_code(violation: &TopologyViolation) -> &'static str {
         TopologyViolation::DuplicateFaceId { .. } => "/req/core/topology-faceID",
         TopologyViolation::UnknownNodeId { .. } => "/req/core/topology-edge-dir",
         // Raised from both the clip (§7.13.4.7) and the face-boundary
-        // (§7.13.5.4) paths, so it names the module rather than picking one.
-        TopologyViolation::UnknownEdgeId { .. } => "/req/core/topology",
+        // (§7.13.5.4) paths, so it names neither: Topo3 is the clause that
+        // makes an edge identifier mean something, and a reference to an id
+        // no edge carries breaks it from the other side. It may **not** be
+        // the bare `/req/core/topology` module URI — that is what the content
+        // sweep's undeclared-Topology `DeclarationMismatch` cites, and `code`
+        // has to tell the two apart.
+        TopologyViolation::UnknownEdgeId { .. } => "/req/core/topology-edgeID",
         TopologyViolation::EdgeHasNoGeometry { .. }
         | TopologyViolation::EdgeGeometryEndpointMismatch { .. }
         | TopologyViolation::EdgeGeometryNotFinite { .. }
@@ -409,10 +414,20 @@ fn versioning_code(violation: &VersioningViolation) -> &'static str {
         VersioningViolation::EmptyState { .. } | VersioningViolation::AssetStateMissing { .. } => {
             "/req/core/versioning-transitory"
         }
+        // V1 has one part, A, and the crate's convention (errata §7 row 6) is
+        // to hyphen-join a part letter so the code stays one token. The part
+        // letter is load-bearing here beyond tidiness: V1's box URI collides
+        // with the versioning *class* URI (errata row 9), which is what the
+        // content sweep's undeclared-Versioning `DeclarationMismatch` cites,
+        // so a bare `/req/core/versioning` would make `code` unable to
+        // separate "undeclared versioning content" from "this collection
+        // addressed a reserved tree".
         VersioningViolation::InvalidAssetPath { .. }
-        | VersioningViolation::AssetInReservedTree { .. }
-        | VersioningViolation::UnknownCollection { .. }
-        | VersioningViolation::NotLatestCollection { .. } => "/req/core/versioning",
+        | VersioningViolation::AssetInReservedTree { .. } => "/req/core/versioning-A",
+        // Rollback preconditions: both identify *which* collection is being
+        // addressed, which is Requirement V2's subject.
+        VersioningViolation::UnknownCollection { .. }
+        | VersioningViolation::NotLatestCollection { .. } => "/req/core/versioning-collection",
         VersioningViolation::AssetAlreadyExists { .. } => "/req/core/versioning-functions-A",
         // V4-B (delete) and V4-C (update) both reach it, so no part letter.
         VersioningViolation::AssetMissing { .. } => "/req/core/versioning-functions",
@@ -900,5 +915,88 @@ mod tests {
         let nested: CdbViolation =
             CoverageViolation::Metadata(MetadataViolation::MissingElement { element: "ID" }).into();
         assert_eq!(nested.class(), RequirementsClass::Coverages);
+    }
+
+    /// Design spec §7 — [`CdbViolation::code`] is what a machine consumer
+    /// keys on, so it has to *discriminate*. The content sweep files an
+    /// undeclared-content [`CdbViolation::DeclarationMismatch`] citing the
+    /// class's own requirements-module URI
+    /// ([`RequirementsClass::requirements_uri`]); any other violation
+    /// emitting that same bare URI would be indistinguishable from it on the
+    /// wire — "this datastore holds undeclared versioning content" reading
+    /// identically to "this collection addressed a reserved tree".
+    ///
+    /// No violation of a class the sweep can convict may therefore carry its
+    /// bare module URI. The five classes the sweep has a signal for are
+    /// Attribution, Coverages, Tiling, Topology and Versioning (§4's table);
+    /// the sweep never convicts Geometry, and the mandatory five are outside
+    /// its scope entirely, which is why `NamingViolation::EmptyName` may keep
+    /// `/req/core/naming-system`.
+    #[test]
+    fn req_core_conformance_finding_codes_discriminate_from_sweep() {
+        let swept = [
+            RequirementsClass::Attribution,
+            RequirementsClass::Coverages,
+            RequirementsClass::Tiling,
+            RequirementsClass::Topology,
+            RequirementsClass::Versioning,
+        ];
+        // The variants that once carried a bare module URI, plus one
+        // already-distinct neighbour per class as a control.
+        let violations: Vec<CdbViolation> = vec![
+            TopologyViolation::UnknownEdgeId {
+                id: crate::topology::EdgeId(9),
+            }
+            .into(),
+            TopologyViolation::WindingOrderUndeclared.into(),
+            VersioningViolation::InvalidAssetPath {
+                asset: String::new(),
+                source: crate::naming::NamingViolation::EmptyName,
+            }
+            .into(),
+            VersioningViolation::AssetInReservedTree {
+                asset: "/versions/v000001/manifest.json".to_owned(),
+                tree: "versions".to_owned(),
+            }
+            .into(),
+            VersioningViolation::UnknownCollection {
+                id: "v000009".to_owned(),
+            }
+            .into(),
+            VersioningViolation::NotLatestCollection {
+                id: "v000001".to_owned(),
+                latest: "v000002".to_owned(),
+            }
+            .into(),
+            VersioningViolation::EmptyCollection.into(),
+            AttributionViolation::EmptyModel.into(),
+            CoverageViolation::MissingDomainSet.into(),
+            TilingViolation::MissingTilesetKeywords.into(),
+        ];
+
+        for violation in &violations {
+            for class in swept {
+                assert_ne!(
+                    violation.code(),
+                    class.requirements_uri(),
+                    "{violation} is indistinguishable from an undeclared-{class} finding"
+                );
+            }
+        }
+
+        // ... and the sweep's own finding does use the bare URI, so the two
+        // sides of the rule are pinned together.
+        let mismatch = CdbViolation::DeclarationMismatch {
+            profile: "simulation".to_owned(),
+            class: RequirementsClass::Versioning,
+            element: "versions journal",
+            declared: "no versioning conformance class".to_owned(),
+            found: "versions/".to_owned(),
+            clause: RequirementsClass::Versioning.requirements_uri(),
+        };
+        assert_eq!(
+            mismatch.code(),
+            RequirementsClass::Versioning.requirements_uri()
+        );
     }
 }

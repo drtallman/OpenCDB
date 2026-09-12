@@ -44,19 +44,26 @@ pub(super) fn sweep_content(
     // Attribution — a `vector_attributes.*` entry in `global_metadata/`.
     for name in &signals.attribute_model_files {
         // Attr1-C: the name itself, checked whatever the profile declares.
+        // Per file, deliberately: this judges each entry that exists.
         if let Err(violation) = attribution::parse_file_name(name) {
             report.mark_content(RequirementsClass::Attribution);
             report.record_violation(violation.into());
         }
-        if undeclared(RequirementsClass::Attribution) {
-            record_undeclared(
-                profile,
-                RequirementsClass::Attribution,
-                "attribute model file",
-                name.clone(),
-                report,
-            );
-        }
+    }
+    // The declaration question, by contrast, is asked once about the class —
+    // two `vector_attributes.*` entries are still one undeclared class. The
+    // `windingOrder` and `domainSet` signals take first-record-wins for the
+    // same reason; this one reports the first entry as the evidence.
+    if let Some(name) = signals.attribute_model_files.first()
+        && undeclared(RequirementsClass::Attribution)
+    {
+        record_undeclared(
+            profile,
+            RequirementsClass::Attribution,
+            "attribute model file",
+            name.clone(),
+            report,
+        );
     }
 
     // Tiling — the `tilingScheme` element on the global record.
@@ -282,7 +289,7 @@ mod tests {
         assert!(listed.contains(&RequirementsClass::Tiling), "{report}");
         assert!(!listed.contains(&RequirementsClass::Geometry), "{report}");
         // The mandatory five are untouched by the sweep.
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(report.class_passed(class), "{class}: {report}");
         }
     }
@@ -354,6 +361,55 @@ mod tests {
                     violation,
                     CdbViolation::Attribution(AttributionViolation::InvalidFileName { .. })
                 )),
+            "{report}"
+        );
+    }
+
+    /// Design spec §4 — a class is convicted of undeclared content **once**,
+    /// however many files carry the signal. The `windingOrder` and
+    /// `domainSet` signals take first-record-wins for exactly this reason;
+    /// the attribute-model signal is a list of directory entries, so two
+    /// `vector_attributes.*` files in `global_metadata/` must still produce
+    /// one `DeclarationMismatch` for Attribution, not one per file. The
+    /// per-file Attr1-C name check is the opposite: it judges each file, so
+    /// both mis-named files are convicted separately.
+    #[test]
+    fn conf_core_sweep_convicts_an_undeclared_class_once_per_class() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        store
+            .write_attribute_model(&model_of("1", "StreetName"))
+            .unwrap();
+        // A second entry claiming the same stem. Attr1-C rejects its name
+        // (`xsd` is not one of the two extensions the requirement admits),
+        // but the *declaration* question is asked once about the class.
+        fs::write(
+            store
+                .layout()
+                .global_metadata_dir()
+                .join("vector_attributes.xsd"),
+            "<attributeModel/>",
+        )
+        .unwrap();
+
+        let report = store.validate(&DeclaringProfile::mandatory_only()).unwrap();
+        let mismatches = report
+            .violations(RequirementsClass::Attribution)
+            .iter()
+            .filter(|violation| matches!(violation, CdbViolation::DeclarationMismatch { .. }))
+            .count();
+        assert_eq!(mismatches, 1, "{report}");
+        // The per-file check still fires for the mis-named entry.
+        assert_eq!(
+            report
+                .violations(RequirementsClass::Attribution)
+                .iter()
+                .filter(|violation| matches!(
+                    violation,
+                    CdbViolation::Attribution(AttributionViolation::InvalidFileName { .. })
+                ))
+                .count(),
+            1,
             "{report}"
         );
     }

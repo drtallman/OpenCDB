@@ -37,6 +37,10 @@
 //!   is free to improve;
 //! - treat [`RequirementsClass`] and the finding enums as
 //!   `#[non_exhaustive]`, which they are: new variants arrive within `1.x`.
+//!   The class lists are published as `&'static [RequirementsClass]` rather
+//!   than fixed-size arrays for exactly this reason — an array's length is
+//!   part of its type, so `[RequirementsClass; 11]` would have made a
+//!   twelfth class a `2.0` break and quietly cancelled the promise above.
 //!
 //! # Example
 //!

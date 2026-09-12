@@ -48,7 +48,19 @@
 //! letter. Derived views — the Topo4 adjacency, [`DirectedNode`], the clip
 //! mint counters — are deliberately absent from the wire and regenerated on
 //! read, which is why deserializing a graph re-runs the `insert_*`
-//! invariants instead of trusting the document.
+//! invariants instead of trusting the document, and why a document carrying
+//! one of them is rejected rather than silently stripped.
+//!
+//! **Two wire fields this crate does not own.** [`TopoNode::position`] and
+//! [`TopoEdge::geometry`] are `geo-types` values, and they serialize in
+//! `geo-types`' own native coordinate form — `{"x":…,"y":…}` per coordinate,
+//! a point as one such object and a linestring as an array of them. It is
+//! not GeoJSON and not WKT. Because that shape is part of this crate's
+//! public wire surface and freezes with it, `geo-types` is pinned as an API
+//! dependency rather than an implementation detail: a release changing
+//! `Coord`'s serde representation is a breaking change *for this crate*,
+//! and `req_core_topology_primitives_serde_round_trip` asserts the exact
+//! shape so such a release cannot pass the suite unnoticed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -650,7 +662,14 @@ pub struct TopoGraph {
 /// nothing else. The Topo4 adjacency and the clip mint counters are
 /// *derived* from those collections, so putting them on the wire would only
 /// create a second copy that could arrive disagreeing with the first.
+///
+/// `deny_unknown_fields` makes that stance enforceable rather than merely
+/// stated: a document carrying an `adjacency` or a `next_node_id` is
+/// **rejected**, not quietly stripped. Accepting it would let a writer
+/// believe the crate honoured a view it in fact discarded — the same
+/// disagreement the exclusion exists to prevent, arriving by the back door.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TopoGraphWire {
     nodes: Vec<TopoNode>,
     edges: Vec<TopoEdge>,
@@ -1233,6 +1252,24 @@ mod tests {
         assert_eq!(value["faces"][0]["boundary"][0]["edge"], 7);
         assert_eq!(value["faces"][0]["boundary"][0]["orientation"], "forward");
 
+        // The two fields this crate does not own. `position` and `geometry`
+        // are serialized entirely by `geo-types`' own derives, in its native
+        // `{"x":…,"y":…}` coordinate form — not GeoJSON, not WKT. That shape
+        // is part of this crate's frozen 1.0 wire surface, so it is pinned
+        // here rather than left to a dependency's discretion: a `geo-types`
+        // release that changed `Coord`'s representation would otherwise
+        // invalidate every persisted topology document silently.
+        assert_eq!(
+            value["nodes"][0]["position"],
+            serde_json::json!({"x": 1.0, "y": 2.0})
+        );
+        assert_eq!(value["nodes"][1]["position"], serde_json::Value::Null);
+        assert_eq!(
+            value["edges"][0]["geometry"],
+            serde_json::json!([{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}])
+        );
+        assert_eq!(value["edges"][1]["geometry"], serde_json::Value::Null);
+
         let back: TopoGraph = serde_json::from_value(value).unwrap();
         assert_eq!(back, graph);
         // The derived Topo4 adjacency was rebuilt, not transported.
@@ -1269,6 +1306,19 @@ mod tests {
                            "faces":[{"id":1,"boundary":[{"edge":1,"orientation":"forward"}]}]}"#;
         let error = serde_json::from_str::<TopoGraph>(unclosed).unwrap_err();
         assert!(error.to_string().contains("close"), "{error}");
+
+        // The derived views are deliberately absent from the wire form
+        // because a transported copy could arrive disagreeing with the
+        // collections it is derived from. A document that carries one anyway
+        // is therefore *rejected*, not silently ignored: accepting it would
+        // let a writer believe the crate honoured an adjacency or a mint
+        // counter it in fact discarded.
+        let derived = r#"{"nodes":[],"edges":[],"faces":[],"adjacency":{"1":[]}}"#;
+        let error = serde_json::from_str::<TopoGraph>(derived).unwrap_err();
+        assert!(error.to_string().contains("adjacency"), "{error}");
+        let counter = r#"{"nodes":[],"edges":[],"faces":[],"next_node_id":99}"#;
+        let error = serde_json::from_str::<TopoGraph>(counter).unwrap_err();
+        assert!(error.to_string().contains("next_node_id"), "{error}");
     }
 
     /// Face Topology Requirement 4 (/req/core/topology-winding, §7.13.5.5) —

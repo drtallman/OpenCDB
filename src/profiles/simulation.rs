@@ -283,10 +283,10 @@ mod tests {
     #[test]
     fn conf_core_minimal_simulation_declares_all_mandatory() {
         let declared = SimulationProfile::json().conformance_classes();
-        for class in RequirementsClass::MANDATORY {
+        for &class in RequirementsClass::MANDATORY {
             assert!(declared.contains(&class), "missing declaration for {class}");
         }
-        for class in RequirementsClass::OPTIONAL {
+        for &class in RequirementsClass::OPTIONAL {
             assert!(declared.contains(&class), "missing declaration for {class}");
         }
     }
