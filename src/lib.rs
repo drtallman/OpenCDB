@@ -24,6 +24,7 @@
 //! ```
 
 pub mod attribution;
+pub mod conformance;
 pub mod coverage;
 pub mod crs;
 pub mod datastore;
@@ -43,17 +44,20 @@ pub use attribution::{
     AttributeDef, AttributeModel, AttributionError, AttributionViolation, VECTOR_ATTRIBUTES_STEM,
     file_name_for, parse_file_name,
 };
+pub use conformance::{
+    CdbViolation, CdbWarning, ClassFindings, ConformanceReport, RequirementsClass,
+};
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
     validate_coverage_instance,
 };
-pub use datastore::{CdbDatastore, CdbViolation, CdbWarning, ConformanceReport, DatastoreSeed};
+pub use datastore::{CdbDatastore, DatastoreSeed};
 pub use error::CdbError;
 pub use geometry::{
     CdbGeometry, GeometryCode, GeometryContext, GeometryViolation, LineStringM, LineStringZ,
     MultiPointM, MultiPointZ, PointM, PointZ, PolygonM, PolygonZ,
 };
-pub use profiles::{ApplicationProfile, RequirementsClass, SimulationProfile};
+pub use profiles::{ApplicationProfile, SimulationProfile};
 pub use tiling::{
     Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress, GnosisGlobalGrid, GnosisLevel, GnosisTileAddress,
     TilingScheme, TilingSchemeId, TilingViolation, TilingWarning, validate_tileset_metadata,

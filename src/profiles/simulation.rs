@@ -15,10 +15,11 @@
 //! - **tiling** — the CDB 1.x global grid ([`TilingSchemeId::Cdb1GlobalGrid`]),
 //!   declared here; its requirements class is implemented in Phase 9.
 
+use crate::conformance::RequirementsClass;
 use crate::crs::{CrsViolation, StorageCrs};
 use crate::metadata::{MetadataEncoding, MetadataStandard, UnitOfMeasure};
 use crate::naming::{self, CaseRule, NamingViolation, StyleGuide};
-use crate::profiles::{ApplicationProfile, RequirementsClass, StorageTechnology, TilingSchemeId};
+use crate::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
 
 /// The profile's name, used in its Annex A conformance-class URIs.
 pub const SIMULATION_PROFILE_NAME: &str = "simulation";
