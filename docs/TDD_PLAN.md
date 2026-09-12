@@ -259,12 +259,35 @@ final-review hardening: archive/ subdir (manifest-collision-proof),
 AssetInReservedTree guard, orphan version dirs skipped as uncommitted,
 blank/control states rejected.
 
-### Phase 13 — Attribution (`/req/core/attribute*`), optional
-- Attr1: attribute model declared; stored in `global_metadata`; file named
-  `vector_attributes.xml|json` (name test, wrong ext → error).
-- PAttr1: file may hold a URI to an external schema.
-- Attr2: every attribute has unique ID + name + description (spec's
-  StreetName/StreetType/StreetWidth example as fixture).
+### Phase 13 — Attribution (`/req/core/attribute*`), optional — as built
+- Attr1: `attribution.rs` — `AttributeModel { schema_uri, attributes }` /
+  `AttributeDef { id, name, description }`; written by the facade to
+  `global_metadata/vector_attributes.<declared-enc>` so Attr1-B (location)
+  and Attr1-C (name) hold by construction; `parse_file_name`/`file_name_for`
+  encode Attr1-C standalone (exact reserved stem, `json`/`xml` extension
+  case-insensitive, anything else → error).
+- PAttr1: optional `schema_uri`, validated for RFC 3986 scheme shape by a
+  module-local check (no links-module dependency — the URI is not a
+  Links-class link object). The inline minimum is ALWAYS required: the URI
+  supplements, never replaces (doc-noted; the spec is silent).
+- Attr2: unique id + name + description per attribute (the spec's
+  StreetName/StreetType/StreetWidth table as fixture, verbatim including
+  its stray paren); blank/control-char elements rejected (the versioning
+  `EmptyState` posture); the empty model rejected (doc-noted strict
+  reading). Ids are STRINGS — the inline-minimum rule means NAS/LCCS codes
+  must project inline — with bare-integer JSON ids canonicalized in a
+  `from_json_str` value pre-pass (quick-xml cannot drive untagged/`any`
+  serde leniency; XML text is naturally a string).
+- Facade: `attribute_model()` → `Ok(None)` when absent, full validation on
+  read; `write_attribute_model` validates first, writes the declared
+  encoding only, and mirrors `write_global_metadata`'s Metadata5
+  cross-encoding guard; a Gpkg-declared store is `UnsupportedEncoding`.
+  Profile hook `ApplicationProfile::attribute_model()` defaults `None`
+  (Attr1-A); `SimulationProfile` declares none. `RequirementsClass`
+  membership + the profile-declaration cross-check are deferred to 14b
+  (uniform optional-class join).
+- `tests/attribution_roundtrip.rs`: create → write → reopen → read equal →
+  `validate()` conformant, JSON and XML.
 
 ### Phase 14 — Datastore facade, profile trait, conformance suite
 
@@ -445,7 +468,12 @@ for Phase 9).
   reserved name and walk carve-out, and
   `tests/versioning_roundtrip.rs`; 254 tests (236 unit + 17 integration
   + 1 doc); tagged `v0.7.0`.
-- Next: Phase 13 (Attribution).
+- Phase 13 done (`phase-13(attribution)` commits): Attr1/PAttr1/Attr2 in
+  `attribution.rs` + the `ApplicationProfile::attribute_model` hook and
+  the `CdbDatastore` read/write facade, and
+  `tests/attribution_roundtrip.rs`; 274 tests (254 unit + 19 integration
+  + 1 doc); tagged `v0.8.0`.
+- Next: Phase 14b (full conformance suite → `1.0.0`).
 
 ## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
 
