@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::attribution::AttributionError;
 use crate::coverage::CoverageViolation;
 use crate::crs::CrsError;
 use crate::geometry::GeometryViolation;
@@ -48,4 +49,8 @@ pub enum CdbError {
     /// (/req/core/versioning*, §7.14).
     #[error(transparent)]
     Versioning(#[from] VersioningError),
+    /// An attribution failure — operational or SHALL violation
+    /// (/req/core/attributes, §7.1).
+    #[error(transparent)]
+    Attribution(#[from] AttributionError),
 }

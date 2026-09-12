@@ -23,6 +23,7 @@
 //! # Ok(()) }
 //! ```
 
+pub mod attribution;
 pub mod coverage;
 pub mod crs;
 pub mod datastore;
@@ -38,6 +39,7 @@ pub mod tiling;
 pub mod topology;
 pub mod versioning;
 
+pub use attribution::{AttributeDef, AttributeModel, AttributionError, AttributionViolation};
 pub use coverage::{
     CoverageViolation, CoverageWarning, DomainSet, GridCellEncoding, GridCorner,
     validate_coverage_instance,
