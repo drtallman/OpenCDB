@@ -44,12 +44,21 @@ pub struct ClassFindings {
 /// `/conf/minimal-core`): findings bucketed by [`RequirementsClass`].
 ///
 /// **Which classes a report lists** is "the classes that were checked", not
-/// "the classes the profile declared" — the two coincide today but will not
-/// once the content sweep lands. A report lists the five mandatory classes
-/// always, plus every optional class the profile declares (checked by its own
-/// stage, whether or not the datastore holds matching content — see
-/// [`ClassFindings::has_content`]), plus any class that turns out to govern
-/// content the profile failed to declare.
+/// "the classes the profile declared". A report lists:
+///
+/// - the five mandatory classes, always;
+/// - every optional class the profile declares, checked by its own stage
+///   whether or not the datastore holds matching content (see
+///   [`ClassFindings::has_content`]);
+/// - **plus any class that turns out to govern content the profile did not
+///   declare.** The content sweep records such content as a
+///   [`CdbViolation::DeclarationMismatch`] filed under that class, which
+///   lists it. So a class appearing here is not evidence the profile claimed
+///   it — a *failing* optional class the profile never mentioned is exactly
+///   what an undeclared-content finding looks like. Read
+///   [`ApplicationProfile::conformance_classes`] for what was declared.
+///
+/// [`ApplicationProfile::conformance_classes`]: crate::profiles::ApplicationProfile::conformance_classes
 ///
 /// Conformance is decided by violations alone; warnings never affect
 /// [`Self::is_conformant`] or [`Self::class_passed`], and neither does

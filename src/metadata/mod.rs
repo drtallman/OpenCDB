@@ -523,6 +523,7 @@ pub struct GlobalMetadataBuilder {
     temporal: Option<Temporal>,
     access_rights: Option<String>,
     license: Option<String>,
+    tiling_scheme: Option<TilingScheme>,
 }
 
 impl GlobalMetadataBuilder {
@@ -604,6 +605,18 @@ impl GlobalMetadataBuilder {
         self
     }
 
+    /// Sets the `tilingScheme` conditional element (Requirement Tiling8,
+    /// `/req/core/tiling-tilingscheme-definition`, §7.10.2.5), which a
+    /// **tiled** datastore SHALL carry on its global record. Untiled
+    /// datastores omit it, so the element stays optional and the setter is
+    /// simply not called; [`crate::tiling::TilingScheme::require`] is the
+    /// reader's side of the same requirement.
+    #[must_use]
+    pub fn tiling_scheme(mut self, value: TilingScheme) -> Self {
+        self.tiling_scheme = Some(value);
+        self
+    }
+
     pub fn build(self) -> Result<GlobalMetadata, MetadataViolation> {
         fn required<T>(value: Option<T>, element: &'static str) -> Result<T, MetadataViolation> {
             value.ok_or(MetadataViolation::MissingElement { element })
@@ -631,7 +644,7 @@ impl GlobalMetadataBuilder {
             temporal: self.temporal,
             access_rights: self.access_rights,
             license: self.license,
-            tiling_scheme: None,
+            tiling_scheme: self.tiling_scheme,
         })
     }
 }
@@ -1321,5 +1334,44 @@ mod tests {
         let xml = metadata.to_xml_string().unwrap();
         let back = GlobalMetadata::from_xml_str(&xml).unwrap();
         assert_eq!(back.tiling_scheme, Some(TilingScheme::cdb1_global_grid()));
+    }
+
+    /// §7.10.2.5 Requirement Tiling8 /req/core/tiling-tilingscheme-definition
+    /// — the builder sets the conditional `tilingScheme` element, so a tiled
+    /// datastore's global record is constructible through the fluent API and
+    /// not only by mutating a built struct. The element stays optional: a
+    /// builder that is never told a scheme yields an untiled record.
+    #[test]
+    fn req_core_tiling_tilingscheme_builder_sets_element() {
+        use crate::tiling::TilingScheme;
+        let built = GlobalMetadata::builder()
+            .id("id")
+            .title("Title")
+            .description("Description")
+            .contact_point("contact")
+            .created(Utc::now())
+            .language(LanguageTag::new("en").unwrap())
+            .standard(MetadataStandard::Dcat)
+            .encoding(MetadataEncoding::Json)
+            .uom(UnitOfMeasure::Meters)
+            .tiling_scheme(TilingScheme::cdb1_global_grid())
+            .build()
+            .unwrap();
+        assert_eq!(built.tiling_scheme, Some(TilingScheme::cdb1_global_grid()));
+        assert!(built.to_json_string().unwrap().contains("tilingScheme"));
+
+        let untiled = GlobalMetadata::builder()
+            .id("id")
+            .title("Title")
+            .description("Description")
+            .contact_point("contact")
+            .created(Utc::now())
+            .language(LanguageTag::new("en").unwrap())
+            .standard(MetadataStandard::Dcat)
+            .encoding(MetadataEncoding::Json)
+            .uom(UnitOfMeasure::Meters)
+            .build()
+            .unwrap();
+        assert_eq!(untiled.tiling_scheme, None);
     }
 }

@@ -150,8 +150,19 @@ impl ApplicationProfile for SimulationProfile {
         StorageTechnology::FileSystem
     }
 
+    /// Every class the core defines. The simulation profile restricts the
+    /// whole core (§5.1) rather than a slice of it — it pins a storage CRS, a
+    /// metadata encoding, and the CDB1GlobalGrid tiling scheme, and its
+    /// datastores legitimately carry attribute models, coverages, topology,
+    /// and version journals — so every class is declared, not just the
+    /// mandatory five. The declaration is load-bearing: the content sweep
+    /// reports content whose class a profile failed to declare, so an
+    /// under-declaring profile would convict its own datastores of a
+    /// [`crate::conformance::CdbViolation::DeclarationMismatch`]. Optional
+    /// classes the datastore holds no content for simply pass with nothing
+    /// checked (design spec §4).
     fn conformance_classes(&self) -> Vec<RequirementsClass> {
-        RequirementsClass::MANDATORY.to_vec()
+        RequirementsClass::ALL.to_vec()
     }
 
     /// A path is a resource-metadata record when its parent component is
@@ -254,11 +265,19 @@ mod tests {
     }
 
     /// Annex A `/conf/minimal-core`: the profile declares conformance to every
-    /// mandatory requirements class.
+    /// mandatory requirements class — and, since it restricts the *whole*
+    /// core (§5.1), to every optional one too. The optional declarations are
+    /// load-bearing rather than decorative: the content sweep reports content
+    /// whose class a profile did not declare, so a profile whose datastores
+    /// legitimately carry attribute models, tiling schemes, coverages, and
+    /// version journals must declare those classes.
     #[test]
     fn conf_core_minimal_simulation_declares_all_mandatory() {
         let declared = SimulationProfile::json().conformance_classes();
         for class in RequirementsClass::MANDATORY {
+            assert!(declared.contains(&class), "missing declaration for {class}");
+        }
+        for class in RequirementsClass::OPTIONAL {
             assert!(declared.contains(&class), "missing declaration for {class}");
         }
     }
