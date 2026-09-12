@@ -712,7 +712,12 @@ impl CdbDatastore {
     /// encoding — a stray other-encoding `vector_attributes` file is a
     /// Requirement Metadata5 matter, flagged by `validate`'s encoding sweep —
     /// and its content is fully validated, so an invalid model errors on
-    /// read. A GeoPackage-declared datastore has no core-readable model:
+    /// read. Reading canonicalizes: the parse trims leading and trailing
+    /// whitespace from `schemaUri`, `id`, `name`, and `description` before
+    /// validating (see [`AttributeModel::from_json_str`]), so an indented,
+    /// hand-authored file reads as the model it depicts and a model that came
+    /// back from disk is always in canonical form. A GeoPackage-declared
+    /// datastore has no core-readable model:
     /// [`MetadataError::UnsupportedEncoding`], as the metadata readers do.
     pub fn attribute_model(&self) -> Result<Option<AttributeModel>, CdbError> {
         let declared = self.global_metadata()?.encoding;
@@ -739,7 +744,12 @@ impl CdbDatastore {
     /// encoding, returning the physical file written — Requirements Attr1-B
     /// (the `global_metadata` location) and Attr1-C (the file name) hold by
     /// construction. The model is validated first (Attr2), so an invalid one
-    /// is refused before any file is touched. Requirement Metadata5 is
+    /// is refused before any file is touched — including a model whose ids
+    /// differ only by whitespace, which [`AttributeModel::validate`] treats as
+    /// duplicates exactly as the read path does. Serialization is verbatim: a
+    /// model holding edge whitespace in its strings is written as-is and comes
+    /// back trimmed, because the *parse* canonicalizes — only canonical models
+    /// round-trip unchanged. Requirement Metadata5 is
     /// enforced the way [`Self::write_global_metadata`] enforces it: a
     /// `vector_attributes` file already on disk in a *different* encoding
     /// refuses the write with [`MetadataViolation::EncodingMismatch`]. A
@@ -2672,6 +2682,37 @@ mod tests {
             store.write_attribute_model(&empty),
             Err(CdbError::Attribution(AttributionError::Violation(
                 crate::attribution::AttributionViolation::EmptyModel
+            )))
+        ));
+        assert!(
+            !store
+                .root()
+                .join("global_metadata/vector_attributes.json")
+                .exists(),
+            "nothing written"
+        );
+    }
+
+    /// Requirement Attr2-B (§7.1.2.3) end to end: the writer never emits
+    /// a file the reader would refuse. Ids that differ only by
+    /// whitespace are one identifier at validate time too, so the write
+    /// is refused before any file is touched.
+    #[test]
+    fn req_core_attribute_model_facade_write_refuses_whitespace_forged_ids() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+
+        let mut forged = street_model();
+        forged.attributes[1].id = " 1 ".to_owned();
+        assert!(matches!(
+            store.write_attribute_model(&forged),
+            Err(CdbError::Attribution(AttributionError::Violation(
+                crate::attribution::AttributionViolation::DuplicateId { .. }
             )))
         ));
         assert!(

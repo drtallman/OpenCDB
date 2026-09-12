@@ -39,7 +39,9 @@
 //! model it depicts, the two encodings carry one model to one in-memory
 //! value, and whitespace cannot make two ids "distinct" for Attr2-B.
 //! Whitespace-only values are still violations — the trim runs first,
-//! then the blank check fires. The cost is deliberate: a string stored
+//! then the blank check fires. Attr2-B uniqueness is compared on trimmed
+//! ids, so the in-memory checker agrees with the read path and the crate
+//! never writes a file it would refuse to read back. The cost is deliberate: a string stored
 //! with meaningful edge whitespace does not survive a write→read round
 //! trip unchanged (no CDB attribute vocabulary assigns meaning to it).
 //!
@@ -131,11 +133,12 @@ pub enum AttributionError {
 /// spec's StreetName/StreetType/StreetWidth fixture).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttributeDef {
-    /// The unique identifier (Attr2-B). String-typed; a bare
-    /// non-negative integer id in an incoming JSON document (the spec
-    /// fixture's style) is canonicalized to its decimal string by
-    /// [`AttributeModel::from_json_str`] — XML text content is a string
-    /// by nature.
+    /// The unique identifier (Attr2-B). String-typed, and canonicalized
+    /// on the way in: a bare non-negative integer id in an incoming JSON
+    /// document (the spec fixture's style) becomes its decimal string,
+    /// and both parse paths trim surrounding whitespace. Uniqueness is
+    /// compared on the trimmed value, so `"1"` and `" 1 "` are one
+    /// identifier however the model was built.
     pub id: String,
     /// The attribute's name (Attr2-C).
     pub name: String,
@@ -219,6 +222,20 @@ impl AttributeModel {
     /// Validates the Attr2 content rules and PAttr1's URI shape — the
     /// single validation source. Parse functions call this before
     /// returning, and the facade calls it before writing.
+    ///
+    /// Attr2-B uniqueness is compared on *trimmed* ids, so a model built
+    /// in memory cannot forge two "distinct" ids out of whitespace the
+    /// way a parsed one cannot: the writer therefore never emits a file
+    /// the reader would refuse with `DuplicateId`.
+    ///
+    /// One asymmetry is deliberate, in the safe direction: this method
+    /// does not canonicalize, it only compares. A `schema_uri` held in
+    /// memory with leading or trailing whitespace fails as
+    /// `InvalidSchemaUri`, while the same text read from a file passes —
+    /// the parse trimmed it first. Validation stays a pure predicate on
+    /// the value it is given (the facade relies on that when it refuses
+    /// a write), and the stricter of the two verdicts is the in-memory
+    /// one, so nothing invalid reaches disk.
     pub fn validate(&self) -> Result<(), AttributionViolation> {
         if let Some(uri) = &self.schema_uri
             && (uri.chars().any(char::is_control) || !has_uri_shape(uri))
@@ -243,7 +260,7 @@ impl AttributeModel {
                     id: attribute.id.clone(),
                 });
             }
-            if !seen.insert(attribute.id.as_str()) {
+            if !seen.insert(attribute.id.trim()) {
                 return Err(AttributionViolation::DuplicateId {
                     id: attribute.id.clone(),
                 });
@@ -679,6 +696,47 @@ mod tests {
                 AttributionViolation::InvalidSchemaUri { .. }
             ))
         ));
+    }
+
+    /// `/req/core/attribute-model-content` B (§7.1.2.3) — the uniqueness
+    /// check itself canonicalizes, so an in-memory model built by hand
+    /// (never through a parse) cannot forge two "distinct" ids out of
+    /// whitespace either. Without this the crate could write, with an
+    /// `Ok`, a file it would then refuse to read back.
+    #[test]
+    fn req_core_attribute_model_content_validate_canonicalizes_ids() {
+        let forged = AttributeModel {
+            schema_uri: None,
+            attributes: vec![
+                AttributeDef {
+                    id: "1".to_owned(),
+                    name: "StreetName".to_owned(),
+                    description: "Name of a street as an alphanumeric string".to_owned(),
+                },
+                AttributeDef {
+                    id: " 1 ".to_owned(),
+                    name: "StreetType".to_owned(),
+                    description: "Type street as an alphanumeric string".to_owned(),
+                },
+            ],
+        };
+        assert_eq!(
+            forged.validate(),
+            Err(AttributionViolation::DuplicateId {
+                id: " 1 ".to_owned()
+            })
+        );
+
+        let round_tripped = AttributeModel::from_json_str(&forged.to_json_string().unwrap());
+        assert!(
+            matches!(
+                round_tripped,
+                Err(AttributionError::Violation(
+                    AttributionViolation::DuplicateId { .. }
+                ))
+            ),
+            "validate and the read path must agree: {round_tripped:?}"
+        );
     }
 
     /// `/req/core/attribute-model-content` B (§7.1.2.3) — ids that differ

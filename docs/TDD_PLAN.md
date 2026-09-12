@@ -284,7 +284,9 @@ blank/control states rejected.
   validating and before the uniqueness check — quick-xml preserves element
   text verbatim, so without it a pretty-printed `vector_attributes.xml` was
   unreadable and whitespace could forge a "distinct" id; whitespace-only
-  values still fail as blank.
+  values still fail as blank. `validate()` compares ids trimmed, so the
+  in-memory Attr2-B checker agrees with the read path and the facade can
+  never write a file it would refuse to read back (re-review fix).
 - Facade: `attribute_model()` → `Ok(None)` when absent, full validation on
   read; `write_attribute_model` validates first, writes the declared
   encoding only, and mirrors `write_global_metadata`'s Metadata5
@@ -489,7 +491,7 @@ for Phase 9).
   whitespace canonicalization on both encodings (Attr2-B uniqueness hole +
   hand-authored XML), literal Attr1-C name matching, blank-URI remainder
   rejected, Gpkg facade coverage, crate-root re-exports;
-  279 tests (259 unit + 19 integration + 1 doc); tagged `v0.8.0`.
+  281 tests (261 unit + 19 integration + 1 doc); tagged `v0.8.0`.
 - Next: Phase 14b (full conformance suite → `1.0.0`).
 
 ## 8. Post-1.0 follow-on efforts (separate projects; architecture TBD)
