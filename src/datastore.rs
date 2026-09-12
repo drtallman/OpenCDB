@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
+use crate::attribution::{self, AttributeModel, AttributionError};
 use crate::crs::{CrsError, CrsViolation, CrsWarning, StorageCrs};
 use crate::error::CdbError;
 use crate::hierarchy::{DatastoreLayout, HierarchyError, HierarchyViolation, HierarchyWarning};
@@ -702,6 +703,84 @@ impl CdbDatastore {
     /// Reads the datastore's storage CRS (Requirement CRS5).
     pub fn storage_crs(&self) -> Result<StorageCrs, CdbError> {
         Ok(StorageCrs::read_from(&self.layout)?)
+    }
+
+    /// Reads the datastore's attribute model from
+    /// `global_metadata/vector_attributes.<ext>` (Requirements Attr1/Attr2,
+    /// §7.1.2) — `Ok(None)` when the file is absent, attribution being an
+    /// optional class. The file is looked up in the datastore's declared
+    /// encoding — a stray other-encoding `vector_attributes` file is a
+    /// Requirement Metadata5 matter, flagged by `validate`'s encoding sweep —
+    /// and its content is fully validated, so an invalid model errors on
+    /// read. A GeoPackage-declared datastore has no core-readable model:
+    /// [`MetadataError::UnsupportedEncoding`], as the metadata readers do.
+    pub fn attribute_model(&self) -> Result<Option<AttributeModel>, CdbError> {
+        let declared = self.global_metadata()?.encoding;
+        let Some(name) = attribution::file_name_for(declared) else {
+            return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                declared,
+            )));
+        };
+        let path = self.layout.global_metadata_dir().join(&name);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&path).map_err(AttributionError::Io)?;
+        let model = if declared == MetadataEncoding::Xml {
+            AttributeModel::from_xml_str(&content)?
+        } else {
+            AttributeModel::from_json_str(&content)?
+        };
+        Ok(Some(model))
+    }
+
+    /// Writes (or rewrites) the attribute model to
+    /// `global_metadata/vector_attributes.<ext>` in the datastore's declared
+    /// encoding, returning the physical file written — Requirements Attr1-B
+    /// (the `global_metadata` location) and Attr1-C (the file name) hold by
+    /// construction. The model is validated first (Attr2), so an invalid one
+    /// is refused before any file is touched. Requirement Metadata5 is
+    /// enforced the way [`Self::write_global_metadata`] enforces it: a
+    /// `vector_attributes` file already on disk in a *different* encoding
+    /// refuses the write with [`MetadataViolation::EncodingMismatch`]. A
+    /// same-encoding rewrite is allowed — the model is a plain global
+    /// record, deliberately outside the versioning journal (the
+    /// reserved-tree fence routes global-metadata changes through dedicated
+    /// APIs) and not V3-stamped.
+    pub fn write_attribute_model(&self, model: &AttributeModel) -> Result<PathBuf, CdbError> {
+        model.validate().map_err(AttributionError::from)?;
+        let declared = self.global_metadata()?.encoding;
+        let Some(name) = attribution::file_name_for(declared) else {
+            return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+                declared,
+            )));
+        };
+        let dir = self.layout.global_metadata_dir();
+        for (extension, found) in [
+            ("json", MetadataEncoding::Json),
+            ("xml", MetadataEncoding::Xml),
+        ] {
+            if found != declared {
+                let other = format!("{}.{extension}", attribution::VECTOR_ATTRIBUTES_STEM);
+                if dir.join(&other).is_file() {
+                    return Err(CdbError::Metadata(MetadataError::Violation(
+                        MetadataViolation::EncodingMismatch {
+                            file: other,
+                            declared,
+                            found,
+                        },
+                    )));
+                }
+            }
+        }
+        let content = if declared == MetadataEncoding::Xml {
+            model.to_xml_string()?
+        } else {
+            model.to_json_string()?
+        };
+        let path = dir.join(&name);
+        fs::write(&path, content).map_err(AttributionError::Io)?;
+        Ok(path)
     }
 
     /// Writes a resource (dataset) metadata record (§7.9.4.2) to
@@ -2457,5 +2536,180 @@ mod tests {
         assert_eq!(manifest.sequence, 2, "sequence reused");
         assert_eq!(manifest.id.to_string(), "v000002");
         assert_eq!(store.versions().unwrap().len(), 2, "dir absorbed");
+    }
+
+    /// A small valid attribute model for the facade tests — the spec's
+    /// fixture head plus PAttr1's supplementary URI.
+    fn street_model() -> AttributeModel {
+        AttributeModel {
+            schema_uri: Some("https://example.org/schemas/street.xsd".to_owned()),
+            attributes: vec![
+                crate::attribution::AttributeDef {
+                    id: "1".to_owned(),
+                    name: "StreetName".to_owned(),
+                    description: "Name of a street as an alphanumeric string".to_owned(),
+                },
+                crate::attribution::AttributeDef {
+                    id: "2".to_owned(),
+                    name: "StreetType".to_owned(),
+                    description: "Type of street as an alphanumeric string".to_owned(),
+                },
+            ],
+        }
+    }
+
+    /// Requirements Attr1-B/C + Attr2 (§7.1.2) — the facade writes the
+    /// model to `global_metadata/vector_attributes.json` in the declared
+    /// encoding and reads back an equal, valid model.
+    #[test]
+    fn req_core_attribute_model_facade_roundtrip_json() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+
+        let model = street_model();
+        let path = store.write_attribute_model(&model).unwrap();
+        assert_eq!(
+            path,
+            store.root().join("global_metadata/vector_attributes.json")
+        );
+        assert!(path.is_file());
+        assert_eq!(store.attribute_model().unwrap(), Some(model));
+    }
+
+    /// Requirements Attr1-B/C + Attr2 (§7.1.2) — the XML twin: the
+    /// declared encoding picks `vector_attributes.xml`.
+    #[test]
+    fn req_core_attribute_model_facade_roundtrip_xml() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::xml(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+
+        let model = street_model();
+        let path = store.write_attribute_model(&model).unwrap();
+        assert_eq!(
+            path,
+            store.root().join("global_metadata/vector_attributes.xml")
+        );
+        assert_eq!(store.attribute_model().unwrap(), Some(model));
+    }
+
+    /// Attribution is an optional class (§7.1.2): a datastore without a
+    /// `vector_attributes` file reads `Ok(None)`.
+    #[test]
+    fn req_core_attribute_model_facade_absent_none() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+        assert_eq!(store.attribute_model().unwrap(), None);
+    }
+
+    /// The read path validates (§7.1.2.3): malformed bytes are a
+    /// Serialization failure and a parseable file violating Attr2 is a
+    /// Violation — no invalid model escapes the facade.
+    #[test]
+    fn req_core_attribute_model_facade_invalid_file_errors() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+        let path = store.root().join("global_metadata/vector_attributes.json");
+
+        fs::write(&path, "not json").unwrap();
+        assert!(matches!(
+            store.attribute_model(),
+            Err(CdbError::Attribution(AttributionError::Serialization(_)))
+        ));
+
+        fs::write(
+            &path,
+            r#"{ "attributes": [
+                { "id": "1", "name": "A", "description": "a" },
+                { "id": "1", "name": "B", "description": "b" }
+            ] }"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.attribute_model(),
+            Err(CdbError::Attribution(AttributionError::Violation(
+                crate::attribution::AttributionViolation::DuplicateId { .. }
+            )))
+        ));
+    }
+
+    /// The writer validates first (§7.1.2): an invalid model — here the
+    /// empty model — is refused before any file is touched.
+    #[test]
+    fn req_core_attribute_model_facade_write_refuses_invalid() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+
+        let empty = AttributeModel {
+            schema_uri: None,
+            attributes: Vec::new(),
+        };
+        assert!(matches!(
+            store.write_attribute_model(&empty),
+            Err(CdbError::Attribution(AttributionError::Violation(
+                crate::attribution::AttributionViolation::EmptyModel
+            )))
+        ));
+        assert!(
+            !store
+                .root()
+                .join("global_metadata/vector_attributes.json")
+                .exists(),
+            "nothing written"
+        );
+    }
+
+    /// Requirement Metadata5 — `write_attribute_model` refuses to write
+    /// beside a `vector_attributes` file in a different encoding, the
+    /// same single-encoding guard as `write_global_metadata`.
+    #[test]
+    fn req_core_metadata_encoding_write_attribute_model_refuses_switch() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("doi:cdb.demo", "Demo", "A demonstration datastore", "CAE"),
+        )
+        .unwrap();
+        let stray = store.root().join("global_metadata/vector_attributes.xml");
+        fs::write(&stray, "<AttributeModel/>").unwrap();
+
+        assert!(matches!(
+            store.write_attribute_model(&street_model()),
+            Err(CdbError::Metadata(MetadataError::Violation(
+                MetadataViolation::EncodingMismatch { .. }
+            )))
+        ));
+        assert!(
+            !store
+                .root()
+                .join("global_metadata/vector_attributes.json")
+                .exists(),
+            "refused before writing"
+        );
     }
 }
