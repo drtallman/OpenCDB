@@ -513,7 +513,9 @@ for Phase 9).
   GNOSIS profile and the interior-whitespace URI tightening, then
   `tests/full_conformance.rs`, `tests/conformance_matrix.rs` and
   `docs/CONFORMANCE.md`, the `validate.rs` split into `validate/`, and the
-  single post-review fix wave; 335 tests (309 unit + 25 integration + 1 doc);
+  post-review fix wave, and a final fix wave over an adversarial oracle
+  harness (3,000 randomized datastores) plus the whole-branch review;
+  343 tests (317 unit + 25 integration + 1 doc);
   tagged `v1.0.0`. As-built notes: `CdbViolation` forgoes its `Eq` derive
   (`TilingViolation` carries `f64`); `ClassFindings` is
   `#[non_exhaustive]` and carries a three-state `ContentCoverage` rather
@@ -528,7 +530,13 @@ for Phase 9).
   deliberately narrow profile in `tests/full_conformance.rs`; finding codes
   are normalized absolute and hyphen-joined (the draft is inconsistent), must
   discriminate from the sweep's own `DeclarationMismatch`, and the nine codes
-  with no draft slug are listed in `docs/CONFORMANCE.md` §5.1.
+  with no draft slug are listed in `docs/CONFORMANCE.md` §5.1. The final wave
+  made the sweep mark `unchecked` rather than `checked` (an undeclared class
+  had no stage run), read the attribute model under either Attr1-C extension
+  (the requirement is encoding-independent), canonicalize on write as the
+  parse paths already did, sort each directory's entries so a report does not
+  depend on `read_dir` order, and enable `serde_json`'s `float_roundtrip` so
+  `DomainSet`'s four f64 elements are bit-exact in JSON as they were in XML.
 - **The plan is complete.** Everything further is TDD_PLAN §8 territory:
   separate projects, each with its own brainstorm→spec→plan cycle.
 

@@ -34,9 +34,15 @@ Run any cited test with `cargo test <name>`; run the whole suite with
 
 **SHALL vs SHOULD is carried by the finding kind, never by the code.** A
 `CdbViolation` is a SHALL failure and decides conformance; a `CdbWarning` is a
-SHOULD finding and never does. The draft writes several of its SHOULDs as
-lettered parts *inside* requirement boxes (Name1-A, Name3-B, Name7-B, Name4),
-so those warnings carry a `/req/core/` code and are warnings all the same.
+SHOULD finding and never does. Four warnings carry a `/req/core/` code, for
+three distinct reasons — none of them a promotion or demotion:
+
+| Warning | Why its code says `/req/` |
+|---|---|
+| Name1-A (`/req/core/name-unicode-A`) | A SHOULD in a box **labelled Recommendation Name1** that the draft nonetheless prefixes `/req/` (errata row 19). The code reproduces the draft. |
+| Rec Name4 (`/req/core/name-empty-folders-A`) | Same defect, same box family (errata row 19). |
+| Name3-B (`/req/core/name-language-B`) | A SHOULD written as a lettered part *inside* a genuine **Requirement** box — the one case that really is that. |
+| Name7-B (`/req/core/name-extensions-B`) | Not a SHOULD at all: a **SHALL** ("industry standard extensions SHALL be used") whose predicate no validator can decide. Reported as a warning a profile silences by vouching for the extension (`known_extensions`); the requirement's force is untouched. |
 
 ---
 
@@ -161,7 +167,7 @@ It is the only cross-class normalization in the crate.
 | Metadata6 — UTC, RFC 3339 §5.6 | `/req/core/metadata-datetime`, `/req/core/metadata-datetime-A` | `metadata::temporal` | `req_core_metadata_datetime_accepts_utc_forms`, `req_core_metadata_datetime_rejects_non_utc`, `req_core_metadata_datetime_rejects_malformed`, `req_core_metadata_datetime_formats_canonical_z`, `req_core_metadata_datetime_enforced_on_deserialize` |
 | Metadata7 — temporal intervals (incl. half-bounded) | `/req/core/metadata-temporal-interval` | `metadata::temporal::Temporal` (its `Interval` arm), `metadata::temporal::parse_datetime` | `req_core_metadata_temporal_instant`, `req_core_metadata_temporal_bounded_interval`, `req_core_metadata_temporal_half_bounded`, `req_core_metadata_temporal_rejects_invalid` |
 | Metadata8 — one unit of measure, element `uom` | `/req/core/metadata-uom-measure` | `UnitOfMeasure` | `req_core_metadata_uom_values`, `req_core_metadata_standard_and_uom_pinned` |
-| §7.9.4.1 — global element table | `/req/core/metadata-` (`MissingElement`) | `GlobalMetadata`, `GlobalMetadataBuilder` | `req_core_metadata_global_builder_requires_mandatory`, `req_core_metadata_global_wire_names` |
+| §7.9.4.1 — global element table | `/req/core/metadata-` (`MissingElement`) | `GlobalMetadata`, `GlobalMetadataBuilder` | `req_core_metadata_global_builder_requires_mandatory`, `req_core_metadata_global_wire_names`, `req_core_metadata_malformed_record_is_named` |
 | §7.9.4.2 — resource element table and its four conditional elements | `/req/core/metadata-` | `ResourceMetadata` (`uom`, `domainSet`, `windingOrder`; `tilingScheme` on the global record) | `req_core_geometry_mvalue_resource_uom_roundtrip`, `req_core_coverage_domainset_resource_roundtrip`, `req_core_topology_winding_resource_roundtrip`, `req_core_tiling_tilingscheme_global_roundtrip` |
 
 The §7.9.4.2 conditional-element mechanism is how four optional classes make
@@ -186,9 +192,9 @@ content sweep reads from a record (§2.4).
 | Requirement | Code | API | Tests |
 |---|---|---|---|
 | Attr1-A — a profile implementing attribution specifies a model | `/req/core/attribute-model-A` | `ApplicationProfile::attribute_model`, `AttributionViolation::EmptyModel`, `AttributionViolation::Malformed` | `req_core_attribute_model_profile_default_none`, `req_core_attribute_model_profile_declares`, `req_core_attribute_model_content_empty_model_rejected` |
-| Attr1-B — the model lives in `global_metadata/` | — | `CdbDatastore::write_attribute_model`, `CdbDatastore::attribute_model` | `req_core_attribute_model_facade_roundtrip_json`, `req_core_attribute_model_facade_roundtrip_xml`, `req_core_attribute_model_facade_absent_none`, `req_core_attributes_roundtrip_json`, `req_core_attributes_roundtrip_xml` |
-| Attr1-C — the file is named `vector_attributes.<enc>`, literally | `/req/core/attribute-model-C` | `attribution::parse_file_name`, `attribution::file_name_for`, `AttributionViolation::InvalidFileName` | `req_core_attribute_model_file_name_rules`, `req_core_attribute_model_file_name_swept`, `req_core_attribute_model_mis_cased_stem_swept` |
-| Attr1 — the profile's model matches the datastore's | `/req/core/attribute-model` | the content sweep's cross-check | `req_core_attribute_model_declaration_mismatch_detected` |
+| Attr1-B — the model lives in `global_metadata/` | — | `CdbDatastore::write_attribute_model`, `CdbDatastore::attribute_model` | `req_core_attribute_model_facade_roundtrip_json`, `req_core_attribute_model_facade_roundtrip_xml`, `req_core_attribute_model_facade_absent_none`, `req_core_attribute_model_facade_write_is_canonical`, `req_core_attributes_roundtrip_json`, `req_core_attributes_roundtrip_xml` |
+| Attr1-C — the file is named `vector_attributes.json` or `vector_attributes.xml`, literally (the requirement names both extensions and does **not** defer to the datastore's metadata encoding — a wrong-encoding model is Metadata5's finding, and is still read and judged as a model) | `/req/core/attribute-model-C` | `attribution::parse_file_name`, `attribution::file_name_for`, `AttributionViolation::InvalidFileName` | `req_core_attribute_model_file_name_rules`, `req_core_attribute_model_file_name_swept`, `req_core_attribute_model_mis_cased_stem_swept`, `req_core_attribution_stage_reads_model_of_either_extension` |
+| Attr1 — the profile's model matches the datastore's (both sides compared **canonically**, and `write_attribute_model` writes canonically, so a datastore this crate produced is never convicted against the model it was written from) | `/req/core/attribute-model` | the content sweep's cross-check, `CdbDatastore::write_attribute_model` | `req_core_attribute_model_declaration_mismatch_detected`, `req_core_attribute_model_declaration_compared_canonically`, `req_core_attribute_model_facade_write_is_canonical` |
 | Attr2-B — unique, non-blank ids | `/req/core/attribute-model-content-B` | `AttributeModel::validate`, `AttributionViolation::DuplicateId`, `AttributionViolation::EmptyId` | `req_core_attribute_model_content_duplicate_id_rejected`, `req_core_attribute_model_content_validate_canonicalizes_ids`, `req_core_attribute_model_content_whitespace_ids_are_not_distinct`, `req_core_attribute_model_content_numeric_id_message`, `req_core_attribute_model_content_integer_ids_parse` |
 | Attr2-C / Attr2-D — name and description per attribute | `/req/core/attribute-model-content-C`, `/req/core/attribute-model-content-D` | `AttributeDef`, `AttributionViolation::EmptyName`, `AttributionViolation::EmptyDescription` | `req_core_attribute_model_content_fixture_validates`, `req_core_attribute_model_content_blank_elements_rejected` |
 | PAttr1 (permission) — a supplementary external schema URI | `/per/core/attribute-schema-uri` | `AttributeModel::schema_uri`, `AttributionViolation::InvalidSchemaUri` | `per_core_attribute_schema_uri_shapes`, `per_core_attribute_schema_uri_rejects_interior_whitespace` |
@@ -203,7 +209,7 @@ content sweep reads from a record (§2.4).
 | Coverages4 — the coverage CRS is the datastore CRS | `/req/core/coverage-crs` | `CoverageViolation::CoverageCrsMismatch` | `req_core_coverage_crs_matches_datastore` |
 | Coverages5 — resource metadata present | `/req/core/coverage-min-metadata` | `CoverageViolation::MissingResourceMetadata` | `req_core_coverage_min_metadata_required` |
 | Coverages6-A — mandatory `uom` | `/req/core/coverage-domainSet-A` | `DomainSet::uom`, `CoverageViolation::EmptyUom` | `req_core_coverage_domainset_uom_mandatory` |
-| Coverages6-B/C/D/E — precision, scale, offset, `data_null` | `/req/core/coverage-domainSet` | `DomainSet`, `DomainSet::decode_value` | `req_core_coverage_domainset_defaults`, `req_core_coverage_scale_offset_never_applies_to_data_null` |
+| Coverages6-B/C/D/E — precision, scale, offset, `data_null` | `/req/core/coverage-domainSet` | `DomainSet`, `DomainSet::decode_value` | `req_core_coverage_domainset_defaults`, `req_core_coverage_scale_offset_never_applies_to_data_null`, `req_core_coverage_domainset_floats_are_bit_exact_across_json_roundtrip` |
 | Coverages6-F — grid cell encoding | `/req/core/coverage-domainSet-F` | `GridCellEncoding`, `GridCorner`, `CoverageViolation::CornerWithoutWhichCorner` | `req_core_coverage_domainset_corner_requires_which_corner` |
 | Coverages6-H — quantity definition | `/req/core/coverage-domainSet-H` | `CoverageViolation::MissingQuantityDefinition` | `req_core_coverage_domainset_quantity_definition_conditional` |
 | §7.2.6.1 (SHOULD) — a `uom` that is not a URI | `/req/core/coverage-domainSet-A` | `CoverageWarning::UomLooksLikeUri` | `rec_core_coverage_uom_uri_discouraged` |
@@ -281,7 +287,7 @@ a decision reaffirmed in three consecutive phases, not an oversight.
 | V5 — file replacement, byte-faithful | `/req/core/versioning-collection` | the archive step of the apply pipeline | `req_core_versioning_file_replacement_byte_faithful`, `req_core_versioning_root_manifest_asset_archives_safely` |
 | V6 — capture state changes | `/req/core/versioning-transitory` | `PendingCollection::set_state`/`clear_state`, `CdbDatastore::state_of`, `versioning::state_from_manifests`, `VersioningViolation::EmptyState`, `VersioningViolation::AssetStateMissing` | `req_core_versioning_transitory_set_and_clear_state`, `req_core_versioning_state_from_manifests_timeline` |
 | §7.14 intro — rollback (beyond the boxes) | `/req/core/versioning` | `CdbDatastore::rollback_collection[_at]`, `CdbDatastore::rollback_to[_at]`, `InverseOp`, `VersioningViolation::NotLatestCollection`, `VersioningViolation::UnknownCollection` | `req_core_versioning_inverse_ops_crud`, `req_core_versioning_inverse_ops_states`, `req_core_versioning_rollback_latest_only`, `req_core_versioning_rollback_collection_restores_bytes`, `req_core_versioning_rollback_to_restores_point` |
-| (the journal is not user content) | — | the conformance walk skips the reserved `versions/` subtree | `req_core_versioning_journal_dir_guard_folds_case` |
+| (the journal is not user content) | — | the conformance walk skips the reserved `versions/` subtree, and its one journal guard answers for both the Versioning stage and the content sweep | `req_core_versioning_journal_dir_guard_folds_case`, `req_core_versioning_journal_guard_agrees_across_stage_and_sweep` |
 
 §7.14 contains no SHOULD-level text, so this class has **no warning type**.
 
@@ -291,7 +297,8 @@ a decision reaffirmed in three consecutive phases, not an oversight.
 |---|---|---|---|
 | A profile declares its conformance classes; the mandatory five are required | `/conf/minimal-core` | `ApplicationProfile::conformance_classes`, `CdbViolation::MissingConformanceDeclaration` | `conf_core_minimal_mandatory_classes_enumerated`, `conf_core_conformance_uri_pattern`, `conf_core_minimal_profile_declaration_inspection`, `conf_core_minimal_missing_declaration_fails_class`, `conf_core_minimal_simulation_declares_all_mandatory`, `conf_core_minimal_gnosis_declares_all_classes`, `req_core_conformance_eleven_classes_partitioned`, `req_core_conformance_optional_class_uris` |
 | The validator runs one stage per declared class | — | `conformance::validate`, `CdbDatastore::validate` | `conf_core_minimal_full_datastore_all_mandatory_classes_pass`, `conf_core_declared_optional_class_with_no_content_passes` |
-| Undeclared content is reported under its class | the class's requirements URI | the content sweep, `CdbViolation::DeclarationMismatch` | `conf_core_sweep_reports_undeclared_content`, `req_core_conformance_restricted_profile_reports_declaration_mismatch` |
+| Undeclared content is reported under its class, and marked `unchecked` — the class had no stage run, so nothing judged the content | the class's requirements URI | the content sweep, `CdbViolation::DeclarationMismatch`, `ContentCoverage::Unchecked` | `conf_core_sweep_reports_undeclared_content`, `req_core_conformance_restricted_profile_reports_declaration_mismatch`, `conf_core_sweep_records_content_without_claiming_a_check` |
+| A report is a function of the datastore, not of the host filesystem: the walk visits each directory in name order | — | `conformance::validate`'s naming walk | `conf_core_walk_visits_entries_in_name_order` |
 | Findings carry class, severity, and a stable code | — | `CdbViolation::class`/`code`, `CdbWarning::class`/`code`, `ClassFindings`, `ConformanceReport` | `req_core_conformance_violation_codes_are_stable_uris`, `req_core_conformance_warning_codes_are_stable_uris`, `req_core_conformance_optional_class_violations_wrap`, `req_core_conformance_optional_class_warnings_wrap` |
 | A report is a serde surface | — | `Serialize` on `ConformanceReport`, `ClassFindings`, both finding kinds; `RequirementsClass` round-trips | `req_core_conformance_report_serializes_by_class`, `req_core_conformance_finding_serializes_flat`, `req_core_conformance_class_token_round_trips` |
 | Profiles vary; the facade is driven by the declaration | — | `ApplicationProfile`, `SimulationProfile`, `GnosisProfile` | `req_core_conformance_full_roundtrip_simulation_profile`, `req_core_conformance_full_roundtrip_gnosis_profile`, `req_core_tiling_extension_tms_gnosis_profile_pins_gnosis_grid` |
@@ -316,6 +323,19 @@ Three normalizations make every code a single whitespace-free token:
    requirement boxes of §7.11, §7.12 and §7.14 drop the leading solidus that
    their own class tables use, and Tiling9 does the reverse (see errata row
    5). One form is used here.
+
+   **The prefix follows the box's own URI, not its label** — that is what
+   "keyed on meaning" means here, and it has exactly two exceptions, both in
+   §7.4: Recommendation Name1 and Recommendation Name4 are labelled
+   recommendations but carry `/req/` URIs (errata row 19). Their codes
+   reproduce what the draft wrote, so this crate emits `/req/core/name-unicode-A`
+   and `/req/core/name-empty-folders-A` as **warnings**. Inventing a `/rec/`
+   spelling for them would make the code unfindable in the document it names.
+   The `code` and the finding's severity are independent, by design (§1).
+
+   Only the *code* is normalized. A finding's **display text** may quote a
+   box's own spelling, including a missing solidus, because prose is free to
+   cite the draft as written; consumers key on `code` and never on text.
 2. **A part letter joins with a hyphen** — the draft puts a part's letter in
    its own table column, so `/req/core/attribute-model-content` + `B` is not
    one token anywhere in the document; this crate writes
@@ -404,6 +424,37 @@ which is too weak to convict a profile. The asymmetry is intentional — `uom`
 is a content marker for the stage and never a conviction for the sweep — and
 `req_core_conformance_restricted_profile_reports_declaration_mismatch` pins it.
 
+**An undeclared class that the sweep convicts reports `unchecked`, not
+`checked`.** Declaration drives which classes get a stage (§2 item 1), so a
+class the profile never declared had *no* stage run: the sweep sees the
+content — a `vector_attributes.*` entry, a `tilingScheme`, a `versions/`
+journal, a `windingOrder` or a `domainSet` — and files the
+`DeclarationMismatch`, but nothing of this crate's judged that content. The
+report says so. A datastore must never report *more* checking because its
+profile declared *less*.
+
+**Round-trip fidelity: exact, with one documented exception.** Everything this
+crate owns — metadata records, the attribute model, versioning manifests and
+archived payload bytes — survives write → reopen → read unchanged, in both
+encodings, and `tests/full_conformance.rs` asserts it. Two details are worth
+recording:
+
+- `DomainSet`'s `precision`, `scale`, `offset` and `data_null`
+  (Coverages6-B/C/D/E) are **bit-exact** across a JSON round trip. That
+  required enabling `serde_json`'s `float_roundtrip` feature: the default
+  parser is a fast approximation that drifts one ULP on roughly 30 % of
+  random `f64` values, and `DomainSet::decode` is `raw * scale + offset`, so a
+  drifted `scale` would silently change every decoded coverage value.
+  `req_core_coverage_domainset_floats_are_bit_exact_across_json_roundtrip`
+  pins it. XML was always exact.
+- **The XML encoding normalizes `\r` to `\n`** inside element text, so a
+  metadata description or keyword containing a carriage return comes back with
+  a line feed in an XML datastore and unchanged in a JSON one. This is not a
+  defect to fix: XML 1.0 §2.11 *requires* a parser to perform that
+  normalization, so no conformant XML writer/reader pair can preserve a bare
+  `\r`. A profile that needs byte-exact control characters in metadata text
+  should choose the JSON encoding.
+
 **The semver guarantee covers the API, not the findings.** See
 `src/lib.rs`'s crate documentation: 1.0 freezes the public API surface, not
 the *content* of a conformance report. A future spec erratum may change what a
@@ -422,8 +473,8 @@ file with the OGC CDB SWG.
 
 | # | Where | Defect | What this crate does |
 |---|---|---|---|
-| 1 | §7.10.2 | The "Requirements Class — Tiling-Abstract" box labels itself `/req/core/geometry-`, a copy-paste from §7.6 that collides with the Geometry class. | Uses `/req/core/tiling`. |
-| 2 | §7.1.2.1 vs §7.4.8, §7.9.3.5 | Requirement Name7's extension table admits `*.xsd` for XML and Metadata5 admits a `gpkg` datastore encoding, while Attr1-C fixes the attribute model's name to `vector_attributes.<ext>` "where `<ext>` is either xml or json". Nothing says which governs `vector_attributes.xsd`, or what an all-`gpkg` datastore's attribute model is called. | Lets both speak: the encoding sweep stays silent, Attr1-C convicts. Without this, an XML datastore could carry an attribute model nothing would ever load and still look clean. A `gpkg`-encoded datastore has no core-readable model at all (`attribution::file_name_for` yields `None`), which counts as no attribution content. |
+| 1 | §7.10.2, §7.11.3, §7.12.3 | The `/req/core/geometry-` copy-paste from §7.6 appears in **three** requirements-class boxes, not one: Tiling-Abstract (spec line 1817), the CDB1GlobalGrid extension (line 1969) and the GNOSISGlobalGrid extension (line 2079) all label themselves with it. Beyond the collision with the Geometry class, it leaves the **two grid extensions indistinguishable from each other by class URI** — which matters directly to §3's `#[non_exhaustive]` note, where those two are named as the likeliest future `RequirementsClass` variants. | Uses `/req/core/tiling` for the abstract class; the two extensions are represented inside it (§4.9) rather than as classes of their own, so no URI has to be invented for them. |
+| 2 | §7.1.2.1 vs §7.4.8, §7.9.3.5 | Requirement Name7's extension table admits `*.xsd` for XML and Metadata5 admits a `gpkg` datastore encoding, while Attr1-C fixes the attribute model's name to `vector_attributes.<ext>` "where `<ext>` is either xml or json". Nothing says which governs `vector_attributes.xsd`, or what an all-`gpkg` datastore's attribute model is called. | Lets both speak: the encoding sweep stays silent, Attr1-C convicts. Without this, an XML datastore could carry an attribute model nothing would ever load and still look clean. The reading is that **Attr1-C is encoding-independent** — it names both extensions and defers to nothing — so `vector_attributes.json` in an XML datastore is a valid Attr1-C name that Metadata5 convicts as the wrong *encoding* while the Attribution stage still reads and judges the model. A `gpkg`-encoded datastore declares no model name of its own (`attribution::file_name_for` yields `None`) and so has no attribution content unless one of the two core spellings is physically present, in which case the same split applies. |
 | 3 | §7.2.2, §7.9 | The Coverages and Metadata module URIs carry a trailing hyphen (`/req/core/coverages-`, `/req/core/metadata-`). | Reproduced verbatim — a trailing hyphen is ugly, not ambiguous. |
 | 4 | §7.6.3 | Geom3's slug is inconsistent: the class table says `/req/core/geometry-zvalue`, the requirement box says `req/core/geometry-zcoordinate` (also missing its leading solidus). | Uses `/req/core/geometry-zvalue`, the class table's spelling. |
 | 5 | §7.10.2, §7.11.3, §7.12.3, §7.14.2–.7 | Requirement box URIs in both grid extensions and in all six versioning boxes are written without the leading solidus their own class tables use; Tiling9 is the mirror image (no solidus in the §7.10.2 class table, solidus in its box). Attribution, by contrast, is solidus-consistent throughout. | Normalized to absolute (§5). |
@@ -437,9 +488,12 @@ file with the OGC CDB SWG.
 | 13 | §7.9.4.2 | There is **no** per-record tileset-metadata signal: no conditional element, and `ResourceType` has the single `Dataset` variant. | See §8 — this crate's one interpretation of a silence. |
 | 14 | §2, Table 1 | Two of the five suggested conformance-class URIs omit the separator after `<name>` (`…/conf/<name>file-naming`, `…/conf/<name>file-structure`); the other three carry it. Annex A's own single URI (`/conf/minimal-core`) is well formed. | Normalized to `http://www.opengis.net/spec/CDB/2.0/conf/<profile>/<class>`. |
 | 15 | §7.2.6 | Coverages6-E assigns `data_null` no default and no mandatory line. | Read as "absent means the coverage has no null value". |
-| 16 | §7.3.1.4, §7.3.1.9 | Both CRS examples are malformed strict WKT-2: a missing comma between the two compound members, and a space before `[` in `COMPOUNDCRS [`. The §7.3.1.9 copy is additionally bracket-unbalanced — it closes `VERTCRS` and leaves `COMPOUNDCRS` open, where the otherwise identical §7.3.1.4 copy closes both. | The WKT-2 reader is comma- and whitespace-lenient, so the spec's own examples parse verbatim. The unbalanced bracket is the one thing leniency cannot cover — an unclosed node is an unreadable document — so the test fixture uses §7.3.1.4's balanced spelling and says so. |
+| 16 | §7.3.1.4, §7.3.1.9 | Both CRS examples are malformed strict WKT-2: a missing comma between the two compound members, and a space before `[` in `COMPOUNDCRS [`. The §7.3.1.9 copy is additionally bracket-unbalanced — it closes `VERTCRS` and leaves `COMPOUNDCRS` open, where the otherwise identical §7.3.1.4 copy (spec line 989) closes both. The two differ in nothing else but the title string (`"I3S Compound CRS"` vs `"CDB Compound CRS"`). | The WKT-2 reader is comma- and whitespace-lenient, so the spec's own examples parse verbatim. The unbalanced bracket is the one thing leniency cannot cover — an unclosed node is an unreadable document — so the `SPEC_COMPOUND` fixture takes **§7.3.1.4's copy whole**, title included: verbatim, with no correction at all. |
 | 17 | §7.1.2.3 | The example attribute table carries a stray closing parenthesis in a description. | Reproduced verbatim in the test fixture. |
 | 18 | §7.4.5 | Recommendation Name4 (avoid empty folders) is a *naming* recommendation that can only be detected by walking the tree. | Emitted by the hierarchy validator and filed under File Structure; its code stays `/req/core/name-empty-folders-A`. |
+| 19 | §7.4.3, §7.4.5 | **Two recommendation boxes carry `/req/` URIs.** Recommendation Name1 is `/req/core/name-unicode` (spec line 1145) and Recommendation Name4 is `/req/core/name-empty-folders` (line 1164), although both boxes are labelled *Recommendation* and both state SHOULDs. Row 8's defect family, inverted: there, SHALL boxes carry `/rec/` prefixes. | Reproduced: both codes keep the `/req/core/` prefix the draft gave them, and both findings are `CdbWarning`s. This is the sole exception to §5 normalization 1, and it is noted there. |
+| 20 | §7.3.1.4, §7.3.1.5 | **CRS5 and CRS6 are the only two boxes in the document carrying a version segment.** Their boxes read `/req/2.0/core/crs/crsMetadata` (spec line 987) and `/req/2.0/core/crs/uom` (line 1024), while the §7.3.1 class table spells both without the `2.0` (lines 958, 960) — as does every other box in the draft. | Normalized to the class-table form, `/req/core/crs/crsMetadata` and `/req/core/crs/uom` (`finding.rs`). A version segment inside a clause URI would also make every code version-dependent, which Annex A's own `/conf/minimal-core` shows is not the draft's intent. |
+| 21 | §7.4.1 vs §7.4.2–.8 | **§7.4 numbers its own naming requirements two different ways.** The §7.4.1 class table (spec lines 1110–1136) reads Name1=`name-spaces`, Rec Name1=`name-unicode`, **Name2**=`name-language`, **Rec Name2**=`name-empty-folders`, **Name3** *and* **Name5** both =`name-ap-guide`, **Name4** *and* **Name6** both =`name-case`, Name7=`name-extensions`. The requirement boxes of §7.4.2–.8 read Name1, Rec Name1, **Name3**=`name-language`, **Rec Name4**=`name-empty-folders`, Name5, Name6=`name-case`, Name7. Same defect family as rows 4, 9 and 10. | **The boxes govern**, here and throughout §4.1: this document's labels are `Name3-A`/`Name3-B` for the language rule, `Rec Name4` for empty folders, `Name5` for the style-guide duty and `Name6` for the case rule. An auditor reading the class table and searching for "Name3-B" will land on `name-ap-guide` instead; that is the draft's disagreement with itself, not this crate's. (Smaller and adjacent: the §7.10.2 class table lists Recommendation Tiling1 as `/req/core/tiling-extension` while its own box, spec line 1932, says `*/rec/core/tiling-extension`; the crate uses the box.) |
 
 ---
 
@@ -525,8 +579,12 @@ Guards are *lookups*, not fences, when the filesystem itself answers the
 question: `GlobalMetadata::read_from`, `StorageCrs::read_from`,
 `CdbDatastore::attribute_model` and the manifest readers probe canonical
 names directly and are deliberately left alone. Where that matters — a
-mis-cased `vector_attributes` or `global_metadata` file — the conformance
-sweep convicts it, which is the right layer.
+mis-cased `vector_attributes` or `global_metadata` file, or a
+`vector_attributes` file spelled with the other encoding's extension — the
+conformance sweep convicts it and the Attribution stage still reads it, which
+is the right layer. The facade stays a canonical-name reader on purpose: it is
+a reader for datastores that *are* conformant, and `validate` is the tool that
+says whether one is.
 
 ---
 
