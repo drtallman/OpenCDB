@@ -12,11 +12,13 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::conformance::RequirementsClass;
+use crate::coverage::CoverageWarning;
 use crate::crs::{CrsViolation, CrsWarning};
 use crate::hierarchy::{HierarchyViolation, HierarchyWarning};
 use crate::links::LinkViolation;
 use crate::metadata::MetadataViolation;
 use crate::naming::{NamingViolation, NamingWarning};
+use crate::tiling::TilingWarning;
 
 /// A datastore-wide SHALL violation, gathering every requirements module's
 /// violation plus the two profile-layer findings Annex A `/conf/minimal-core`
@@ -90,6 +92,14 @@ impl CdbViolation {
 /// recommendation must never masquerade as a failure. Wraps each module's
 /// warning and adds [`CdbWarning::LanguageNotEnglish`] for Recommendation
 /// Name3-B (`/req/core/name-language B`).
+///
+/// Only the modules that *have* SHOULD-level text appear here. Of the six
+/// optional classes just two do — Coverages (§7.2.6.1) and Tiling
+/// (Recommendation Tiling1) — so Attribution (§7.1), Topology (§7.13), and
+/// Versioning (§7.14) have **no** warning variant, and their modules carry no
+/// warning type at all. That is a decision reaffirmed across Phases 11, 12,
+/// and 13, recorded here so it is not mistaken for an oversight: inventing a
+/// warning would promote silence into a recommendation the spec never wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CdbWarning {
@@ -99,6 +109,10 @@ pub enum CdbWarning {
     Hierarchy(HierarchyWarning),
     /// A CRS recommendation finding (spec §7.3).
     Crs(CrsWarning),
+    /// A Coverages recommendation finding (spec §7.2).
+    Coverage(CoverageWarning),
+    /// A Tiling recommendation finding (spec §7.10).
+    Tiling(TilingWarning),
     /// The datastore language is not English (Recommendation Name3-B); English
     /// is recommended for interoperability.
     LanguageNotEnglish { language: String },
@@ -114,6 +128,8 @@ impl CdbWarning {
             }
             CdbWarning::Hierarchy(_) => RequirementsClass::FileStructure,
             CdbWarning::Crs(_) => RequirementsClass::Crs,
+            CdbWarning::Coverage(_) => RequirementsClass::Coverages,
+            CdbWarning::Tiling(_) => RequirementsClass::Tiling,
         }
     }
 }
@@ -136,12 +152,26 @@ impl From<CrsWarning> for CdbWarning {
     }
 }
 
+impl From<CoverageWarning> for CdbWarning {
+    fn from(warning: CoverageWarning) -> Self {
+        CdbWarning::Coverage(warning)
+    }
+}
+
+impl From<TilingWarning> for CdbWarning {
+    fn from(warning: TilingWarning) -> Self {
+        CdbWarning::Tiling(warning)
+    }
+}
+
 impl fmt::Display for CdbWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CdbWarning::Naming(warning) => warning.fmt(f),
             CdbWarning::Hierarchy(warning) => warning.fmt(f),
             CdbWarning::Crs(warning) => warning.fmt(f),
+            CdbWarning::Coverage(warning) => warning.fmt(f),
+            CdbWarning::Tiling(warning) => warning.fmt(f),
             CdbWarning::LanguageNotEnglish { language } => write!(
                 f,
                 "datastore language {language:?}; English is recommended \
@@ -236,5 +266,28 @@ mod tests {
         assert!(language.to_string().contains("name-language"), "{language}");
         assert!(language.to_string().contains("fr"), "{language}");
         assert_eq!(language.class(), RequirementsClass::FileNaming);
+    }
+
+    /// SHALL/SHOULD separation for the optional classes: Coverages (§7.2.6.1)
+    /// and Tiling (Recommendation Tiling1) are the only two carrying
+    /// SHOULD-level text, so they — and only they — fold into [`CdbWarning`].
+    /// §7.1 (Attribution), §7.13 (Topology) and §7.14 (Versioning) contain no
+    /// SHOULD, so they deliberately have no warning variant; their modules
+    /// carry no warning type at all.
+    #[test]
+    fn req_core_conformance_optional_class_warnings_wrap() {
+        let coverage_warning = CoverageWarning::UomLooksLikeUri {
+            uom: "urn:ogc:def:uom:EPSG::9001".to_owned(),
+        };
+        let wrapped: CdbWarning = coverage_warning.clone().into();
+        assert_eq!(wrapped.to_string(), coverage_warning.to_string());
+        assert_eq!(wrapped.class(), RequirementsClass::Coverages);
+
+        let tiling_warning = TilingWarning::NonExtensionScheme {
+            id: "MyOwnGrid".to_owned(),
+        };
+        let wrapped: CdbWarning = tiling_warning.clone().into();
+        assert_eq!(wrapped.to_string(), tiling_warning.to_string());
+        assert_eq!(wrapped.class(), RequirementsClass::Tiling);
     }
 }
