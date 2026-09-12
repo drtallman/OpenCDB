@@ -270,6 +270,38 @@ pub fn file_warnings(name: &str) -> Vec<NamingWarning> {
     warnings
 }
 
+/// The crate-wide case stance in one comparison: **guards fold, requirements
+/// don't.**
+///
+/// This is the *guard* half — ASCII case-insensitive equality for every
+/// comparison that decides **which on-disk thing a name points at**: the
+/// reserved-tree fences ([`crate::versioning`]'s `versions/` journal and the
+/// `global_metadata/` records), reserved-stem detection, convention-directory
+/// recognition, and root-folder matching. On a case-insensitive,
+/// case-preserving filesystem (APFS, NTFS) `/Versions/x` and `/versions/x`
+/// name the same bytes, so a byte-exact fence is no fence at all there;
+/// catching a mis-cased spelling costs nothing, missing it is a hole. The
+/// accepted cost is the mirror image: on a genuinely case-sensitive volume a
+/// real `Versions/` directory is refused as an asset target — which
+/// Requirement Name6 would flag anyway.
+///
+/// The *requirement* half is deliberately **not** folded, and this function
+/// must not be used for it: Requirement Name6's case rule
+/// ([`CaseRule::matches`], and the [`StyleGuide::is_reserved`] exemption that
+/// gates it) is *about* case, so folding it would make it vacuous;
+/// Requirement Attr1-C's literal file name
+/// ([`crate::attribution::parse_file_name`]) is a literal mandate;
+/// attribute-id uniqueness is byte-exact after trimming (Requirement Attr2);
+/// and metadata element values are data, not paths.
+///
+/// Folding is ASCII-only. Full Unicode case folding needs tables this crate
+/// has no business carrying, and CDB names are ASCII by construction
+/// (Recommendation Name1-B, §7.4.3, which forbids the punctuation that would
+/// otherwise invite non-ASCII spellings and which this module warns about).
+pub(crate) fn guard_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
 /// The naming style guide an application profile SHALL define
 /// (Requirement Name5, `/req/core/name-ap-guide`, §7.4.6). Carries the
 /// datastore-wide case rule (Name6) and language (Name3).
@@ -320,6 +352,13 @@ impl StyleGuide {
         self.reserved_names.insert(name.into());
     }
 
+    /// Whether `stem` is spec-mandated and therefore exempt from the Name6
+    /// case rule. Byte-exact, deliberately: this gate is the *requirement*
+    /// half of the crate's case stance (see the crate-internal `guard_eq`), and
+    /// exempt `Global_Metadata` too — making Name6 vacuous for precisely the
+    /// names the spec mandates verbatim, which is the opposite of what the
+    /// exemption is for. A mis-cased reserved name is ordinary content as far
+    /// as this check goes, and is judged by the case rule like any other.
     pub fn is_reserved(&self, stem: &str) -> bool {
         self.reserved_names.contains(stem)
     }
@@ -363,6 +402,45 @@ impl Default for StyleGuide {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guard half of the crate's case stance — [`guard_eq`] folds ASCII
+    /// case for path guards, and folds **ASCII only**: a `to_lowercase()`
+    /// implementation would also fold `É`/`é`, dragging in Unicode case
+    /// tables this crate deliberately does not carry.
+    #[test]
+    fn req_core_name_guard_eq_folds_ascii_case_only() {
+        for (a, b) in [
+            ("Versions", "versions"),
+            ("GLOBAL_METADATA", "global_metadata"),
+            ("Vector_Attributes", "vector_attributes"),
+            ("CDB", "cdb"),
+            ("MeTaDaTa", "metadata"),
+        ] {
+            assert!(guard_eq(a, b), "{a} vs {b}");
+        }
+        assert!(!guard_eq("versionz", "versions"));
+        assert!(!guard_eq("versions2", "versions"));
+        // ASCII-only, asserted rather than assumed.
+        assert!(!guard_eq("caf\u{c9}", "caf\u{e9}"));
+    }
+
+    /// §7.4.7 Requirement Name6 — the *requirement* half of the split rule.
+    /// The case rule itself, and the reserved-name exemption that gates it,
+    /// stay byte-exact: folding either would make Name6 vacuous for exactly
+    /// the names the spec mandates verbatim, so a `Global_Metadata` folder
+    /// would escape unremarked instead of drawing a case finding.
+    #[test]
+    fn req_core_name_case_rule_is_not_folded() {
+        assert!(!CaseRule::PascalCase.matches("roadNetwork"));
+        assert!(!CaseRule::SnakeCase.matches("Road_Network"));
+        let guide = StyleGuide::new(CaseRule::PascalCase, "en");
+        assert!(guide.is_reserved("global_metadata"));
+        assert!(!guide.is_reserved("Global_Metadata"));
+        assert!(matches!(
+            guide.validate_component("Global_Metadata.json"),
+            Err(NamingViolation::CaseRuleViolation { .. })
+        ));
+    }
 
     /// §7.4.2 Requirement Name1 `/req/core/name-spaces`.
     #[test]

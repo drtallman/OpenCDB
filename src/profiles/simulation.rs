@@ -165,15 +165,24 @@ impl ApplicationProfile for SimulationProfile {
         RequirementsClass::ALL.to_vec()
     }
 
-    /// A path is a resource-metadata record when its parent component is
-    /// exactly the `metadata` convention directory and its extension is one
-    /// of the Metadata5 encodings (ASCII case-insensitive). See
-    /// [`Self::resource_metadata_path`] for the forward mapping.
+    /// A path is a resource-metadata record when its parent component is the
+    /// `metadata` convention directory and its extension is one of the
+    /// Metadata5 encodings. Both matches are ASCII case-insensitive: this is
+    /// a path *guard* (`naming::guard_eq`), and on a case-insensitive
+    /// filesystem `Metadata/` is the same directory — a byte-exact
+    /// recognizer would leave every record inside it unread, with no
+    /// Metadata and no Links findings at all. Whole components only, so a
+    /// directory that merely begins the same way is ordinary content. See
+    /// [`Self::resource_metadata_path`] for the forward mapping, which always
+    /// emits the canonical lowercase spelling.
     fn is_resource_metadata(&self, logical_path: &str) -> bool {
         let relative = logical_path.strip_prefix('/').unwrap_or(logical_path);
         let mut components = relative.rsplit('/');
         let file_name = components.next().unwrap_or_default();
-        if components.next() != Some(RESOURCE_METADATA_DIR) {
+        if !components
+            .next()
+            .is_some_and(|dir| naming::guard_eq(dir, RESOURCE_METADATA_DIR))
+        {
             return false;
         }
         match naming::split_extension(file_name).1 {
@@ -329,6 +338,25 @@ mod tests {
         assert!(!json.is_resource_metadata("/Tiles/RoadNetwork.gpkg"));
 
         json.style_guide().validate_path(&record).unwrap();
+    }
+
+    /// §7.4.6 Requirement Name5 with the crate's case stance — recognizing
+    /// the `metadata` convention directory is a *guard*, so it folds ASCII
+    /// case. On a case-insensitive filesystem `Metadata/` is the same
+    /// directory, and a byte-exact recognizer would leave every record in it
+    /// unread — no Metadata and no Links findings at all. Whole components
+    /// only: a directory that merely begins the same way is ordinary content.
+    #[test]
+    fn req_core_name_ap_guide_resource_metadata_dir_folds_case() {
+        let json = SimulationProfile::json();
+        for path in [
+            "/Tiles/Metadata/RoadNetwork.json",
+            "/Tiles/METADATA/RoadNetwork.JSON",
+            "/Tiles/MetaData/RoadNetwork.xml",
+        ] {
+            assert!(json.is_resource_metadata(path), "{path}");
+        }
+        assert!(!json.is_resource_metadata("/Tiles/MetadataRecords/RoadNetwork.json"));
     }
 
     /// Requirement Name7-B (§7.4.8): the profile vouches for the industry-

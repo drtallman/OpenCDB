@@ -1526,6 +1526,79 @@ mod tests {
         assert_eq!(store.versions().unwrap().len(), 1, "journal untouched");
     }
 
+    /// Finding C2 (§7.14.2) under the crate's case stance — a *mis-cased*
+    /// reserved-tree target is refused too.
+    ///
+    /// The refusal comes from the string guard, which runs before any path
+    /// resolution, so the outcome is identical on a case-sensitive and a
+    /// case-insensitive filesystem — and the test is written so it cannot
+    /// pass for the wrong reason on either. It probes which regime it is
+    /// running in and reports that in the failure message; on a
+    /// case-insensitive, case-preserving volume the probe shows the
+    /// mis-cased spelling reaching the very same journal manifest, which
+    /// makes the guard the only thing standing between a collection and the
+    /// journal. Both regimes then assert the *specific*
+    /// `AssetInReservedTree` variant — a case-sensitive host that merely
+    /// failed to find the file would report `AssetMissing` instead — and
+    /// the manifest's bytes are compared before and after, so a
+    /// case-insensitive host cannot let a write through unnoticed.
+    #[test]
+    fn req_core_versioning_reserved_tree_mis_cased_assets_rejected() {
+        let (_tmp, store) = versioned_store();
+        store
+            .apply_collection_at(
+                PendingCollection::new().create("/Tiles/RoadNetwork.gpkg", *b"road-bytes"),
+                ts("2026-08-30T10:00:00Z"),
+            )
+            .unwrap();
+        let manifest = store
+            .root()
+            .join("versions")
+            .join("v000001")
+            .join("manifest.json");
+        let before = fs::read(&manifest).unwrap();
+        let global = store
+            .layout()
+            .global_metadata_dir()
+            .join("global_metadata.json");
+        let global_before = fs::read(&global).unwrap();
+
+        // Regime probe: does this host fold case itself?
+        let host_folds = store
+            .root()
+            .join("Versions")
+            .join("v000001")
+            .join("manifest.json")
+            .is_file();
+
+        for asset in [
+            "/Versions/v000001/manifest.json",
+            "/VERSIONS/v000001/manifest.json",
+            "/Global_Metadata/global_metadata.json",
+        ] {
+            match store.apply_collection_at(
+                PendingCollection::new().replace(asset, *b"forged"),
+                ts("2026-08-30T11:00:00Z"),
+            ) {
+                Err(CdbError::Versioning(VersioningError::Violation(
+                    VersioningViolation::AssetInReservedTree {
+                        asset: reported, ..
+                    },
+                ))) => assert_eq!(reported, asset),
+                other => panic!(
+                    "{asset}: expected AssetInReservedTree (host folds case: {host_folds}), got {other:?}"
+                ),
+            }
+        }
+        assert_eq!(fs::read(&manifest).unwrap(), before, "journal bytes intact");
+        assert_eq!(
+            fs::read(&global).unwrap(),
+            global_before,
+            "global record bytes intact"
+        );
+        assert_eq!(store.versions().unwrap().len(), 1, "journal untouched");
+    }
+
     /// Finding C3 (§7.14.3) — a `v######` dir without a manifest is an
     /// uncommitted apply: `versions()` skips it, and the next apply reuses
     /// its sequence and absorbs the dir.

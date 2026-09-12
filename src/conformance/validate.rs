@@ -13,12 +13,12 @@ use crate::crs::{CrsError, StorageCrs};
 use crate::datastore::{CdbDatastore, path_extension};
 use crate::error::CdbError;
 use crate::geometry;
-use crate::hierarchy::HierarchyError;
+use crate::hierarchy::{GLOBAL_METADATA_DIR, HierarchyError};
 use crate::metadata::{
     GlobalMetadata, MetadataError, MetadataViolation, ResourceMetadata, encoding_violations,
 };
 use crate::naming::{
-    NamingWarning, StyleGuide, component_warnings, file_warnings, split_extension,
+    NamingWarning, StyleGuide, component_warnings, file_warnings, guard_eq, split_extension,
 };
 use crate::profiles::ApplicationProfile;
 use crate::tiling::{self, TilingScheme};
@@ -89,11 +89,9 @@ pub fn validate(
     // findings and collecting the file inventory the later stages reuse.
     let guide = profile.style_guide();
     let known_extensions = profile.known_extensions();
-    let global_metadata_dir = datastore.layout().global_metadata_dir();
     let mut signals = ContentSignals::default();
     let (global_metadata_files, file_logical_paths) = {
         let mut walk = NamingWalk {
-            global_metadata_dir: &global_metadata_dir,
             guide: &guide,
             known_extensions: &known_extensions,
             report: &mut report,
@@ -803,9 +801,6 @@ fn validate_versioning(
 /// external-resource links (Permission PFile1) are safe. Non-UTF-8 names are
 /// lossily decoded via [`std::ffi::OsStr::to_string_lossy`] before validation.
 struct NamingWalk<'a> {
-    /// The physical `global_metadata/` directory, so its top-level files can be
-    /// picked out for the Metadata5 sweep.
-    global_metadata_dir: &'a Path,
     /// The profile's style guide (built once), applied to every name.
     guide: &'a StyleGuide,
     /// Extensions the profile vouches for (Name7-B); their `NonSpecExtension`
@@ -823,10 +818,23 @@ struct NamingWalk<'a> {
     file_logical_paths: Vec<String>,
 }
 
+/// Guard: does `dir_logical` name the datastore root's `global_metadata/`
+/// folder (Requirement File6, §7.5.7)? ASCII case-folded per the crate's case
+/// stance ([`crate::naming::guard_eq`]) — on a case-insensitive filesystem
+/// `Global_Metadata/` *is* that folder, and a byte-exact test would leave the
+/// Metadata5 encoding sweep and the Attr1 content signal blind to everything
+/// inside it. Only the root's own child qualifies: a nested
+/// `Tiles/global_metadata/` is ordinary content, as File6 intends.
+fn is_global_metadata_dir(dir_logical: &str) -> bool {
+    let relative = dir_logical.trim_start_matches('/');
+    !relative.is_empty() && guard_eq(relative, GLOBAL_METADATA_DIR)
+}
+
 impl NamingWalk<'_> {
     /// Walks `dir`, whose logical path is `dir_logical` (empty for the root, so
     /// its children read as `/name`).
     fn walk(&mut self, dir: &Path, dir_logical: &str) -> io::Result<()> {
+        let in_global_metadata = is_global_metadata_dir(dir_logical);
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let file_type = entry.file_type()?;
@@ -843,14 +851,19 @@ impl NamingWalk<'_> {
                 for warning in filter_known(file_warnings(&name), self.known_extensions) {
                     self.report.record_warning(warning.into());
                 }
-                if dir == self.global_metadata_dir {
+                if in_global_metadata {
                     self.global_metadata_files.push(name.to_string());
                     // Sweep signal: an attribute-model file lives at the top
                     // of `global_metadata/` (Requirement Attr1-B). The stem
                     // is the signal, not the whole name — a mis-named file is
                     // precisely what the sweep exists to catch, and
-                    // Requirement Attr1-C then judges the name.
-                    if split_extension(&name).0 == VECTOR_ATTRIBUTES_STEM {
+                    // Requirement Attr1-C then judges the name. Finding the
+                    // file is a guard, so the stem match folds ASCII case;
+                    // judging the name is a requirement, so
+                    // `attribution::parse_file_name` stays byte-exact. That
+                    // pairing is what convicts `Vector_Attributes.json`
+                    // rather than ignoring it.
+                    if guard_eq(split_extension(&name).0, VECTOR_ATTRIBUTES_STEM) {
                         self.signals.attribute_model_files.push(name.to_string());
                     }
                 }
@@ -866,10 +879,14 @@ impl NamingWalk<'_> {
                 // crate-persisted under every case rule, and its archive
                 // mirrors were name-checked at their live locations —
                 // [`CdbDatastore::versions`] validates the journal itself
-                // (parse + contiguity), so the walk does not descend.
+                // (parse + contiguity), so the walk does not descend. The
+                // name match is a guard and folds ASCII case: on a
+                // case-insensitive filesystem `Versions/` IS the journal, and
+                // descending into it would name-check the crate's own
+                // `v000001/manifest.json` against the profile's case rule.
                 let journal = file_type.is_dir()
                     && dir_logical.is_empty()
-                    && name == versioning::VERSIONS_DIR;
+                    && guard_eq(&name, versioning::VERSIONS_DIR);
                 if journal {
                     // Sweep signal: the journal's existence is Versioning's
                     // content, seen here as a directory entry under the root.
@@ -956,9 +973,10 @@ mod tests {
 
     /// A profile that delegates every policy to the default simulation
     /// profile but declares an arbitrary set of requirements classes, so the
-    /// declared-class stages can be driven. (`SimulationProfile` itself
-    /// declares only the mandatory five, which is why every test below needs
-    /// this wrapper.)
+    /// declared-class stages can be driven — including the *restricted*
+    /// declarations the content sweep is aimed at, which
+    /// `SimulationProfile` itself can no longer express now that it
+    /// truthfully declares all eleven classes.
     struct DeclaringProfile {
         inner: SimulationProfile,
         classes: Vec<RequirementsClass>,
@@ -1868,6 +1886,100 @@ mod tests {
                     name: "MyStore".to_owned(),
                 })),
             "{report}"
+        );
+    }
+
+    /// §7.5.7 Requirement File6 under the crate's case stance — the
+    /// `global_metadata/` detection is a guard and folds ASCII case, so the
+    /// Metadata5 encoding sweep and the Attr1 content signal are not blind on
+    /// a case-insensitive filesystem. Filesystem-independent by construction:
+    /// it is a comparison on the logical path the walk built. Only the root's
+    /// own child qualifies — a nested folder of the same name is content.
+    #[test]
+    fn req_core_file_root_global_metadata_dir_guard_folds_case() {
+        for dir in ["/global_metadata", "/Global_Metadata", "/GLOBAL_METADATA"] {
+            assert!(is_global_metadata_dir(dir), "{dir}");
+        }
+        for dir in [
+            "",
+            "/",
+            "/Tiles",
+            "/Tiles/global_metadata",
+            "/global_metadata_backup",
+        ] {
+            assert!(!is_global_metadata_dir(dir), "{dir:?}");
+        }
+    }
+
+    /// §7.1.2.1 Requirement Attr1-C under the crate's case stance — the two
+    /// halves of the split rule meeting on one file.
+    ///
+    /// The sweep's *signal* is a folded stem match (a guard: find the file
+    /// that claims to be the attribute model, however it is spelled), while
+    /// the name check itself stays byte-exact (a requirement: Attr1-C
+    /// mandates one literal name). So `Vector_Attributes.json` is seen and
+    /// then convicted. Before the fold it drew no signal at all, and the
+    /// datastore looked clean while carrying a model the facade can only
+    /// read by the accident of a case-insensitive host.
+    ///
+    /// Filesystem-independent by construction: the file is literally named
+    /// `Vector_Attributes.json` on disk in either regime, so it is the
+    /// string comparison, not the host, that does the work.
+    #[test]
+    fn req_core_attribute_model_mis_cased_stem_swept() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        let canonical = store
+            .write_attribute_model(&model_of("1", "StreetName"))
+            .unwrap();
+        fs::rename(
+            &canonical,
+            store
+                .layout()
+                .global_metadata_dir()
+                .join("Vector_Attributes.json"),
+        )
+        .unwrap();
+        let report = store.validate(&DeclaringProfile::all()).unwrap();
+        assert!(
+            report
+                .violations(RequirementsClass::Attribution)
+                .iter()
+                .any(|violation| matches!(
+                    violation,
+                    CdbViolation::Attribution(AttributionViolation::InvalidFileName { .. })
+                )),
+            "{report}"
+        );
+    }
+
+    /// §7.14.2 Requirement V1 under the crate's case stance — the walk's
+    /// journal guard folds, so a `Versions/` directory is recognized as the
+    /// crate-managed journal and is not descended into.
+    ///
+    /// The observable is filesystem-independent: the directory is literally
+    /// named `Versions` on disk in either regime, and without the fold the
+    /// walk name-checks the journal's own `v000001/` and `manifest.json`,
+    /// neither of which any profile case rule admits. Those leaked findings
+    /// are what must not appear.
+    #[test]
+    fn req_core_versioning_journal_dir_guard_folds_case() {
+        let tmp = tempdir().unwrap();
+        let store = fresh_store(&tmp);
+        store
+            .apply_collection(PendingCollection::new().create("/Tiles/Roads.gpkg", *b"roads"))
+            .unwrap();
+        fs::rename(store.root().join("versions"), store.root().join("Versions")).unwrap();
+        let report = store.validate(&DeclaringProfile::all()).unwrap();
+        let leaked: Vec<String> = report
+            .violations(RequirementsClass::FileNaming)
+            .iter()
+            .map(ToString::to_string)
+            .filter(|text| text.contains("v000001") || text.contains("manifest"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "journal internals name-checked: {leaked:?}"
         );
     }
 }

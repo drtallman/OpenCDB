@@ -29,8 +29,14 @@
 //! codes like `AL013` inline, which an integer id cannot carry. The
 //! spec's informative fixture (`1`/`2`/`3`) still parses — the JSON
 //! parse canonicalizes bare non-negative-integer ids to their decimal
-//! strings. Id uniqueness is byte-exact (the crate-wide case-folding
-//! stance is deliberately deferred).
+//! strings. Id uniqueness is byte-exact after trimming, and stays so
+//! under the crate-wide case stance — *guards fold, requirements don't*
+//! (the crate-internal `naming::guard_eq`). An id is a requirement's
+//! subject, not a path: folding it would silently change what
+//! [`AttributionViolation::DuplicateId`] means, and a profile whose
+//! vocabulary distinguishes `AL013` from `al013` would lose that
+//! distinction. Only Attr1-C's *file* name meets a guard, and only on the
+//! finding side — see [`parse_file_name`].
 //!
 //! Parsing canonicalizes, validation rejects blanks. Both parse
 //! functions trim leading/trailing whitespace from `schemaUri` and from
@@ -371,6 +377,12 @@ pub fn file_name_for(encoding: MetadataEncoding) -> Option<String> {
 /// name the facade can find: [`crate::datastore::CdbDatastore::attribute_model`]
 /// probes only the canonical name, so on a case-sensitive volume a
 /// mis-cased file would be "valid" and yet silently unreadable.
+///
+/// This is the *requirement* half of the crate's case stance — guards fold,
+/// requirements don't (the crate-internal `naming::guard_eq`) — and it is
+/// paired with the guard half: the conformance sweep *finds* the file with a
+/// folded stem match and then hands it here to be *judged* byte-exactly, so
+/// `Vector_Attributes.json` is convicted rather than ignored.
 pub fn parse_file_name(name: &str) -> Result<MetadataEncoding, AttributionViolation> {
     let (stem, extension) = split_extension(name);
     if stem == VECTOR_ATTRIBUTES_STEM {

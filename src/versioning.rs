@@ -517,11 +517,18 @@ where
 /// component; otherwise `None`. Versioning collections may not address
 /// either tree (implementation constraint, §7.14.2): see
 /// [`VersioningViolation::AssetInReservedTree`].
+///
+/// A guard, so the component match folds ASCII case
+/// ([`crate::naming::guard_eq`]): on a case-insensitive, case-preserving
+/// filesystem `/Versions/v000001/manifest.json` resolves to the very same
+/// journal manifest, and a byte-exact fence would let a forged path walk
+/// straight through it. The **canonical** spelling is returned whatever
+/// spelling was offered, so the finding always names the tree the spec does.
 pub(crate) fn reserved_tree_of(path: &str) -> Option<&'static str> {
     let first = path.trim_start_matches('/').split('/').next()?;
-    if first == VERSIONS_DIR {
+    if crate::naming::guard_eq(first, VERSIONS_DIR) {
         Some(VERSIONS_DIR)
-    } else if first == crate::hierarchy::GLOBAL_METADATA_DIR {
+    } else if crate::naming::guard_eq(first, crate::hierarchy::GLOBAL_METADATA_DIR) {
         Some(crate::hierarchy::GLOBAL_METADATA_DIR)
     } else {
         None
@@ -675,6 +682,35 @@ impl PendingCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §7.14.2 — the reserved-tree fence is a *guard*, so it folds ASCII
+    /// case (`crate::naming::guard_eq`): on a case-insensitive,
+    /// case-preserving filesystem `/Versions/v000001/manifest.json` names
+    /// the very same journal manifest as the canonical spelling, so a
+    /// byte-exact fence is no fence at all. The canonical spelling is what
+    /// the finding reports, whatever spelling was offered.
+    #[test]
+    fn req_core_versioning_reserved_tree_guard_folds_case() {
+        for path in [
+            "/Versions/v000001/manifest.json",
+            "/VERSIONS/v000001/manifest.json",
+            "VeRsIoNs/archive/Tiles/RoadNetwork.gpkg",
+        ] {
+            assert_eq!(reserved_tree_of(path), Some(VERSIONS_DIR), "{path}");
+        }
+        for path in ["/Global_Metadata/crs.wkt", "/GLOBAL_METADATA/extra.json"] {
+            assert_eq!(
+                reserved_tree_of(path),
+                Some(crate::hierarchy::GLOBAL_METADATA_DIR),
+                "{path}"
+            );
+        }
+        // Whole components only: a longer name that merely begins the same
+        // way is ordinary content, folded or not.
+        for path in ["/VersionsArchive/x", "/Global_Metadata_Backup/x"] {
+            assert_eq!(reserved_tree_of(path), None, "{path}");
+        }
+    }
 
     fn ts(value: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(value)

@@ -155,8 +155,15 @@ impl DatastoreLayout {
                     root: self.root.clone(),
                 });
         }
+        // RFile1's root-name match is a guard, so it folds ASCII case
+        // (`naming::guard_eq`): on a case-insensitive filesystem `CDB/` *is*
+        // the recommended root, and warning about it would be noise. Its
+        // spelling remains Requirement Name6's business.
         let root_name = self.root.file_name().map(|n| n.to_string_lossy());
-        if root_name.as_deref() != Some(RECOMMENDED_ROOT_NAME) {
+        let recommended = root_name
+            .as_deref()
+            .is_some_and(|name| crate::naming::guard_eq(name, RECOMMENDED_ROOT_NAME));
+        if !recommended {
             report.warnings.push(HierarchyWarning::RootNameNotCdb {
                 name: root_name.unwrap_or_default().into_owned(),
             });
@@ -284,6 +291,27 @@ mod tests {
         assert!(report.warnings.contains(&HierarchyWarning::RootNameNotCdb {
             name: "MyStore".into()
         }));
+    }
+
+    /// §7.5.6 Recommendation RFile1 with the crate's case stance — matching
+    /// the root folder's name is a *guard*, so it folds ASCII case. On a
+    /// case-insensitive, case-preserving filesystem `CDB/` **is** the
+    /// recommended root, and a recommendation warning for it would be noise.
+    #[test]
+    fn rec_core_file_hierarchy_root_name_match_folds_case() {
+        for name in ["CDB", "Cdb", "cDb"] {
+            let tmp = tempdir().unwrap();
+            let layout = DatastoreLayout::create_named(tmp.path(), name).unwrap();
+            let report = layout.validate().unwrap();
+            assert!(
+                !report
+                    .warnings
+                    .iter()
+                    .any(|w| matches!(w, HierarchyWarning::RootNameNotCdb { .. })),
+                "{name}: {:?}",
+                report.warnings
+            );
+        }
     }
 
     /// §7.5.7 Requirement File6 — `global_metadata` at the root.
