@@ -8,6 +8,12 @@
 //! them by class, and [`validate`], the orchestrator behind
 //! [`crate::datastore::CdbDatastore::validate`].
 //!
+//! A report is also a **serde surface** (`Serialize`): every finding carries
+//! a stable machine-readable code — the OGC clause in requirement-URI form,
+//! [`CdbViolation::code`] / [`CdbWarning::code`] — so a consumer keys on the
+//! code and never parses `Display` text. The shape is documented on
+//! [`ConformanceReport`]'s `Serialize` impl and freezes at 1.0.
+//!
 //! Conformance is decided by violations alone:
 //! [`ConformanceReport::is_conformant`] and
 //! [`ConformanceReport::class_passed`] ignore warnings — and so does

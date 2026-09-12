@@ -15,7 +15,12 @@ use crate::metadata::MetadataViolation;
 /// struct must stay open to fields a later class needs — [`Self::has_content`]
 /// is itself exactly such a field. Downstream code reads the fields and
 /// constructs values through [`Default`] rather than with a struct literal.
-#[derive(Debug, Clone, Default)]
+/// `Serialize` but **not** `Deserialize`: findings are output, and
+/// `#[non_exhaustive]` means the field set is deliberately still open (see
+/// [`ConformanceReport`]'s `Serialize` for the full reasoning). A report's
+/// own class entry writes these three fields alongside the class token, its
+/// requirements URI, and the derived verdict.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[non_exhaustive]
 pub struct ClassFindings {
     /// SHALL violations for this class.
@@ -202,6 +207,88 @@ impl ConformanceReport {
     }
 }
 
+/// One class's entry in a serialized [`ConformanceReport`]: the class token,
+/// its §7 requirements-module URI, the two flags a reader needs to interpret
+/// the entry, and the findings themselves.
+///
+/// `passed` and `requirements_uri` are *derived* — [`Self::passed`] is
+/// "`violations` is empty" and the URI is a function of the class — and are
+/// written out anyway. A report is read by tools that are not this crate, and
+/// asking every one of them to re-derive the verdict is how two consumers end
+/// up disagreeing about whether a datastore conformed.
+struct ClassEntry<'a> {
+    class: RequirementsClass,
+    findings: &'a ClassFindings,
+}
+
+impl serde::Serialize for ClassEntry<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let mut entry = serializer.serialize_struct("ClassEntry", 6)?;
+        entry.serialize_field("class", &self.class)?;
+        entry.serialize_field("requirements_uri", self.class.requirements_uri())?;
+        entry.serialize_field("passed", &self.findings.violations.is_empty())?;
+        entry.serialize_field("has_content", &self.findings.has_content)?;
+        entry.serialize_field("violations", &self.findings.violations)?;
+        entry.serialize_field("warnings", &self.findings.warnings)?;
+        entry.end()
+    }
+}
+
+/// The report's wire form (design spec §7), designed rather than derived
+/// because it freezes at 1.0:
+///
+/// ```json
+/// {
+///   "profile": "simulation",
+///   "root": "/tmp/cdb",
+///   "conformant": false,
+///   "classes": [ { "class": "crs", "requirements_uri": "/req/core/data-representation",
+///                  "passed": true, "has_content": true,
+///                  "violations": [], "warnings": [] }, … ]
+/// }
+/// ```
+///
+/// Three decisions worth stating, since they are permanent:
+///
+/// - **Classes are an array, not a JSON object keyed by class.** [`Ord`]
+///   order is the documented listing order of a report, and an array is the
+///   only structure that preserves it in every serializer — a map's key order
+///   is the format's business, not the report's. Each entry names its own
+///   class, so nothing is lost.
+/// - **`root` is written lossily** ([`std::path::Path::to_string_lossy`]).
+///   Serializing a report must not fail because a datastore lives under a
+///   path that is not valid UTF-8.
+/// - **`Serialize` only — deliberately no `Deserialize`.** A report is an
+///   *output document*, not a transport format: its findings are structured
+///   Rust values ([`CdbViolation`]) that a `code` and a `message` cannot
+///   reconstitute, and a type that deserialized into fabricated findings
+///   would be lying about where they came from. A consumer reads the JSON as
+///   JSON; the one piece that genuinely round-trips, the class token, is
+///   [`RequirementsClass`], which *is* `Deserialize`. The same reasoning
+///   covers [`ClassFindings`], which is additionally `#[non_exhaustive]` —
+///   deriving `Deserialize` on it would freeze a field set that is
+///   deliberately open.
+impl serde::Serialize for ConformanceReport {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        let entries: Vec<ClassEntry<'_>> = self
+            .classes
+            .iter()
+            .map(|(&class, findings)| ClassEntry { class, findings })
+            .collect();
+
+        let mut report = serializer.serialize_struct("ConformanceReport", 4)?;
+        report.serialize_field("profile", &self.profile)?;
+        report.serialize_field("root", &self.root.to_string_lossy())?;
+        report.serialize_field("conformant", &self.is_conformant())?;
+        report.serialize_field("classes", &entries)?;
+        report.end()
+    }
+}
+
 impl fmt::Display for ConformanceReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -316,6 +403,64 @@ mod tests {
         assert!(text.contains("simulation"), "{text}");
         assert!(text.contains("PASS"), "{text}");
         assert!(text.contains("FAIL"), "{text}");
+    }
+
+    /// Design spec §7 — the serialized report mirrors the report's own
+    /// organization: the profile and root it was produced for, the one-bit
+    /// verdict, and the classes it lists, each entry carrying its class token,
+    /// its requirements-module URI, its pass/content flags, and its findings.
+    /// Classes are an **array**, not a JSON object: [`Ord`] order is the
+    /// documented listing order, and an array is the only structure that
+    /// preserves it in every serializer.
+    #[test]
+    fn req_core_conformance_report_serializes_by_class() {
+        let mut report = ConformanceReport::new("simulation", "/tmp/cdb");
+        report.declare_class(RequirementsClass::Tiling);
+        report.record_violation(NamingViolation::EmptyName.into());
+        report.record_warning(CdbWarning::LanguageNotEnglish {
+            language: "fr".to_owned(),
+        });
+
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["profile"], "simulation");
+        assert_eq!(value["root"], "/tmp/cdb");
+        assert_eq!(value["conformant"], false);
+
+        let classes = value["classes"].as_array().unwrap();
+        let listed: Vec<&str> = classes
+            .iter()
+            .map(|entry| entry["class"].as_str().unwrap())
+            .collect();
+        // Ord order, mandatory five plus the declared optional class.
+        assert_eq!(
+            listed,
+            vec![
+                "crs",
+                "file-naming",
+                "file-structure",
+                "links",
+                "metadata",
+                "tiling",
+            ]
+        );
+
+        let naming = &classes[1];
+        assert_eq!(naming["class"], "file-naming");
+        assert_eq!(naming["requirements_uri"], "/req/core/naming-system");
+        assert_eq!(naming["passed"], false);
+        assert_eq!(naming["has_content"], true);
+        assert_eq!(naming["violations"].as_array().unwrap().len(), 1);
+        assert_eq!(naming["warnings"][0]["code"], "/req/core/name-language-B");
+
+        let tiling = classes.last().unwrap();
+        assert_eq!(tiling["class"], "tiling");
+        assert_eq!(tiling["passed"], true);
+        assert_eq!(tiling["has_content"], false);
+        assert!(tiling["violations"].as_array().unwrap().is_empty());
+
+        // A clean report is conformant on the wire too.
+        let clean = ConformanceReport::new("simulation", "/tmp/cdb");
+        assert_eq!(serde_json::to_value(&clean).unwrap()["conformant"], true);
     }
 
     /// Design spec §4 — "a declared class with no corresponding content

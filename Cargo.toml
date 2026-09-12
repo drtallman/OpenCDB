@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
 geo = "0.33.1"
-geo-types = "0.7.19"
+geo-types = { version = "0.7.19", features = ["serde"] }
 geojson = "1.0.0"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 serde = { version = "1.0.228", features = ["derive"] }

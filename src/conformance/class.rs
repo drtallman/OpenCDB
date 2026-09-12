@@ -147,6 +147,36 @@ impl fmt::Display for RequirementsClass {
     }
 }
 
+/// The class token — [`RequirementsClass::as_str`] — is the wire form, the
+/// same spelling the Annex A conformance-class URI uses. Hand-written rather
+/// than derived so the variant *names* never leak into the wire format: the
+/// enum is `#[non_exhaustive]` and its Rust spellings are free to change,
+/// the Annex A short names are not.
+impl serde::Serialize for RequirementsClass {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// The inverse of [`RequirementsClass`]'s `Serialize`: the one report-layer
+/// type where a round trip is meaningful, because the token *is* the whole
+/// value. An unrecognized token is an error, never a silent default — a
+/// consumer reading a report written by a later version must be told it met
+/// a class it does not know.
+impl<'de> serde::Deserialize<'de> for RequirementsClass {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let token = String::deserialize(deserializer)?;
+        RequirementsClass::ALL
+            .into_iter()
+            .find(|class| class.as_str() == token)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "{token:?} is not a CDB requirements class (Annex A)"
+                ))
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +291,24 @@ mod tests {
         let mut optional = RequirementsClass::OPTIONAL;
         optional.sort();
         assert_eq!(optional, RequirementsClass::OPTIONAL);
+    }
+
+    /// Design spec §7 — the class token is the serde surface's key, and it
+    /// round-trips losslessly: a class serializes as its [`Self::as_str`]
+    /// short name and deserializes back to the same variant. `Deserialize` is
+    /// meaningful here (and on no other report type) because the token is the
+    /// whole value — nothing is lost on the way out. An unknown token is an
+    /// error, never a silent default.
+    #[test]
+    fn req_core_conformance_class_token_round_trips() {
+        for class in RequirementsClass::ALL {
+            let json = serde_json::to_string(&class).unwrap();
+            assert_eq!(json, format!("\"{}\"", class.as_str()));
+            let back: RequirementsClass = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, class);
+        }
+        assert!(serde_json::from_str::<RequirementsClass>("\"tiles\"").is_err());
+        assert!(serde_json::from_str::<RequirementsClass>("\"FileNaming\"").is_err());
     }
 
     /// Annex A conformance table — the six optional classes spell their short

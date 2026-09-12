@@ -6,6 +6,15 @@
 //! deliberately not an `Error`. Each finding names the
 //! [`RequirementsClass`] it belongs to, which is how a
 //! [`crate::conformance::ConformanceReport`] buckets it.
+//!
+//! Both kinds also carry a **stable code** ([`CdbViolation::code`],
+//! [`CdbWarning::code`]): the OGC clause the finding is about, normalized to
+//! one whitespace-free absolute token. The code vocabulary lives in this
+//! module as a set of exhaustive `match`es over every requirements module's
+//! violation and warning enum — one auditable table rather than a method per
+//! module — so a new variant cannot ship without a code, and the mapping can
+//! be read against Annex A in one place. It is what both finding kinds
+//! serialize under.
 
 use std::fmt;
 
@@ -127,6 +136,288 @@ impl CdbViolation {
             CdbViolation::DeclarationMismatch { class, .. } => *class,
         }
     }
+
+    /// The **stable machine-readable code** for this violation: the OGC
+    /// clause it breaks, in requirement-URI form
+    /// (`/req/core/attribute-model-content-B`). It is the field a consumer
+    /// keys on — no tool should ever have to parse [`Display`] text, which
+    /// carries values and phrasing the crate is free to improve.
+    ///
+    /// [`Display`]: std::fmt::Display
+    ///
+    /// Three normalizations make the vocabulary a set of single tokens,
+    /// spelled the way [`RequirementsClass::requirements_uri`] spells a
+    /// module URI:
+    ///
+    /// - **always absolute** — `/req/core/…` for a requirement box,
+    ///   `/rec/core/…` for a recommendation box, `/per/core/…` for a
+    ///   permission box, and `/conf/minimal-core` for Annex A's bundle.
+    ///   The draft writes the attribution and versioning slugs without the
+    ///   leading solidus and the rest with it; one form is used here.
+    /// - **a part letter joins with a hyphen** — the draft's
+    ///   `/req/core/attribute-model-content B` becomes
+    ///   `…-content-B`, so a code never contains whitespace.
+    /// - **the code names the clause, not the severity.** SHALL vs SHOULD is
+    ///   the finding's *kind* ([`CdbViolation`] vs [`CdbWarning`]), never its
+    ///   code, so a SHOULD the draft wrote inside a requirement box keeps
+    ///   that box's path (see [`CdbWarning::code`]).
+    ///
+    /// Several variants share a code: a code identifies the clause, and one
+    /// clause is breakable in more than one way. The mapping is an exhaustive
+    /// `match` over every module's violation enum with no wildcard arm, so a
+    /// new variant cannot ship without being assigned one.
+    pub fn code(&self) -> &'static str {
+        match self {
+            CdbViolation::Naming(violation) => naming_code(violation),
+            CdbViolation::Hierarchy(violation) => hierarchy_code(violation),
+            CdbViolation::Link(violation) => link_code(violation),
+            CdbViolation::Metadata(violation) => metadata_code(violation),
+            CdbViolation::Crs(violation) => crs_code(violation),
+            CdbViolation::Attribution(violation) => attribution_code(violation),
+            CdbViolation::Coverage(violation) => coverage_code(violation),
+            CdbViolation::Geometry(violation) => geometry_code(violation),
+            CdbViolation::Tiling(violation) => tiling_code(violation),
+            CdbViolation::Topology(violation) => topology_code(violation),
+            CdbViolation::Versioning(violation) => versioning_code(violation),
+            CdbViolation::MissingConformanceDeclaration { .. } => MINIMAL_CORE_CLAUSE,
+            // The clause is already carried: a mismatch is filed against the
+            // clause the declaration contradicts.
+            CdbViolation::DeclarationMismatch { clause, .. } => clause,
+        }
+    }
+}
+
+/// A violation serializes as a flat, self-describing record — its stable
+/// [`code`], the [`class`] it is filed under, the severity that separates it
+/// from a [`CdbWarning`], and the human-readable message — never as a mirror
+/// of the Rust variant tree. The enum is `#[non_exhaustive]` and its inner
+/// families grow every phase; the wire shape freezes at 1.0 and must survive
+/// that. Deliberately `Serialize` only, for the reason
+/// [`ConformanceReport`]'s own impl records.
+///
+/// [`ConformanceReport`]: crate::conformance::ConformanceReport
+///
+/// [`code`]: CdbViolation::code
+/// [`class`]: CdbViolation::class
+impl serde::Serialize for CdbViolation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_finding(serializer, self.code(), self.class(), "violation", self)
+    }
+}
+
+/// The one wire shape both finding kinds use, so a consumer can read a
+/// violation and a warning with the same four fields and tell them apart by
+/// `severity` alone.
+fn serialize_finding<S: serde::Serializer>(
+    serializer: S,
+    code: &str,
+    class: RequirementsClass,
+    severity: &str,
+    message: &dyn fmt::Display,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+
+    let mut finding = serializer.serialize_struct("Finding", 4)?;
+    finding.serialize_field("code", code)?;
+    finding.serialize_field("class", &class)?;
+    finding.serialize_field("severity", severity)?;
+    finding.serialize_field("message", &message.to_string())?;
+    finding.end()
+}
+
+/// Annex A's bundle of the five mandatory classes: the clause a
+/// [`CdbViolation::MissingConformanceDeclaration`] cites. It is a
+/// *conformance* class, not a requirement, so it has no `/req/core/` box of
+/// its own — the one code in the vocabulary outside the `/…/core/` families.
+const MINIMAL_CORE_CLAUSE: &str = "/conf/minimal-core";
+
+/// The stable code for a [`NamingViolation`] (spec §7.4).
+fn naming_code(violation: &NamingViolation) -> &'static str {
+    match violation {
+        // No box of its own: an empty name is the naming system's floor.
+        NamingViolation::EmptyName | NamingViolation::EmptyPathComponent { .. } => {
+            "/req/core/naming-system"
+        }
+        NamingViolation::ContainsSpace { .. } => "/req/core/name-spaces",
+        // ControlCharacter is the crate's portability extension of Name1-B's
+        // character rule (see its variant doc); it files under that box.
+        NamingViolation::ForbiddenCharacter { .. } | NamingViolation::ControlCharacter { .. } => {
+            "/req/core/name-unicode-B"
+        }
+        NamingViolation::CaseRuleViolation { .. } => "/req/core/name-case",
+        NamingViolation::PathTraversal { .. } => "/req/core/file-cdb-root-location",
+    }
+}
+
+/// The stable code for a [`HierarchyViolation`] (spec §7.5).
+fn hierarchy_code(violation: &HierarchyViolation) -> &'static str {
+    match violation {
+        HierarchyViolation::MissingGlobalMetadata { .. } => "/req/core/file-root-global-metadata",
+    }
+}
+
+/// The stable code for a [`LinkViolation`] (spec §7.7).
+fn link_code(violation: &LinkViolation) -> &'static str {
+    match violation {
+        LinkViolation::InvalidHref { .. } => "/req/core/link-href",
+        LinkViolation::MissingRel => "/req/core/link-rel",
+    }
+}
+
+/// The stable code for a [`MetadataViolation`] (spec §7.9). A nested
+/// [`MetadataViolation::Link`] reports the *Links* code, matching the way
+/// [`CdbViolation::class`] files it under Links.
+fn metadata_code(violation: &MetadataViolation) -> &'static str {
+    match violation {
+        // The §7.9.4 element tables, which carry no per-element box.
+        MetadataViolation::MissingElement { .. } => "/req/core/metadata-",
+        MetadataViolation::UnknownMetadataStandard { .. } => "/req/core/metadata-standard",
+        MetadataViolation::UnknownEncoding { .. }
+        | MetadataViolation::EncodingMismatch { .. }
+        | MetadataViolation::Malformed { .. } => "/req/core/metadata-encoding",
+        MetadataViolation::UnknownUnitOfMeasure { .. } => "/req/core/metadata-uom-measure",
+        MetadataViolation::InvalidLanguageTag { .. } => "/req/core/metadata-language",
+        MetadataViolation::InvalidDateTime { .. } => "/req/core/metadata-datetime",
+        MetadataViolation::NotUtc { .. } => "/req/core/metadata-datetime-A",
+        MetadataViolation::InvalidTemporalInterval { .. } => "/req/core/metadata-temporal-interval",
+        MetadataViolation::MissingGlobalMetadata { .. } => "/req/core/metadata-global",
+        MetadataViolation::Link(link) => link_code(link),
+    }
+}
+
+/// The stable code for a [`CrsViolation`] (spec §7.3). The CRS module's
+/// slugs are path-segmented (`/req/core/crs/crsEpoch`), which is the draft's
+/// own spelling for this module and is kept verbatim.
+fn crs_code(violation: &CrsViolation) -> &'static str {
+    match violation {
+        CrsViolation::InvalidWkt { .. }
+        | CrsViolation::NotACrs { .. }
+        | CrsViolation::MissingCrsMetadata { .. } => "/req/core/crs/crsMetadata",
+        CrsViolation::NonGeodeticStorageCrs { .. }
+        | CrsViolation::CompoundHorizontalNotGeodetic { .. } => {
+            "/req/core/crs/storageCrs-valid-value"
+        }
+        CrsViolation::InconsistentCoordinateUnits { .. } => "/req/core/crs/uom",
+        CrsViolation::MissingEpoch => "/req/core/crs/crsEpoch",
+        CrsViolation::InvalidEpoch { .. } => "/req/core/crs/crsEpoch-B",
+        CrsViolation::CrsAlreadyDefined { .. } => "/req/core/crs/crsStorage",
+        CrsViolation::NotAVerticalCrs { .. } => "/req/core/crs/vcrs-topic2",
+    }
+}
+
+/// The stable code for an [`AttributionViolation`] (spec §7.1). PAttr1 is a
+/// *permission* box, so its code keeps the `/per/core/` family.
+fn attribution_code(violation: &AttributionViolation) -> &'static str {
+    match violation {
+        // Attr1-A and Attr2-A both bite; Attr1-A is the primary — a model
+        // that specifies nothing specifies no model.
+        AttributionViolation::EmptyModel | AttributionViolation::Malformed { .. } => {
+            "/req/core/attribute-model-A"
+        }
+        AttributionViolation::DuplicateId { .. } | AttributionViolation::EmptyId { .. } => {
+            "/req/core/attribute-model-content-B"
+        }
+        AttributionViolation::EmptyName { .. } => "/req/core/attribute-model-content-C",
+        AttributionViolation::EmptyDescription { .. } => "/req/core/attribute-model-content-D",
+        AttributionViolation::InvalidSchemaUri { .. } => "/per/core/attribute-schema-uri",
+        AttributionViolation::InvalidFileName { .. } => "/req/core/attribute-model-C",
+    }
+}
+
+/// The stable code for a [`CoverageViolation`] (spec §7.2).
+fn coverage_code(violation: &CoverageViolation) -> &'static str {
+    match violation {
+        CoverageViolation::UnknownGridCellEncoding { .. }
+        | CoverageViolation::UnknownGridCorner { .. }
+        | CoverageViolation::CornerWithoutWhichCorner => "/req/core/coverage-domainSet-F",
+        CoverageViolation::EmptyUom => "/req/core/coverage-domainSet-A",
+        CoverageViolation::MissingQuantityDefinition { .. } => "/req/core/coverage-domainSet-H",
+        CoverageViolation::MissingResourceMetadata => "/req/core/coverage-min-metadata",
+        CoverageViolation::MissingDomainSet => "/req/core/coverage-domainSet",
+        CoverageViolation::CoverageCrsMismatch { .. } => "/req/core/coverage-crs",
+        CoverageViolation::Metadata(metadata) => metadata_code(metadata),
+    }
+}
+
+/// The stable code for a [`GeometryViolation`] (spec §7.6).
+fn geometry_code(violation: &GeometryViolation) -> &'static str {
+    match violation {
+        GeometryViolation::UnknownGeometryCode { .. }
+        | GeometryViolation::ZLengthMismatch { .. }
+        | GeometryViolation::MLengthMismatch { .. } => "/req/core/geometry-types",
+        GeometryViolation::MissingZUom => "/req/core/geometry-zvalue",
+        GeometryViolation::MissingMUom => "/req/core/geometry-mvalue",
+        GeometryViolation::ForeignCrs { .. } => "/req/core/geometry-coordinates",
+        GeometryViolation::Metadata(metadata) => metadata_code(metadata),
+    }
+}
+
+/// The stable code for a [`TilingViolation`] (spec §7.10–§7.12).
+fn tiling_code(violation: &TilingViolation) -> &'static str {
+    match violation {
+        // A vocabulary rejection against the two specified extensions; the
+        // box that closes the set is the recommendation's.
+        TilingViolation::UnknownTilingScheme { .. } => "/rec/core/tiling-extension",
+        TilingViolation::SchemeCrsMismatch { .. } => "/req/core/tiling-tilingscheme-crs",
+        TilingViolation::SchemeUomMismatch { .. } => "/req/core/tiling-tilingscheme-uom",
+        TilingViolation::IncompleteExtent { .. } => "/req/core/tiling-tilingscheme-extent",
+        TilingViolation::MissingTilingScheme => "/req/core/tiling-tilingscheme-definition",
+        TilingViolation::MissingTilesetKeywords => "/req/core/tiling-tileset-metadata-elements",
+        TilingViolation::Cdb1LodOutOfRange { .. } => "/req/core/tiling-extension-tile-tessellate-A",
+        TilingViolation::TileOutOfRange { .. } => "/req/core/tiling-extension-tile-tessellate",
+        // TCE2's box, shared by both extension grids.
+        TilingViolation::GnosisLevelOutOfRange { .. }
+        | TilingViolation::MisalignedColumn { .. } => "/req/core/tiling-extension-tms",
+        TilingViolation::GnosisTileOutOfRange { .. } => "/req/core/tiling-extension-start-lod",
+        TilingViolation::CoordinateOutOfRange { .. } => "/req/core/tiling-extension-uom",
+        TilingViolation::Metadata(metadata) => metadata_code(metadata),
+    }
+}
+
+/// The stable code for a [`TopologyViolation`] (spec §7.13).
+fn topology_code(violation: &TopologyViolation) -> &'static str {
+    match violation {
+        TopologyViolation::DuplicateNodeId { .. } => "/req/core/topology-nodeID",
+        TopologyViolation::DuplicateEdgeId { .. } => "/req/core/topology-edgeID",
+        TopologyViolation::DuplicateFaceId { .. } => "/req/core/topology-faceID",
+        TopologyViolation::UnknownNodeId { .. } => "/req/core/topology-edge-dir",
+        // Raised from both the clip (§7.13.4.7) and the face-boundary
+        // (§7.13.5.4) paths, so it names the module rather than picking one.
+        TopologyViolation::UnknownEdgeId { .. } => "/req/core/topology",
+        TopologyViolation::EdgeHasNoGeometry { .. }
+        | TopologyViolation::EdgeGeometryEndpointMismatch { .. }
+        | TopologyViolation::EdgeGeometryNotFinite { .. }
+        | TopologyViolation::InvalidClipExtent { .. }
+        | TopologyViolation::EdgeInFace { .. } => "/req/core/topology-clip",
+        TopologyViolation::FaceBoundaryEmpty { .. }
+        | TopologyViolation::FaceBoundaryNotChained { .. }
+        | TopologyViolation::FaceBoundaryNotClosed { .. } => "/req/core/topology-face-structure",
+        TopologyViolation::UnknownWindingOrder { .. }
+        | TopologyViolation::WindingOrderUndeclared => "/req/core/topology-winding",
+        TopologyViolation::Metadata(metadata) => metadata_code(metadata),
+    }
+}
+
+/// The stable code for a [`VersioningViolation`] (spec §7.14).
+fn versioning_code(violation: &VersioningViolation) -> &'static str {
+    match violation {
+        VersioningViolation::EmptyCollection
+        | VersioningViolation::DuplicateAssetInCollection { .. }
+        | VersioningViolation::SequenceExhausted { .. }
+        | VersioningViolation::ManifestSequenceGap { .. }
+        | VersioningViolation::MalformedManifest { .. } => "/req/core/versioning-collection",
+        VersioningViolation::EmptyState { .. } | VersioningViolation::AssetStateMissing { .. } => {
+            "/req/core/versioning-transitory"
+        }
+        VersioningViolation::InvalidAssetPath { .. }
+        | VersioningViolation::AssetInReservedTree { .. }
+        | VersioningViolation::UnknownCollection { .. }
+        | VersioningViolation::NotLatestCollection { .. } => "/req/core/versioning",
+        VersioningViolation::AssetAlreadyExists { .. } => "/req/core/versioning-functions-A",
+        // V4-B (delete) and V4-C (update) both reach it, so no part letter.
+        VersioningViolation::AssetMissing { .. } => "/req/core/versioning-functions",
+        VersioningViolation::ResourceRecordMissing { .. } => "/req/core/versioning-metadata-C",
+    }
 }
 
 /// A datastore-wide SHOULD finding. Deliberately **not** an `Error`: a spec
@@ -172,6 +463,53 @@ impl CdbWarning {
             CdbWarning::Coverage(_) => RequirementsClass::Coverages,
             CdbWarning::Tiling(_) => RequirementsClass::Tiling,
         }
+    }
+
+    /// The **stable machine-readable code** for this warning, on exactly the
+    /// terms [`CdbViolation::code`] documents: the clause the recommendation
+    /// belongs to, absolute and whitespace-free.
+    ///
+    /// A code names the clause; the SHALL/SHOULD split is carried by the
+    /// finding's kind, not by its code. The draft writes several of its
+    /// SHOULDs as lettered parts *inside* requirement boxes — Name1-A inside
+    /// `/req/core/name-unicode`, Name3-B inside `/req/core/name-language`,
+    /// Name7-B inside `/req/core/name-extensions` — so those codes keep the
+    /// `/req/core/` path and are warnings all the same. Recommendations with
+    /// boxes of their own (`/rec/core/file-hierarchy-root-name`,
+    /// `/rec/core/crs/crs-definition`, `/rec/core/tiling-extension`) keep
+    /// theirs. Nothing here is promoted or demoted by its spelling.
+    pub fn code(&self) -> &'static str {
+        match self {
+            CdbWarning::Naming(NamingWarning::NonAscii { .. }) => "/req/core/name-unicode-A",
+            CdbWarning::Naming(NamingWarning::NonSpecExtension { .. }) => {
+                "/req/core/name-extensions-B"
+            }
+            CdbWarning::Hierarchy(HierarchyWarning::EmptyFolder(_)) => {
+                "/req/core/name-empty-folders-A"
+            }
+            CdbWarning::Hierarchy(HierarchyWarning::RootNameNotCdb { .. }) => {
+                "/rec/core/file-hierarchy-root-name"
+            }
+            CdbWarning::Crs(CrsWarning::NotWgs84 { .. }) => "/rec/core/crs/crs-definition",
+            // §7.2.6.1's disconnected-environment prose sits under the
+            // domainSet `uom` element's own requirement part; it has no box.
+            CdbWarning::Coverage(CoverageWarning::UomLooksLikeUri { .. }) => {
+                "/req/core/coverage-domainSet-A"
+            }
+            CdbWarning::Tiling(TilingWarning::NonExtensionScheme { .. }) => {
+                "/rec/core/tiling-extension"
+            }
+            CdbWarning::LanguageNotEnglish { .. } => "/req/core/name-language-B",
+        }
+    }
+}
+
+/// A warning serializes in the same four-field shape a [`CdbViolation`]
+/// does, with `severity` the field that tells them apart. `Serialize` only,
+/// for the same reason.
+impl serde::Serialize for CdbWarning {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_finding(serializer, self.code(), self.class(), "warning", self)
     }
 }
 
@@ -226,6 +564,202 @@ impl fmt::Display for CdbWarning {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Design spec §7 — every finding carries a **stable machine-readable
+    /// code**, the requirement-URI form, so a consumer never parses `Display`
+    /// text. Shape invariants hold for every variant (absolute, whitespace-
+    /// free, an OGC clause path), and the spot-checks pin the codes the spec
+    /// names by hand: Attr2-B is `/req/core/attribute-model-content-B`, a
+    /// `DeclarationMismatch` reports the clause it already carries, and a
+    /// missing declaration cites Annex A's bundle rather than a `/req/` box.
+    #[test]
+    fn req_core_conformance_violation_codes_are_stable_uris() {
+        let samples: Vec<CdbViolation> = vec![
+            NamingViolation::ContainsSpace {
+                name: "a b".to_owned(),
+            }
+            .into(),
+            HierarchyViolation::MissingGlobalMetadata {
+                root: PathBuf::from("/tmp/cdb"),
+            }
+            .into(),
+            LinkViolation::MissingRel.into(),
+            MetadataViolation::MissingElement { element: "ID" }.into(),
+            CdbViolation::Metadata(MetadataViolation::Link(LinkViolation::MissingRel)),
+            CrsViolation::MissingEpoch.into(),
+            AttributionViolation::DuplicateId {
+                id: "AL013".to_owned(),
+            }
+            .into(),
+            CoverageViolation::MissingDomainSet.into(),
+            GeometryViolation::MissingMUom.into(),
+            TilingViolation::MissingTilesetKeywords.into(),
+            TopologyViolation::WindingOrderUndeclared.into(),
+            VersioningViolation::EmptyCollection.into(),
+            CdbViolation::MissingConformanceDeclaration {
+                profile: "simulation".to_owned(),
+                class: RequirementsClass::Links,
+            },
+            CdbViolation::DeclarationMismatch {
+                profile: "simulation".to_owned(),
+                class: RequirementsClass::Crs,
+                element: "storage CRS",
+                declared: "EPSG:4326".to_owned(),
+                found: "EPSG:3857".to_owned(),
+                clause: "/req/core/crs/crsStorage",
+            },
+        ];
+        for violation in &samples {
+            let code = violation.code();
+            assert!(code.starts_with('/'), "{code} is not absolute");
+            assert!(
+                !code.chars().any(char::is_whitespace),
+                "{code} contains whitespace"
+            );
+            assert!(
+                code.starts_with("/req/core/")
+                    || code.starts_with("/rec/core/")
+                    || code.starts_with("/per/core/")
+                    || code.starts_with("/conf/"),
+                "{code} is not an OGC clause path"
+            );
+        }
+
+        // Spot-checks, hand-keyed to the spec's requirement boxes.
+        assert_eq!(
+            CdbViolation::from(AttributionViolation::DuplicateId {
+                id: "AL013".to_owned()
+            })
+            .code(),
+            "/req/core/attribute-model-content-B"
+        );
+        assert_eq!(
+            CdbViolation::from(AttributionViolation::InvalidFileName {
+                name: "Vector_Attributes.json".to_owned()
+            })
+            .code(),
+            "/req/core/attribute-model-C"
+        );
+        assert_eq!(
+            CdbViolation::from(NamingViolation::ContainsSpace {
+                name: "a b".to_owned()
+            })
+            .code(),
+            "/req/core/name-spaces"
+        );
+        // A Links violation nested in a metadata record reports the Links code.
+        assert_eq!(
+            CdbViolation::Metadata(MetadataViolation::Link(LinkViolation::MissingRel)).code(),
+            "/req/core/link-rel"
+        );
+        // A DeclarationMismatch reports the clause it was filed under.
+        assert_eq!(
+            CdbViolation::DeclarationMismatch {
+                profile: "simulation".to_owned(),
+                class: RequirementsClass::Crs,
+                element: "storage CRS",
+                declared: "EPSG:4326".to_owned(),
+                found: "EPSG:3857".to_owned(),
+                clause: "/req/core/crs/crsStorage",
+            }
+            .code(),
+            "/req/core/crs/crsStorage"
+        );
+        assert_eq!(
+            CdbViolation::MissingConformanceDeclaration {
+                profile: "simulation".to_owned(),
+                class: RequirementsClass::Links,
+            }
+            .code(),
+            "/conf/minimal-core"
+        );
+    }
+
+    /// Design spec §7 — warnings carry codes on the same terms. A code names
+    /// the *clause*; the SHALL/SHOULD split is carried by the finding's kind,
+    /// so a recommendation the draft writes inside a `/req/core/` box (Name1-A
+    /// inside `/req/core/name-unicode`) keeps that box's path and is still a
+    /// warning. Recommendations with boxes of their own keep `/rec/core/`.
+    #[test]
+    fn req_core_conformance_warning_codes_are_stable_uris() {
+        let samples = vec![
+            CdbWarning::Naming(NamingWarning::NonAscii {
+                name: "café".to_owned(),
+            }),
+            CdbWarning::Hierarchy(HierarchyWarning::RootNameNotCdb {
+                name: "MyStore".to_owned(),
+            }),
+            CdbWarning::Crs(CrsWarning::NotWgs84 {
+                found: "NTF (Paris)".to_owned(),
+            }),
+            CdbWarning::Coverage(CoverageWarning::UomLooksLikeUri {
+                uom: "urn:ogc:def:uom:EPSG::9001".to_owned(),
+            }),
+            CdbWarning::Tiling(TilingWarning::NonExtensionScheme {
+                id: "MyOwnGrid".to_owned(),
+            }),
+            CdbWarning::LanguageNotEnglish {
+                language: "fr".to_owned(),
+            },
+        ];
+        for warning in &samples {
+            let code = warning.code();
+            assert!(code.starts_with('/'), "{code} is not absolute");
+            assert!(
+                !code.chars().any(char::is_whitespace),
+                "{code} contains whitespace"
+            );
+        }
+        assert_eq!(
+            CdbWarning::Naming(NamingWarning::NonAscii {
+                name: "café".to_owned()
+            })
+            .code(),
+            "/req/core/name-unicode-A"
+        );
+        assert_eq!(
+            CdbWarning::Hierarchy(HierarchyWarning::RootNameNotCdb {
+                name: "MyStore".to_owned()
+            })
+            .code(),
+            "/rec/core/file-hierarchy-root-name"
+        );
+        assert_eq!(
+            CdbWarning::LanguageNotEnglish {
+                language: "fr".to_owned()
+            }
+            .code(),
+            "/req/core/name-language-B"
+        );
+    }
+
+    /// Design spec §7 — a finding serializes as a flat, self-describing
+    /// record: its stable `code`, the `class` it is filed under, its
+    /// `severity`, and the human `message`. Deliberately **not** a mirror of
+    /// the Rust variant tree, which is `#[non_exhaustive]` and will grow: the
+    /// wire shape freezes at 1.0 and must survive a new variant.
+    #[test]
+    fn req_core_conformance_finding_serializes_flat() {
+        let violation: CdbViolation = NamingViolation::ContainsSpace {
+            name: "a b".to_owned(),
+        }
+        .into();
+        let value = serde_json::to_value(&violation).unwrap();
+        assert_eq!(value["code"], "/req/core/name-spaces");
+        assert_eq!(value["class"], "file-naming");
+        assert_eq!(value["severity"], "violation");
+        assert_eq!(value["message"], violation.to_string());
+        assert_eq!(value.as_object().unwrap().len(), 4);
+
+        let warning = CdbWarning::LanguageNotEnglish {
+            language: "fr".to_owned(),
+        };
+        let value = serde_json::to_value(&warning).unwrap();
+        assert_eq!(value["code"], "/req/core/name-language-B");
+        assert_eq!(value["class"], "file-naming");
+        assert_eq!(value["severity"], "warning");
+        assert_eq!(value["message"], warning.to_string());
+    }
 
     /// Taxonomy (`/conf/minimal-core`): every module violation folds into
     /// [`CdbViolation`] via `From`, and `class()` files it under the correct
