@@ -10,7 +10,7 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One of the two application profiles compiled into cdb-lint.
 ///
@@ -139,6 +139,44 @@ pub enum Command {
     Version,
 }
 
+/// Which usage error occurred, for the one case where the caller can say
+/// more than [`parse`] can.
+///
+/// [`parse`] is pure: it reads the argument vector and never the filesystem,
+/// which is what keeps honesty rule 5 (design §5) mechanical rather than
+/// merely intended — a parser that cannot look at a datastore cannot let one
+/// choose its own yardstick. Design §4.2 nevertheless wants the
+/// missing-`--encoding` diagnostic to name the encoding the datastore appears
+/// to use. The two are reconciled by *discriminating the error* rather than
+/// by making the parser impure: the parser records that this particular
+/// failure is enrichable and hands over the root, and the check path — which
+/// is allowed to read the disk — appends the suggestion.
+///
+/// The consumer matches on this enum. It never matches on
+/// [`UsageError::message`], for the same reason nothing in cdb-lint keys on a
+/// finding's `Display` text.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike the library's own
+/// vocabularies: those track a draft standard read by other crates, whereas
+/// this one is read only by [`crate::run`]. Leaving it closed means the
+/// descriptor and baseline tasks cannot add a kind without the compiler
+/// pointing at every place that has to decide what to do with it — which is
+/// the behaviour a wildcard arm would quietly suppress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageErrorKind {
+    /// `--profile` was given without `--encoding`, **and** a `<ROOT>` was
+    /// supplied. The check path may enrich the message with the encoding the
+    /// datastore at `root` appears to use. A suggestion is all it may ever
+    /// become: the run still fails, and the user still states the yardstick.
+    MissingEncoding {
+        /// The datastore root the command line named.
+        root: PathBuf,
+    },
+    /// Every other usage error. Nothing about the filesystem could sharpen
+    /// the message, so the message stands as [`parse`] wrote it.
+    Other,
+}
+
 /// A command line that does not name a run cdb-lint can make.
 ///
 /// The message names the specific problem and, where a vocabulary was
@@ -150,13 +188,26 @@ pub struct UsageError {
     /// The whole diagnostic, without a trailing newline and without the
     /// `error:` prefix the caller adds.
     pub message: String,
+    /// Which error this is, for a caller that can add to it. See
+    /// [`UsageErrorKind`].
+    pub kind: UsageErrorKind,
 }
 
 impl UsageError {
-    /// A usage error carrying `message`.
-    fn new(message: impl Into<String>) -> Self {
+    /// A usage error carrying `message` that no caller can improve on.
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: UsageErrorKind::Other,
+        }
+    }
+
+    /// The `--profile`-without-`--encoding` error, tagged with the root so
+    /// the check path can suggest an encoding.
+    fn missing_encoding(message: impl Into<String>, root: PathBuf) -> Self {
+        Self {
+            message: message.into(),
+            kind: UsageErrorKind::MissingEncoding { root },
         }
     }
 }
@@ -495,10 +546,14 @@ fn assemble_check(raw: Raw) -> Result<Command, UsageError> {
         )));
     }
 
-    let profile = yardstick(raw.profile, raw.encoding, raw.profile_file)?;
+    // The root is read before the yardstick so that a run naming neither is
+    // told about the root first, and so that the one enrichable diagnostic
+    // has a root to carry.
+    let root = PathBuf::from(root);
+    let profile = yardstick(raw.profile, raw.encoding, raw.profile_file, &root)?;
 
     Ok(Command::Check(CheckArgs {
-        root: PathBuf::from(root),
+        root,
         profile,
         format: match raw.format {
             Some((_, format)) => parse_format(&format)?,
@@ -521,10 +576,16 @@ fn assemble_check(raw: Raw) -> Result<Command, UsageError> {
 /// flags actually given rather than restating the whole rule, because a user
 /// who typed `--profile` alone knows what a profile is and needs to be told
 /// only what is missing.
+///
+/// `root` is the datastore the command line named — already known to be
+/// present, since [`assemble_check`] demands it first. It is carried on the
+/// one enrichable diagnostic and used for nothing else here; this function
+/// does not touch the filesystem.
 fn yardstick(
     profile: Option<(&'static str, OsString)>,
     encoding: Option<(&'static str, OsString)>,
     profile_file: Option<(&'static str, OsString)>,
+    root: &Path,
 ) -> Result<ProfileChoice, UsageError> {
     match (profile, encoding, profile_file) {
         (Some((_, profile)), Some((_, encoding)), None) => Ok(ProfileChoice::Builtin {
@@ -532,10 +593,11 @@ fn yardstick(
             encoding: parse_encoding(&encoding)?,
         }),
         (None, None, Some((_, path))) => Ok(ProfileChoice::File(PathBuf::from(path))),
-        (Some(_), None, None) => Err(UsageError::new(
+        (Some(_), None, None) => Err(UsageError::missing_encoding(
             "`--profile` is half a yardstick: add `--encoding`, which takes `json` or \
              `xml`. cdb-lint states the metadata encoding rather than reading it off \
              the datastore it is judging",
+            root.to_path_buf(),
         )),
         (None, Some(_), None) => Err(UsageError::new(
             "`--encoding` is half a yardstick: add `--profile`, which takes \
@@ -1052,6 +1114,47 @@ mod tests {
             &usage_error(&["--encoding", "json", "/cdb"]),
             &["`--encoding`", "`--profile`"],
         );
+    }
+
+    /// Design §4.2 wants the missing-`--encoding` error to name the encoding
+    /// the datastore appears to use, and [`parse`] cannot look: it is pure,
+    /// and honesty rule 5 keeps it that way. So the error is *discriminated*
+    /// instead — it carries the root, and the check path enriches it.
+    /// Matching on [`UsageErrorKind`] rather than on the message text is the
+    /// same contract the findings keep: never key on prose.
+    #[test]
+    fn cli_args_missing_encoding_carries_the_root_for_the_hint() {
+        let error = match parse(&args(&["--profile", "simulation", "/cdb"])) {
+            Err(error) => error,
+            Ok(command) => panic!("expected a usage error, got {command:?}"),
+        };
+
+        assert_eq!(
+            error.kind,
+            UsageErrorKind::MissingEncoding {
+                root: PathBuf::from("/cdb"),
+            }
+        );
+    }
+
+    /// With no root there is nothing to look at, so the error stays
+    /// undiscriminated: a hint would have to invent a datastore to describe.
+    /// The missing root is reported first anyway, which this pins.
+    #[test]
+    fn cli_args_missing_encoding_without_a_root_is_not_enrichable() {
+        for tokens in [
+            &["--profile", "simulation"][..],
+            &["--encoding", "json", "/cdb"][..],
+            &["/cdb"][..],
+            &["--nope", "/cdb"][..],
+        ] {
+            let error = match parse(&args(tokens)) {
+                Err(error) => error,
+                Ok(command) => panic!("{tokens:?} should fail, got {command:?}"),
+            };
+
+            assert_eq!(error.kind, UsageErrorKind::Other, "{tokens:?}");
+        }
     }
 
     /// A descriptor and a built-in profile are two yardsticks, and a run has

@@ -35,9 +35,19 @@
 
 use std::ffi::OsString;
 use std::io::Write;
+use std::path::Path;
+
+use rusty_cdb::conformance::ConformanceReport;
+use rusty_cdb::metadata::MetadataEncoding;
+use rusty_cdb::{CdbDatastore, hierarchy, metadata};
+
+use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
+use crate::render::text::{self, TextOptions};
 
 pub mod cli;
 pub mod exit;
+pub mod profile;
+pub mod render;
 
 /// The version of the `rusty_cdb` library whose judgment this build reports.
 ///
@@ -84,18 +94,218 @@ pub fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write, env: &En
             ),
             exit::OK,
         ),
-        Ok(cli::Command::Check(_) | cli::Command::Explain(_)) => {
-            // The check and explain paths, the report renderers, and the
-            // colour decision `env` feeds are not built yet.
-            let _ = env;
+        Ok(cli::Command::Check(args)) => check(&args, out, err, env),
+        Ok(cli::Command::Explain(_)) => {
+            // `explain` and its code catalogue arrive with their own task.
             write_to(err, "not yet implemented\n", exit::OPERATIONAL)
         }
-        Err(error) => write_to(
-            err,
-            &format!("error: {error}\ntry `cdb-lint --help` for usage\n"),
-            exit::USAGE,
-        ),
+        Err(error) => usage(err, &error),
     }
+}
+
+/// Check one datastore: resolve the yardstick, open the datastore, judge it,
+/// render the verdict, and answer with the code CI reads.
+///
+/// The three failure kinds stay apart, because they are three different
+/// facts and a build has to be able to tell them apart (design §4.1). A
+/// yardstick this build cannot construct is a **usage** error — nothing was
+/// judged, and the request was the problem. A datastore that cannot be opened
+/// or walked is **operational** — the tool could not look, which is a fact
+/// about the run and never about conformance, so a missing directory exits 3
+/// and not 1. Only a report that was actually produced can reach
+/// [`exit::FINDINGS`].
+fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) -> i32 {
+    let profile = match profile::resolve(&args.profile) {
+        Ok(profile) => profile,
+        Err(error) => return usage(err, &error),
+    };
+    // The other two formats, the file sink, and the baseline ratchet arrive
+    // in later tasks. Saying so beats rendering text to a caller waiting for
+    // JSON, or writing a report to stdout when the caller named a file and
+    // will go looking for it.
+    if args.format != Format::Text || args.output.is_some() || args.baseline.is_some() {
+        return write_to(err, "not yet implemented\n", exit::OPERATIONAL);
+    }
+
+    let datastore = match CdbDatastore::open(&args.root) {
+        Ok(datastore) => datastore,
+        Err(error) => return operational(err, &args.root, &error),
+    };
+    let report = match datastore.validate(&*profile) {
+        Ok(report) => report,
+        Err(error) => return operational(err, &args.root, &error),
+    };
+
+    let options = TextOptions {
+        encoding: profile.metadata_encoding(),
+        color: use_color(args.color, env),
+        quiet: args.quiet,
+        deny_warnings: args.deny_warnings,
+    };
+    if text::render(&report, &options, out).is_err() {
+        return exit::OPERATIONAL;
+    }
+    // A diagnostic, never a yardstick: the note goes to stderr and the report
+    // above is unchanged (design §5 rule 5).
+    if hint_at_encoding_mismatch(&report, profile.metadata_encoding(), err).is_err() {
+        return exit::OPERATIONAL;
+    }
+
+    verdict_code(&report, args.deny_warnings)
+}
+
+/// The exit code a completed run answers with.
+///
+/// Violations fail the build because conformance failed. Warnings fail it
+/// only when asked to: a warning is a SHOULD, and a SHOULD does not decide
+/// conformance — `--deny-warnings` moves the code without moving the verdict,
+/// and the report says so on its last line.
+fn verdict_code(report: &ConformanceReport, deny_warnings: bool) -> i32 {
+    if !report.is_conformant() {
+        return exit::FINDINGS;
+    }
+    // Over the classes the *report* lists rather than over a fixed roster:
+    // `RequirementsClass` is `#[non_exhaustive]` and a report lists every
+    // class it has something to say about, so asking the report is the only
+    // way this cannot fall behind a twelfth class.
+    let warned = report
+        .classes()
+        .any(|(_, findings)| !findings.warnings.is_empty());
+    if deny_warnings && warned {
+        return exit::FINDINGS;
+    }
+    exit::OK
+}
+
+/// Whether the text report is coloured.
+///
+/// `NO_COLOR` wins over the flag, unconditionally: design §4 states that any
+/// non-empty value forces `never`, and a user who exported it did so to stop
+/// arguing with individual tools about it.
+fn use_color(choice: ColorChoice, env: &Env) -> bool {
+    if env.no_color {
+        return false;
+    }
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => env.stdout_is_terminal,
+    }
+}
+
+/// Notes on stderr that the run's declared encoding and the datastore's
+/// disagree, and names the other spelling.
+///
+/// **This changes nothing.** The report is already written, the datastore
+/// still fails Requirement Metadata5, and the exit code still says so.
+/// Reading the encoding off the datastore instead of the command line would
+/// make Metadata5 unfailable — the crate's own false-green failure mode,
+/// reintroduced one layer up (design §5 rule 5) — so detection may suggest a
+/// flag and may never choose one.
+///
+/// The trigger is the finding's stable `code`, never its message text. That
+/// is the contract every finding's `code()` exists to serve, and prose is
+/// free to change within `1.x` while a code is not.
+fn hint_at_encoding_mismatch(
+    report: &ConformanceReport,
+    declared: MetadataEncoding,
+    err: &mut dyn Write,
+) -> std::io::Result<()> {
+    // Every class, keyed on the code alone. The clause is filed under
+    // Metadata today, but the hint's trigger is the code and nothing else —
+    // not the class it happens to sit under, and never the message text.
+    let mismatched = report.classes().any(|(_, findings)| {
+        findings
+            .violations
+            .iter()
+            .any(|violation| violation.code() == ENCODING_MISMATCH)
+    });
+    if !mismatched {
+        return Ok(());
+    }
+    let other = match declared {
+        MetadataEncoding::Json => "xml",
+        MetadataEncoding::Xml => "json",
+        // Unreachable through either door: no built-in profile can carry
+        // `gpkg`, and the descriptor pre-flight rejects it (design §9.2).
+        // There is no other spelling to suggest, so nothing is said.
+        MetadataEncoding::Gpkg => return Ok(()),
+    };
+    let note = format!(
+        "note: this run declared `--encoding {}`, and the datastore's global metadata \
+         record declares a different one ({ENCODING_MISMATCH}). If the datastore is \
+         right, re-run with `--encoding {other}`. The report above is unchanged: a \
+         datastore is judged against the yardstick you stated, never against itself.\n",
+        declared.as_str()
+    );
+    err.write_all(note.as_bytes())
+}
+
+/// Requirement Metadata5's declaration-mismatch clause, and the only thing
+/// the encoding hint keys on.
+const ENCODING_MISMATCH: &str = "/req/core/metadata-encoding";
+
+/// Report a usage error, enriching the one kind that a look at the disk can
+/// sharpen.
+///
+/// `cli::parse` is pure and cannot look; this can, and does so only to
+/// *suggest*. Where the datastore gives no unambiguous answer — neither
+/// record, or both — the base message stands, because a guess dressed as a
+/// hint is worse than no hint.
+fn usage(err: &mut dyn Write, error: &UsageError) -> i32 {
+    let mut message = error.message.clone();
+    if let UsageErrorKind::MissingEncoding { root } = &error.kind
+        && let Some(found) = detect_encoding(root)
+    {
+        message.push_str(&format!(
+            " — the datastore's global metadata is global_metadata.{found}; \
+             you probably want --encoding {found}"
+        ));
+    }
+
+    write_to(
+        err,
+        &format!("error: {message}\ntry `cdb-lint --help` for usage\n"),
+        exit::USAGE,
+    )
+}
+
+/// The encoding the datastore at `root` appears to use, when exactly one
+/// global metadata record is present.
+///
+/// `None` for neither and `None` for both: with nothing to point at, or two
+/// things to point at, there is no fact to report. Nothing downstream may
+/// turn this into a yardstick — it feeds one sentence of one error message.
+///
+/// The directory and the stem come from the library's own constants, so the
+/// probe cannot drift away from the record `validate` will go on to read.
+fn detect_encoding(root: &Path) -> Option<&'static str> {
+    let dir = root.join(hierarchy::GLOBAL_METADATA_DIR);
+    let found: Vec<&'static str> = ["json", "xml"]
+        .into_iter()
+        .filter(|extension| {
+            dir.join(format!("{}.{extension}", metadata::GLOBAL_METADATA_STEM))
+                .is_file()
+        })
+        .collect();
+
+    match found.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    }
+}
+
+/// Report an operational failure: the tool could not inspect the datastore.
+fn operational(err: &mut dyn Write, root: &Path, error: &dyn std::error::Error) -> i32 {
+    write_to(
+        err,
+        &format!(
+            "error: cannot inspect the datastore at {}: {error}\n\
+             this is a fact about the run, not a conformance verdict\n",
+            root.display()
+        ),
+        exit::OPERATIONAL,
+    )
 }
 
 /// Write `text` and answer with `code`, or with [`exit::OPERATIONAL`] if the
@@ -180,14 +390,14 @@ mod tests {
         assert!(err.contains("--help"), "the pointer is missing: {err}");
     }
 
-    /// Both runs that do real work are still stubs; they say so on stderr
-    /// and exit 3, which is the code for "the tool did not inspect
-    /// anything".
+    /// `explain` and its code catalogue arrive with their own task; until
+    /// then the subcommand parses and says so, rather than printing nothing
+    /// and exiting 0.
     #[test]
-    fn cli_run_check_and_explain_are_not_implemented_yet() {
+    fn cli_run_explain_is_not_implemented_yet() {
         for tokens in [
-            &["--profile", "simulation", "--encoding", "json", "/cdb"][..],
             &["explain", "--list"][..],
+            &["explain", "/req/core/name-spaces"][..],
         ] {
             let (code, out, err) = run_capturing(tokens);
 
@@ -195,6 +405,22 @@ mod tests {
             assert!(out.is_empty(), "{tokens:?} wrote {out}");
             assert!(err.contains("not yet implemented"), "{tokens:?}: {err}");
         }
+    }
+
+    /// A check whose datastore is not there exits 3, and the diagnostic says
+    /// which fact that is. Design §4.1 keeps "the tool could not look" apart
+    /// from "the datastore does not conform" precisely so a broken mount is
+    /// not reported as a failed audit; `tests/cli_check.rs` drives the rest
+    /// of the check path over real datastores.
+    #[test]
+    fn cli_run_check_reports_an_unreachable_datastore_as_operational() {
+        let (code, out, err) =
+            run_capturing(&["--profile", "simulation", "--encoding", "json", "/cdb"]);
+
+        assert_eq!(code, exit::OPERATIONAL);
+        assert!(out.is_empty(), "no half a report: {out}");
+        assert!(err.contains("/cdb"), "{err}");
+        assert!(err.contains("not a conformance verdict"), "{err}");
     }
 
     /// The constant is what `tests/version_guard.rs` holds against the
