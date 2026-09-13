@@ -1,0 +1,9 @@
+[package]
+name = "cdb-lint"
+version = "0.1.0"
+edition = "2024"
+description = "Command-line conformance checker for OGC CDB 2.0 Core datastores"
+
+# No dependencies: the argument grammar and the exit codes are pure `std`.
+# `rusty_cdb`, `serde`, `serde_json`, and `tempfile` arrive with the check
+# path; nothing new ever enters the lockfile (design §2 decision 5).

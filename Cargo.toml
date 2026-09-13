@@ -1,3 +1,6 @@
+[workspace]
+members = ["cdb-lint"]
+
 [package]
 name = "rusty_cdb"
 version = "1.0.0"
