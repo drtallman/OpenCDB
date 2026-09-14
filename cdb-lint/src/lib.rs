@@ -42,6 +42,7 @@ use rusty_cdb::metadata::MetadataEncoding;
 use rusty_cdb::{CdbDatastore, hierarchy, metadata};
 
 use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
+use crate::render::json;
 use crate::render::text::{self, TextOptions};
 
 pub mod cli;
@@ -119,11 +120,9 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         Ok(profile) => profile,
         Err(error) => return usage(err, &error),
     };
-    // The other two formats, the file sink, and the baseline ratchet arrive
-    // in later tasks. Saying so beats rendering text to a caller waiting for
-    // JSON, or writing a report to stdout when the caller named a file and
-    // will go looking for it.
-    if args.format != Format::Text || args.output.is_some() || args.baseline.is_some() {
+    // The baseline ratchet arrives in a later task. Saying so beats exiting
+    // 0 over a datastore whose findings were never compared to anything.
+    if args.baseline.is_some() {
         return write_to(err, "not yet implemented\n", exit::OPERATIONAL);
     }
 
@@ -136,17 +135,47 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         Err(error) => return operational(err, &args.root, &error),
     };
 
-    let options = TextOptions {
-        encoding: profile.metadata_encoding(),
-        color: use_color(args.color, env),
-        quiet: args.quiet,
-        deny_warnings: args.deny_warnings,
-    };
-    if text::render(&report, &options, out).is_err() {
+    // Render into a buffer first, so where the artifact *goes* is one
+    // decision taken once rather than a sink threaded through every
+    // renderer — and so a half-written file is not the way a rendering
+    // failure announces itself.
+    let mut artifact = Vec::new();
+    match args.format {
+        Format::Text => {
+            let options = TextOptions {
+                encoding: profile.metadata_encoding(),
+                color: use_color(args.color, env),
+                quiet: args.quiet,
+                deny_warnings: args.deny_warnings,
+            };
+            if text::render(&report, &options, &mut artifact).is_err() {
+                return exit::OPERATIONAL;
+            }
+        }
+        Format::Json => {
+            if json::render(&report, &mut artifact).is_err() {
+                return exit::OPERATIONAL;
+            }
+        }
+        // SARIF arrives with its own task, and needs the code catalogue that
+        // precedes it.
+        Format::Sarif => return write_to(err, "not yet implemented\n", exit::OPERATIONAL),
+    }
+
+    if let Err(code) = emit(&artifact, args.output.as_deref(), out, err) {
+        return code;
+    }
+
+    // Everything below is the conversation, and all of it goes to `err`.
+    // The artifact is finished and, under `-o`, already on disk.
+    if args.format == Format::Json && json::write_tally(&report, err).is_err() {
+        // Honesty rule 2: the JSON artifact cannot carry the aggregate
+        // without ceasing to be the frozen wire shape, so the tally is owed
+        // to stderr and a run that could not say it did not fully report.
         return exit::OPERATIONAL;
     }
     // A diagnostic, never a yardstick: the note goes to stderr and the report
-    // above is unchanged (design §5 rule 5).
+    // is unchanged (design §5 rule 5).
     if hint_at_encoding_mismatch(&report, profile.metadata_encoding(), err).is_err() {
         return exit::OPERATIONAL;
     }
@@ -292,6 +321,46 @@ fn detect_encoding(root: &Path) -> Option<&'static str> {
     match found.as_slice() {
         [only] => Some(only),
         _ => None,
+    }
+}
+
+/// Put the finished artifact where the caller asked for it.
+///
+/// stdout carries the artifact and stderr carries the conversation (design
+/// §6); `-o` moves the artifact off stdout and leaves that split intact, so a
+/// run with `-o` still says everything it would otherwise have said — just
+/// not into the file.
+///
+/// # Errors
+///
+/// Returns the exit code the caller should answer with. A file that cannot be
+/// created or written is an I/O failure that stopped the run, which is
+/// [`exit::OPERATIONAL`]; [`exit::USAGE`] stays for what can be caught before
+/// any work is done.
+fn emit(
+    artifact: &[u8],
+    output: Option<&Path>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), i32> {
+    let Some(path) = output else {
+        return match out.write_all(artifact) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(exit::OPERATIONAL),
+        };
+    };
+
+    match std::fs::write(path, artifact) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(write_to(
+            err,
+            &format!(
+                "error: cannot write the report to {}: {error}\n\
+                 this is a fact about the run, not a conformance verdict\n",
+                path.display()
+            ),
+            exit::OPERATIONAL,
+        )),
     }
 }
 

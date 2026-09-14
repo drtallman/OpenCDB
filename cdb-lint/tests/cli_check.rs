@@ -896,23 +896,19 @@ fn cli_check_profile_file_is_a_usage_error_for_now() {
     );
 }
 
-/// The other formats, the file sink, and the baseline arrive in later tasks.
-/// Until then each says so. Silence would be worse than an error in every
-/// case: text rendered to a caller waiting for JSON reads as a corrupt
-/// document, and a report written to stdout when the caller named a file
-/// leaves them looking for a file that was never created.
+/// SARIF and the baseline arrive in later tasks. Until then each says so.
+/// Silence would be worse than an error in both cases: a caller waiting on
+/// SARIF would read a text report as a corrupt document, and a baseline that
+/// was silently ignored would exit 0 over findings nothing had compared.
+///
+/// `--format json` and `-o` are no longer here: `tests/cli_output.rs` owns
+/// them now that they do something.
 #[test]
 fn cli_check_the_later_tasks_are_still_stubs() {
     let (_tmp, root) = bare(&SimulationProfile::json());
     let root = root.to_string_lossy().into_owned();
 
-    for extra in [
-        vec!["--format", "json"],
-        vec!["--format", "sarif"],
-        vec!["--output", "report.txt"],
-        vec!["-o", "report.txt"],
-        vec!["--baseline", "base.json"],
-    ] {
+    for extra in [vec!["--format", "sarif"], vec!["--baseline", "base.json"]] {
         let mut tokens = vec!["--profile", "simulation", "--encoding", "json"];
         tokens.extend_from_slice(&extra);
         tokens.push(&root);

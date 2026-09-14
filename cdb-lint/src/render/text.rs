@@ -51,6 +51,8 @@ use rusty_cdb::conformance::{
 };
 use rusty_cdb::metadata::MetadataEncoding;
 
+use crate::render::{Tally, plural};
+
 /// SGR green, for `PASS`.
 const GREEN: &str = "\u{1b}[32m";
 /// SGR red, for `FAIL`.
@@ -151,7 +153,7 @@ pub fn render(
     }
 
     writeln!(out)?;
-    tally.write(out)?;
+    writeln!(out, "{}", tally.line())?;
     write_verdict(out, report.is_conformant(), &tally, options.deny_warnings)
 }
 
@@ -264,53 +266,6 @@ fn note(coverage: ContentCoverage) -> Option<&'static str> {
     }
 }
 
-/// The running counts behind the aggregate line.
-///
-/// The line prints on every run, `--quiet` included, because it is the one
-/// place a reader who sees nothing else still learns how much was actually
-/// checked (design §5 rule 2). Its three coverage counts always sum to the
-/// class count.
-#[derive(Debug, Default)]
-struct Tally {
-    classes: usize,
-    checked: usize,
-    no_content: usize,
-    unchecked: usize,
-    violations: usize,
-    warnings: usize,
-}
-
-impl Tally {
-    /// Folds one class's findings in.
-    fn add(&mut self, findings: &ClassFindings) {
-        self.classes += 1;
-        match findings.coverage {
-            ContentCoverage::Checked => self.checked += 1,
-            ContentCoverage::NoContent => self.no_content += 1,
-            ContentCoverage::Unchecked => self.unchecked += 1,
-        }
-        self.violations += findings.violations.len();
-        self.warnings += findings.warnings.len();
-    }
-
-    /// Writes the aggregate line.
-    fn write(&self, out: &mut dyn Write) -> io::Result<()> {
-        writeln!(
-            out,
-            "{} {}: {} checked, {} no content, {} not checked · {} {} · {} {}",
-            self.classes,
-            plural(self.classes, "class", "classes"),
-            self.checked,
-            self.no_content,
-            self.unchecked,
-            self.violations,
-            plural(self.violations, "violation", "violations"),
-            self.warnings,
-            plural(self.warnings, "warning", "warnings"),
-        )
-    }
-}
-
 /// The verdict line.
 ///
 /// Conformance is decided by violations alone, so `--deny-warnings` can only
@@ -336,11 +291,6 @@ fn write_verdict(
         );
     }
     writeln!(out, "CONFORMANT")
-}
-
-/// `singular` for exactly one, `many` otherwise — including zero.
-fn plural(count: usize, singular: &'static str, many: &'static str) -> &'static str {
-    if count == 1 { singular } else { many }
 }
 
 #[cfg(test)]
