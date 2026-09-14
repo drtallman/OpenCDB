@@ -877,24 +877,9 @@ fn cli_check_a_nonexistent_root_is_operational_not_a_finding() {
     assert!(!run.err.is_empty(), "the failure is explained");
 }
 
-/// A descriptor parses and then says plainly that it does nothing yet.
-/// Nothing was judged, so the code is 2 rather than 3.
-#[test]
-fn cli_check_profile_file_is_a_usage_error_for_now() {
-    let (_tmp, root) = bare(&SimulationProfile::json());
-
-    let run = lint(
-        &["--profile-file", "acme.json", &root.to_string_lossy()],
-        &plain_env(),
-    );
-
-    assert_eq!(run.code, exit::USAGE, "{}\n{}", run.out, run.err);
-    assert!(
-        run.err.contains("`--profile-file` is not implemented yet"),
-        "{}",
-        run.err
-    );
-}
+// `--profile-file` is no longer here: `tests/cli_profile.rs` owns the
+// descriptor now that it resolves to a working yardstick, along with the
+// pre-flight that refuses a broken one.
 
 /// The baseline ratchet arrives in a later task. Until then it says so:
 /// a baseline that was silently ignored would exit 0 over findings nothing had
