@@ -151,6 +151,32 @@ fn read(path: &Path) -> String {
         .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()))
 }
 
+/// Constructs that would desynchronize [`code_literals`]'s split-on-quote
+/// scan: a quote written as a char literal, or a file whose quote characters
+/// do not pair up (one string literal carrying an odd number of escaped
+/// quotes). Either puts every literal after it off-phase, so a code added
+/// below the construct would be invisible to the scan — the *silent* version
+/// of the failure this file exists to make loud. Refusing the construct
+/// keeps the scanner simple and the failure noisy: whoever introduces one is
+/// told to rephrase it or to teach this guard to lex.
+///
+/// Paired escaped quotes inside one literal are tolerated: they leave the
+/// file's phase intact, and the mis-split fragments they produce fail the
+/// family filter. An independent lexer confirmed the scan and the tree agree
+/// under exactly these rules (final review, 2026-09-14).
+fn parity_hazards(text: &str) -> Vec<String> {
+    let mut hazards = Vec::new();
+    if let Some(index) = text.find("'\"'") {
+        hazards.push(format!("a quote char-literal at byte {index}"));
+    }
+    let quotes = text.bytes().filter(|byte| *byte == b'"').count();
+    if quotes % 2 != 0 {
+        hazards.push(format!("an odd number of quote characters ({quotes})"));
+    }
+
+    hazards
+}
+
 /// Every code the library's non-test conformance source can emit, each with
 /// the files it appears in.
 fn emitted_codes() -> BTreeMap<String, BTreeSet<String>> {
@@ -169,6 +195,15 @@ fn emitted_codes() -> BTreeMap<String, BTreeSet<String>> {
             continue;
         }
         let text = without_inline_tests(&read(path));
+        let hazards = parity_hazards(&text);
+        assert!(
+            hazards.is_empty(),
+            "{} holds {} — the split-on-quote scan would silently miss any \
+             code literal after it; rephrase the construct, or teach this \
+             guard to lex",
+            path.display(),
+            hazards.join(" and ")
+        );
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -383,6 +418,49 @@ mod tests {
     assert_eq!(declared_module("mod support;"), Some("support"));
     assert_eq!(declared_module("pub mod support;"), Some("support"));
     assert_eq!(declared_module("mod tests {"), None);
+}
+
+/// The scanner refuses the two constructs that would desynchronize its
+/// split-on-quote pass, so a phase flip fails the build instead of silently
+/// hiding every code literal after it.
+///
+/// A concatenated code escaping the scan is a *documented* limit (design
+/// §13); an off-phase scan was not, and unlike concatenation it hides codes
+/// that are sitting right there as literals.
+#[test]
+fn cli_catalogue_guard_scanner_refuses_parity_hazards() {
+    let clean = "const OK: &str = \"/req/core/name-spaces\";";
+    assert_eq!(parity_hazards(clean), Vec::<String>::new());
+
+    // A quote char-literal flips the phase for the rest of the file.
+    let char_literal = "if character == '\"' { }";
+    assert!(
+        parity_hazards(char_literal)
+            .iter()
+            .any(|hazard| hazard.contains("char-literal")),
+        "{:?}",
+        parity_hazards(char_literal)
+    );
+
+    // One embedded escaped quote leaves the file's quote count odd.
+    let odd = "const MESSAGE: &str = \"say \\\" once\";";
+    assert!(
+        parity_hazards(odd)
+            .iter()
+            .any(|hazard| hazard.contains("odd number")),
+        "{:?}",
+        parity_hazards(odd)
+    );
+
+    // Paired escaped quotes keep the phase and are tolerated: the mis-split
+    // fragments they produce fail the family filter instead.
+    let paired = "const MESSAGE: &str = \"say \\\"hi\\\" now\";";
+    assert_eq!(parity_hazards(paired), Vec::<String>::new());
+    assert_eq!(
+        code_literals(paired),
+        Vec::<String>::new(),
+        "the fragments are not codes"
+    );
 }
 
 /// The catalogue is a `&[Entry]` of `&'static str`, so a row can be handed
