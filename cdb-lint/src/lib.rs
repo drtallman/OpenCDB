@@ -45,6 +45,7 @@ use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
 use crate::render::json;
 use crate::render::text::{self, TextOptions};
 
+pub mod catalogue;
 pub mod cli;
 pub mod exit;
 pub mod profile;
@@ -96,12 +97,124 @@ pub fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write, env: &En
             exit::OK,
         ),
         Ok(cli::Command::Check(args)) => check(&args, out, err, env),
-        Ok(cli::Command::Explain(_)) => {
-            // `explain` and its code catalogue arrive with their own task.
-            write_to(err, "not yet implemented\n", exit::OPERATIONAL)
-        }
+        Ok(cli::Command::Explain(args)) => explain(&args, out, err),
         Err(error) => usage(err, &error),
     }
+}
+
+/// Describe one finding code, or list the whole vocabulary.
+///
+/// A report names clauses and says nothing about them, because a code is a
+/// stable identifier and prose is not (`docs/CONFORMANCE.md` §5). This is
+/// the other half of that bargain, and it keeps the routing rule the rest of
+/// the tool keeps: a description is the artifact and goes to stdout, a
+/// failed lookup is a conversation and goes to stderr.
+///
+/// The catalogue is documentation with a completeness check, not a derived
+/// artifact — `tests/catalogue_guard.rs` holds its code column against the
+/// library and nothing holds the other three — so the output describes a
+/// clause and never claims to *be* one.
+fn explain(args: &cli::ExplainArgs, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    match (args.list, args.query.as_deref()) {
+        (true, _) => write_to(out, &listing(), exit::OK),
+        (false, Some(query)) => match catalogue::lookup(query) {
+            Some(entry) => write_to(out, &describe(entry), exit::OK),
+            None => write_to(err, &no_such_code(query), exit::USAGE),
+        },
+        // `cli::parse` admits exactly two forms of `explain` and this is
+        // neither; saying so beats printing nothing and exiting 0.
+        (false, None) => write_to(
+            err,
+            "error: `explain` needs a finding code, or `--list` to print every code\n",
+            exit::USAGE,
+        ),
+    }
+}
+
+/// One catalogue row, rendered for a reader.
+fn describe(entry: &catalogue::Entry) -> String {
+    format!(
+        "{}\n  class    {}\n  spec     OGC 23-034 §{}\n  {}\n",
+        entry.code,
+        class_line(entry.class),
+        entry.section,
+        entry.gloss
+    )
+}
+
+/// The class as a sentence rather than as a token.
+///
+/// [`catalogue::ANY_CLASS`] is not a class and must not be printed as one:
+/// `/conf/minimal-core` is filed under whichever mandatory class the profile
+/// omitted, and a reader who is told "crs" when their report said
+/// "file-naming" has been given a wrong answer confidently.
+fn class_line(class: &str) -> &str {
+    if class == catalogue::ANY_CLASS {
+        return "any mandatory class — the report files it under the one the profile omitted";
+    }
+    class
+}
+
+/// The whole catalogue as an aligned table, one row per line.
+///
+/// The column widths are measured off the catalogue rather than fixed, so a
+/// longer code widens the table instead of ragging it. [`catalogue::CATALOGUE`]
+/// is already in code order, so nothing is sorted here.
+fn listing() -> String {
+    let width = |field: fn(&catalogue::Entry) -> &str| {
+        catalogue::CATALOGUE
+            .iter()
+            .map(|entry| field(entry).len())
+            .max()
+            .unwrap_or_default()
+    };
+    let codes = width(|entry| entry.code);
+    let classes = width(|entry| entry.class);
+    let sections = width(|entry| entry.section);
+
+    let mut rendered = String::new();
+    for entry in catalogue::CATALOGUE {
+        rendered.push_str(&format!(
+            "{:codes$}  {:classes$}  {:sections$}  {}\n",
+            entry.code, entry.class, entry.section, entry.gloss
+        ));
+    }
+
+    rendered
+}
+
+/// The diagnostic for a query that is not a code.
+///
+/// It never stonewalls. A user who typed `-content-b`, or pasted a code out
+/// of a lowercased log, gets the codes that contain what they typed —
+/// case-folded, because the suggestion's job is to help, where the exact
+/// match's job is to be an identifier. A query nothing contains is told so,
+/// and pointed at the listing rather than left to guess the vocabulary.
+fn no_such_code(query: &str) -> String {
+    /// Enough suggestions to rescue a typo, few enough to read. Past this
+    /// the listing is the better answer, and the message says so.
+    const MAX_SUGGESTIONS: usize = 12;
+
+    let matches = catalogue::containing(query);
+    if matches.is_empty() {
+        return format!(
+            "error: `{query}` is not a finding code, and no code contains it\n\
+             try `cdb-lint explain --list` for every code\n"
+        );
+    }
+
+    let mut message = format!("error: `{query}` is not a finding code; did you mean:\n");
+    for entry in matches.iter().take(MAX_SUGGESTIONS) {
+        message.push_str(&format!("  {}\n", entry.code));
+    }
+    if matches.len() > MAX_SUGGESTIONS {
+        message.push_str(&format!(
+            "  … and {} more; try `cdb-lint explain --list` for every code\n",
+            matches.len() - MAX_SUGGESTIONS
+        ));
+    }
+
+    message
 }
 
 /// Check one datastore: resolve the yardstick, open the datastore, judge it,
@@ -459,21 +572,54 @@ mod tests {
         assert!(err.contains("--help"), "the pointer is missing: {err}");
     }
 
-    /// `explain` and its code catalogue arrive with their own task; until
-    /// then the subcommand parses and says so, rather than printing nothing
-    /// and exiting 0.
+    /// Both forms of `explain` produce an artifact: it is what the user
+    /// asked for, so it goes to stdout and exits 0. `tests/cli_explain.rs`
+    /// drives the rendering; this pins the routing.
     #[test]
-    fn cli_run_explain_is_not_implemented_yet() {
+    fn cli_run_explain_writes_its_answer_to_stdout() {
         for tokens in [
             &["explain", "--list"][..],
             &["explain", "/req/core/name-spaces"][..],
         ] {
             let (code, out, err) = run_capturing(tokens);
 
-            assert_eq!(code, exit::OPERATIONAL, "{tokens:?}");
-            assert!(out.is_empty(), "{tokens:?} wrote {out}");
-            assert!(err.contains("not yet implemented"), "{tokens:?}: {err}");
+            assert_eq!(code, exit::OK, "{tokens:?}: {err}");
+            assert!(out.contains("/req/core/name-spaces"), "{tokens:?}: {out}");
+            assert!(err.is_empty(), "{tokens:?} said {err}");
         }
+    }
+
+    /// A code the catalogue does not hold is a usage error, not an
+    /// operational one: nothing was wrong with the tool or the machine, the
+    /// request named something that does not exist.
+    #[test]
+    fn cli_run_explain_reports_an_unknown_code_as_usage() {
+        let (code, out, err) = run_capturing(&["explain", "/req/core/nope"]);
+
+        assert_eq!(code, exit::USAGE);
+        assert!(out.is_empty(), "stdout should stay clean: {out}");
+        assert!(err.contains("/req/core/nope"), "{err}");
+    }
+
+    /// The listing is bounded even when every code matches: `explain ""`
+    /// asks for a substring every code contains, and the answer is a pointer
+    /// at `--list` rather than the whole vocabulary on stderr.
+    #[test]
+    fn cli_run_explain_caps_its_suggestions() {
+        let message = no_such_code("");
+
+        assert!(
+            message.lines().count() < catalogue::CATALOGUE.len(),
+            "{message}"
+        );
+        assert!(message.contains("explain --list"), "{message}");
+    }
+
+    /// The cross-class marker never reaches a reader as if it were a class.
+    #[test]
+    fn cli_run_explain_spells_out_a_varying_class() {
+        assert_eq!(class_line("attribution"), "attribution");
+        assert!(class_line(catalogue::ANY_CLASS).contains("mandatory class"));
     }
 
     /// A check whose datastore is not there exits 3, and the diagnostic says
