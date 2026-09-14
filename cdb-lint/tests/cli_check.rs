@@ -850,6 +850,35 @@ fn req_cdb_lint_encoding_mismatch_hints_without_changing_the_verdict() {
     );
 }
 
+/// The mismatch note speaks only when the global metadata record itself is
+/// the other encoding. A stray wrongly-encoded file elsewhere carries the
+/// same finding code, but the record on disk agrees with the yardstick — the
+/// note's claim about "the datastore's global metadata record" would be
+/// false, and the flag flip it suggests would convict the very record it
+/// cites. The finding already names the stray file; the only honest hint
+/// there is none at all.
+#[test]
+fn req_cdb_lint_encoding_hint_speaks_only_for_the_global_record() {
+    let (_tmp, root) = bare(&SimulationProfile::json());
+    let stray = root.join("Tiles").join("metadata");
+    fs::create_dir_all(&stray).unwrap();
+    fs::write(stray.join("Stray.xml"), "<resource_metadata/>").unwrap();
+
+    let run = lint_sim(&root, &[]);
+
+    assert_eq!(run.code, exit::FINDINGS, "{}\n{}", run.out, run.err);
+    assert!(
+        run.out.contains("/req/core/metadata-encoding"),
+        "the stray file is still convicted:\n{}",
+        run.out
+    );
+    assert!(
+        !run.err.contains("re-run with"),
+        "no flag flip is suggested while the record matches the declaration: {}",
+        run.err
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Operational failure (exit 3) and the stubs
 // ---------------------------------------------------------------------------

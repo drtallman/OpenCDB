@@ -401,7 +401,7 @@ fn use_color(choice: ColorChoice, env: &Env) -> bool {
 }
 
 /// Notes on stderr that the run's declared encoding and the datastore's
-/// disagree, and names the other spelling.
+/// global metadata record disagree, and names the other spelling.
 ///
 /// **This changes nothing.** The report is already written, the datastore
 /// still fails Requirement Metadata5, and the exit code still says so.
@@ -413,6 +413,14 @@ fn use_color(choice: ColorChoice, env: &Env) -> bool {
 /// The trigger is the finding's stable `code`, never its message text. That
 /// is the contract every finding's `code()` exists to serve, and prose is
 /// free to change within `1.x` while a code is not.
+///
+/// **The claim is verified before it is spoken.** The code convicts *any*
+/// wrongly-encoded metadata file, but this note asserts a fact about the
+/// global record specifically — and recommends re-running against it. When
+/// the record on disk already matches the declaration (the mismatch is a
+/// stray file the finding itself names), the assertion would be false and
+/// the suggested flip would convict the very record it cites, so the note
+/// stays silent and the finding speaks for itself.
 fn hint_at_encoding_mismatch(
     report: &ConformanceReport,
     declared: MetadataEncoding,
@@ -438,9 +446,12 @@ fn hint_at_encoding_mismatch(
         // There is no other spelling to suggest, so nothing is said.
         MetadataEncoding::Gpkg => return Ok(()),
     };
+    if detect_encoding(report.root()) != Some(other) {
+        return Ok(());
+    }
     let note = format!(
         "note: this run declared `--encoding {}`, and the datastore's global metadata \
-         record declares a different one ({ENCODING_MISMATCH}). If the datastore is \
+         record is global_metadata.{other} ({ENCODING_MISMATCH}). If the datastore is \
          right, re-run with `--encoding {other}`. The report above is unchanged: a \
          datastore is judged against the yardstick you stated, never against itself.\n",
         declared.as_str()
@@ -482,7 +493,9 @@ fn usage(err: &mut dyn Write, error: &UsageError) -> i32 {
 ///
 /// `None` for neither and `None` for both: with nothing to point at, or two
 /// things to point at, there is no fact to report. Nothing downstream may
-/// turn this into a yardstick — it feeds one sentence of one error message.
+/// turn this into a yardstick — it feeds one sentence of the
+/// missing-`--encoding` error, and the pre-speech check of
+/// [`hint_at_encoding_mismatch`], and nothing else.
 ///
 /// The directory and the stem come from the library's own constants, so the
 /// probe cannot drift away from the record `validate` will go on to read.
