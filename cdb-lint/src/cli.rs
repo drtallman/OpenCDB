@@ -376,6 +376,15 @@ fn split_long(rest: &str) -> (&str, Option<&str>) {
 }
 
 /// The value of a flag: attached with `=`, or the next argument.
+///
+/// A separated value that itself looks like a flag — a leading `-` and more
+/// than that one character — is refused rather than consumed. `-o
+/// --deny-warnings` is a script's mistake, and swallowing the flag would
+/// both misname the file and silently drop the request the user made —
+/// exactly the reinterpretation the repeat rule refuses elsewhere in this
+/// grammar. A value that genuinely starts with `-` is spelled attached
+/// (`--output=-x`) or as a path (`./-x`); a bare `-` passes, being a file
+/// name by long convention rather than a flag in this grammar.
 fn take_value(
     spelling: &'static str,
     attached: Option<&str>,
@@ -386,6 +395,14 @@ fn take_value(
         return Ok(OsString::from(value));
     }
     match args.get(*index) {
+        Some(value) if starts_with_dash(value) && value.as_encoded_bytes().len() > 1 => {
+            Err(UsageError::new(format!(
+                "`{spelling}` needs a value, and the next argument `{}` looks like a flag; \
+                 a value that really starts with `-` can be attached with `=` to the long \
+                 form, or spelled as a path with a leading `./`",
+                value.to_string_lossy()
+            )))
+        }
         Some(value) => {
             *index += 1;
             Ok(value.clone())
@@ -1053,6 +1070,44 @@ mod tests {
     fn cli_args_rejects_missing_flag_value() {
         names(&usage_error(&["--profile"]), &["`--profile`", "value"]);
         names(&usage_error(&["/cdb", "-o"]), &["`-o`", "value"]);
+    }
+
+    /// A value-taking flag does not swallow the next flag. `-o
+    /// --deny-warnings <root>` used to write the report to a file named
+    /// `--deny-warnings` and silently drop the deny-warnings request — a CI
+    /// run passing where the user asked it to fail — which contradicts this
+    /// grammar's own stance that a script's flag mistake is reported rather
+    /// than silently reinterpreted (final review, 2026-09-14). A file
+    /// genuinely named like a flag stays reachable: attach it with `=`, or
+    /// spell the path with a leading `./`.
+    #[test]
+    fn cli_args_a_value_taking_flag_refuses_a_flag_shaped_value() {
+        let mut tokens = SIM_JSON.to_vec();
+        tokens.extend(["-o", "--deny-warnings", "/cdb"]);
+        names(&usage_error(&tokens), &["`-o`", "`--deny-warnings`"]);
+
+        let mut tokens = SIM_JSON.to_vec();
+        tokens.extend(["--baseline", "-q", "/cdb"]);
+        names(&usage_error(&tokens), &["`--baseline`", "`-q`"]);
+
+        // The escapes, both spellings.
+        let mut tokens = SIM_JSON.to_vec();
+        tokens.extend(["--output=--deny-warnings", "/cdb"]);
+        assert_eq!(
+            check(&tokens).output,
+            Some(PathBuf::from("--deny-warnings"))
+        );
+        let mut tokens = SIM_JSON.to_vec();
+        tokens.extend(["-o", "./--deny-warnings", "/cdb"]);
+        assert_eq!(
+            check(&tokens).output,
+            Some(PathBuf::from("./--deny-warnings"))
+        );
+
+        // A bare `-` is a file name by long convention, not a flag.
+        let mut tokens = SIM_JSON.to_vec();
+        tokens.extend(["-o", "-", "/cdb"]);
+        assert_eq!(check(&tokens).output, Some(PathBuf::from("-")));
     }
 
     /// Each vocabulary rejection lists the spellings that would have worked,
