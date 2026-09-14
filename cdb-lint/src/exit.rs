@@ -30,6 +30,30 @@ pub const USAGE: i32 = 2;
 /// exits 3, not 1.
 pub const OPERATIONAL: i32 = 3;
 
+/// Whether a completed, unratcheted run's findings fail the build:
+/// violations always do, warnings only when `--deny-warnings` asks.
+///
+/// This predicate is written once, here, and read from two places — the
+/// exit code in `lib::verdict_code` and the verdict line's flag attribution
+/// in `render::text` — because honesty rule 4's promise is exactly that the
+/// two agree: the line names the flag that moved the code, and two
+/// independent spellings of "moved" would be two chances to drift apart
+/// silently.
+pub(crate) fn fails(conformant: bool, has_warnings: bool, deny_warnings: bool) -> bool {
+    !conformant || (deny_warnings && has_warnings)
+}
+
+/// Whether a ratcheted run fails the build: only what is **new** since the
+/// baseline counts — new violations always, new warnings when
+/// `--deny-warnings` asks. Shared for the same reason as [`fails`].
+pub(crate) fn ratchet_fails(
+    new_violations: usize,
+    new_warnings: usize,
+    deny_warnings: bool,
+) -> bool {
+    new_violations > 0 || (deny_warnings && new_warnings > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +78,43 @@ mod tests {
         assert_ne!(OPERATIONAL, USAGE);
         assert_ne!(OPERATIONAL, FINDINGS);
         assert_ne!(OPERATIONAL, OK);
+    }
+
+    /// The one failing predicate, as its whole truth table: violations fail,
+    /// warnings fail only when denied, and a ratchet asks the same two
+    /// questions of what is *new*. `lib::verdict_code` and the verdict line
+    /// both read these, so the table here is the table everywhere.
+    #[test]
+    fn cli_exit_the_failing_predicate_has_one_truth_table() {
+        // (conformant, has_warnings, deny) → fails
+        for (conformant, has_warnings, deny, expected) in [
+            (true, false, false, false),
+            (true, true, false, false),
+            (true, true, true, true),
+            (true, false, true, false),
+            (false, false, false, true),
+            (false, true, true, true),
+        ] {
+            assert_eq!(
+                fails(conformant, has_warnings, deny),
+                expected,
+                "fails({conformant}, {has_warnings}, {deny})"
+            );
+        }
+        // (new violations, new warnings, deny) → ratchet_fails
+        for (violations, warnings, deny, expected) in [
+            (0, 0, false, false),
+            (0, 3, false, false),
+            (0, 3, true, true),
+            (1, 0, false, true),
+            (1, 0, true, true),
+            (0, 0, true, false),
+        ] {
+            assert_eq!(
+                ratchet_fails(violations, warnings, deny),
+                expected,
+                "ratchet_fails({violations}, {warnings}, {deny})"
+            );
+        }
     }
 }

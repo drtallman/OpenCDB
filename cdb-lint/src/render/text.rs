@@ -403,7 +403,9 @@ fn write_verdict(
     if !conformant {
         return writeln!(out, "NON-CONFORMANT");
     }
-    if deny_warnings && tally.warnings > 0 {
+    // The same predicate the exit code reads, so the attribution and the
+    // code cannot disagree about whether the flag moved it.
+    if crate::exit::fails(conformant, tally.warnings > 0, deny_warnings) {
         return writeln!(
             out,
             "CONFORMANT ({} {}) — exit 1 by --deny-warnings",
@@ -450,9 +452,11 @@ fn ratcheted_verdict(
 
     // What the run exits with, and what it would have exited with had no
     // baseline been given. Naming a flag is warranted exactly when those two
-    // differ, which is what "the flag moved the exit code" means.
-    let failing = new_violations > 0 || (deny_warnings && new_warnings > 0);
-    let would_fail_unratcheted = !conformant || (deny_warnings && tally.warnings > 0);
+    // differ, which is what "the flag moved the exit code" means — and both
+    // are read from the predicate `exit` owns, the same one `verdict_code`
+    // reads, so this line cannot drift from the code it explains.
+    let failing = crate::exit::ratchet_fails(new_violations, new_warnings, deny_warnings);
+    let would_fail_unratcheted = crate::exit::fails(conformant, tally.warnings > 0, deny_warnings);
 
     let attribution = if !failing && would_fail_unratcheted {
         "; exit 0 by --baseline"

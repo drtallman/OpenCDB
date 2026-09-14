@@ -360,17 +360,15 @@ fn verdict_code(
     deny_warnings: bool,
     baseline: Option<&BaselineDiff>,
 ) -> i32 {
+    // Both arms read the one predicate `exit` owns — the same one the
+    // verdict line's flag attribution reads — so the code and the line
+    // cannot drift apart (design §5 rule 4).
     if let Some(diff) = baseline {
-        if diff.new_violations() > 0 {
-            return exit::FINDINGS;
-        }
-        if deny_warnings && diff.new_warnings() > 0 {
-            return exit::FINDINGS;
-        }
-        return exit::OK;
-    }
-    if !report.is_conformant() {
-        return exit::FINDINGS;
+        return if exit::ratchet_fails(diff.new_violations(), diff.new_warnings(), deny_warnings) {
+            exit::FINDINGS
+        } else {
+            exit::OK
+        };
     }
     // Over the classes the *report* lists rather than over a fixed roster:
     // `RequirementsClass` is `#[non_exhaustive]` and a report lists every
@@ -379,10 +377,11 @@ fn verdict_code(
     let warned = report
         .classes()
         .any(|(_, findings)| !findings.warnings.is_empty());
-    if deny_warnings && warned {
-        return exit::FINDINGS;
+    if exit::fails(report.is_conformant(), warned, deny_warnings) {
+        exit::FINDINGS
+    } else {
+        exit::OK
     }
-    exit::OK
 }
 
 /// Whether the text report is coloured.
