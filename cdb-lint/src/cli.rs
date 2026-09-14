@@ -338,6 +338,20 @@ fn reject_foreign<T>(
     }
 }
 
+/// Whether an unrecognized dash-leading token is `explain`'s query rather
+/// than a flag: the first positional so far is the bare `explain` word.
+///
+/// Design §7 promises a suggestion to the user who typed `-content-b`, and a
+/// finding-code fragment's most likely spelling begins with a hyphen — a
+/// part letter's, or a pasted tail's. Only tokens *no* flag vocabulary
+/// recognizes fall through to this: `--list` keeps listing, `-h` keeps
+/// helping, and a foreign flag such as `--format` still parses as itself so
+/// the refusal can name it. Outside `explain` nothing changes, and [`parse`]
+/// stays pure.
+fn explain_query(raw: &Raw) -> bool {
+    raw.positionals.first().and_then(|first| first.to_str()) == Some("explain")
+}
+
 /// The diagnostic for a short-flag token that is not one of the four.
 fn not_a_short_flag(token: &str) -> UsageError {
     UsageError::new(format!(
@@ -467,6 +481,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, UsageError> {
                     no_value("--list", attached)?;
                     set_once(&mut raw.list, "--list", ())?;
                 }
+                _ if explain_query(&raw) => raw.positionals.push(arg.clone()),
                 _ => return Err(UsageError::new(format!("unknown flag `--{name}`"))),
             }
         } else if text.starts_with('-') && text.len() > 1 {
@@ -478,6 +493,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, UsageError> {
                     set_once(&mut raw.output, "-o", value)?;
                 }
                 "-q" => set_once(&mut raw.quiet, "-q", ())?,
+                _ if explain_query(&raw) => raw.positionals.push(arg.clone()),
                 _ if text.chars().count() > 2 => return Err(not_a_short_flag(text)),
                 _ => return Err(UsageError::new(format!("unknown flag `{text}`"))),
             }
@@ -1233,6 +1249,48 @@ mod tests {
         let mut tokens = SIM_JSON.to_vec();
         tokens.extend(["--list", "/cdb"]);
         names(&usage_error(&tokens), &["`--list`", "explain"]);
+    }
+
+    /// After `explain`, a dash-leading token no flag vocabulary recognizes
+    /// is the query. Design §7 promises the user who typed `-content-b` a
+    /// suggestion, and a code fragment's most likely spelling begins with a
+    /// hyphen — a part letter's, or a pasted tail's. Recognized flags keep
+    /// their meanings, foreign ones are still refused by name, and outside
+    /// `explain` an unknown flag stays the error it always was.
+    #[test]
+    fn cli_args_explain_reads_a_dash_leading_token_as_the_query() {
+        for query in ["-content-b", "--no-such-code"] {
+            assert_eq!(
+                parse(&args(&["explain", query])),
+                Ok(Command::Explain(ExplainArgs {
+                    query: Some(query.to_owned()),
+                    list: false,
+                })),
+                "{query}"
+            );
+        }
+
+        // The recognized vocabulary is untouched, foreign flags included:
+        // `--format` still parses as itself, so the refusal can name it.
+        assert_eq!(
+            parse(&args(&["explain", "--list"])),
+            Ok(Command::Explain(ExplainArgs {
+                query: None,
+                list: true,
+            }))
+        );
+        assert_eq!(parse(&args(&["explain", "-h"])), Ok(Command::Help));
+        names(
+            &usage_error(&["explain", "--format", "json", "/req/core/links"]),
+            &["`--format`", "explain"],
+        );
+
+        // Outside `explain`, nothing changes.
+        names(&usage_error(&["-content-b", "/cdb"]), &["short flag"]);
+        names(
+            &usage_error(&["--no-such-code", "/cdb"]),
+            &["`--no-such-code`"],
+        );
     }
 
     /// A code that is not text.

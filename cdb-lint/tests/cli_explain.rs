@@ -180,6 +180,30 @@ fn cli_explain_suggests_codes_containing_the_query() {
     assert!(!run.err.contains("/req/core/name-spaces"), "{}", run.err);
 }
 
+/// Design §7's own worked example: the user who typed `-content-b` — the
+/// tail of a code, leading hyphen included, which is how a part letter's
+/// fragment naturally reads — is rescued by the suggestion list. A parser
+/// that read the token as a short-flag cluster would answer with a lecture
+/// about `-q -o out.json`: the wrong error entirely, about a flag the user
+/// never meant to type, with the rescue unreachable behind it.
+#[test]
+fn cli_explain_suggests_for_a_dash_leading_fragment() {
+    let run = lint(&["explain", "-content-b"]);
+
+    assert_eq!(run.code, exit::USAGE, "{}", run.out);
+    assert!(run.out.is_empty(), "{}", run.out);
+    assert!(
+        run.err.contains("/req/core/attribute-model-content-B"),
+        "the fragment's code should be suggested: {}",
+        run.err
+    );
+    assert!(
+        !run.err.contains("short flag"),
+        "a query is not a flag, and the diagnostic must not treat it as one: {}",
+        run.err
+    );
+}
+
 /// A query nothing contains says so, and points at the listing rather than
 /// leaving the user to guess what the vocabulary is.
 #[test]
