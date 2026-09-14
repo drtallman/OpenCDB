@@ -562,7 +562,19 @@ fn emit(
     let Some(path) = output else {
         return match out.write_all(artifact) {
             Ok(()) => Ok(()),
-            Err(_) => Err(exit::OPERATIONAL),
+            // A closed pipe deserves the same courtesy as an unwritable
+            // file: a bare exit 3 with silent streams is indistinguishable
+            // from an unreadable datastore, which is the one confusion the
+            // exit-code contract exists to prevent. If stderr is broken too,
+            // `write_to` still answers with the same code.
+            Err(error) => Err(write_to(
+                err,
+                &format!(
+                    "error: cannot write the report to stdout: {error}\n\
+                     this is a fact about the run, not a conformance verdict\n"
+                ),
+                exit::OPERATIONAL,
+            )),
         };
     };
 
@@ -739,6 +751,35 @@ mod tests {
         assert!(out.is_empty(), "no half a report: {out}");
         assert!(err.contains("/cdb"), "{err}");
         assert!(err.contains("not a conformance verdict"), "{err}");
+    }
+
+    /// A sink that refuses every write, standing in for a closed pipe.
+    struct BrokenSink;
+
+    impl Write for BrokenSink {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A report that cannot reach stdout stops the run at exit 3 — and the
+    /// run says so on stderr, exactly as the unwritable-file arm always
+    /// has. A bare exit 3 with both streams silent is indistinguishable
+    /// from an unreadable datastore, the one confusion the exit-code
+    /// contract exists to prevent.
+    #[test]
+    fn cli_run_emit_names_a_failed_stdout_write() {
+        let mut err = Vec::new();
+        let code = emit(b"the report", None, &mut BrokenSink, &mut err)
+            .expect_err("a refused write is an operational failure");
+
+        assert_eq!(code, exit::OPERATIONAL);
+        let said = String::from_utf8_lossy(&err);
+        assert!(said.contains("cannot write the report"), "{said}");
+        assert!(said.contains("not a conformance verdict"), "{said}");
     }
 
     /// The constant is what `tests/version_guard.rs` holds against the
