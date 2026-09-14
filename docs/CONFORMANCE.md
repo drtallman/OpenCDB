@@ -625,3 +625,27 @@ says whether one is.
 No guard can check that a cited test *proves* what the row claims. That is
 what the citation is for: the row tells you where to look, and the test's own
 doc comment cites the spec clause it verifies.
+
+**This document has an executable form.** `cdb-lint` — the workspace's CLI,
+`cdb-lint/` at `0.1.0` — runs the same `CdbDatastore::validate` against a
+stated profile and renders the verdict as text, as the JSON wire shape §2
+describes, or as SARIF. Every finding code in §5 has a row in its catalogue
+carrying the class the report files it under, the clause in OGC 23-034, and one
+line describing that clause; `cdb-lint explain /req/core/name-spaces` prints
+one, and `cdb-lint explain --list` prints them all. A fourth staleness guard
+lives there rather than here: `cdb-lint/tests/catalogue_guard.rs` scans this
+crate's `src/conformance/` tree for the code literals the library can emit and
+demands an exact two-way match, so a code that ships without a row fails
+cdb-lint's build — and a row naming a code the library cannot emit fails it
+too. Like the three guards above, it proves completeness rather than
+correctness: the class, clause and gloss columns there are hand-authored and
+reviewed by eye, exactly as this document's are.
+
+§6 is the part of this document the CLI implements rather than cites.
+`cdb-lint/tests/cli_honesty.rs` holds the tool to those notes in all three
+output formats at once: `unchecked` never renders as a green pass, no output
+omits coverage, and a ratchet may move an exit code but never the report. The
+two renderers spell the third state differently and mean the same thing — this
+crate's `Display` writes `[PASS] geometry (content not checked)`, where the CLI
+gives the state a token of its own, `[UNCHECKED] geometry  content present, no
+datastore-level check`, and never paints it the colour of a pass.

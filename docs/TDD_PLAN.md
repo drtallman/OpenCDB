@@ -550,9 +550,30 @@ current knowledge, the first public OGC CDB 2.0 implementation and the only
 executable conformance check for it — these efforts turn that position into
 an ecosystem.
 
-- **Conformance CLI** (`cdb-lint`-style binary wrapping
-  `CdbDatastore::validate` → Annex-A-style report; the adoption artifact
-  implementers test against). Small; nearest-term.
+- ~~**Conformance CLI**~~ — **done, 2026-09-13/14**: shipped as the
+  `cdb-lint` crate at `0.1.0`, a workspace sibling (the repository is now a
+  two-crate workspace, and every gate is workspace-wide). It wraps
+  `CdbDatastore::validate` in a command: two built-in profiles or a JSON
+  profile descriptor as the yardstick, `text`/`json`/`sarif` reports, four CI
+  exit codes (0 conformant, 1 findings, 2 usage, 3 operational), `cdb-lint
+  explain` over an 82-row finding-code catalogue whose completeness is held
+  against `src/conformance/` by a staleness guard, and `--baseline`
+  ratcheting. Zero new dependencies entered the lockfile, and **nothing under
+  `src/` changed** — the library kept its `v1.0.0` bytes, and the design spec
+  makes any exception to that an explicit amendment rather than a quiet edit.
+  Design: `docs/superpowers/specs/2026-09-13-cdb-lint-design.md`; usage:
+  `cdb-lint/README.md`. Its six honesty rules — chief among them that
+  `unchecked` never renders as a green pass — descend from
+  `docs/CONFORMANCE.md` §6 and are held across all three formats by
+  `cdb-lint/tests/cli_honesty.rs`. As-built notes: the descriptor is JSON
+  rather than TOML (no new dependency may parse TOML) and rejects unknown
+  keys; `MetadataEncoding::Gpkg` parses but is refused at pre-flight with
+  exit 2, because "this build does not implement that encoding" is a fact
+  about the request and exit 3 means the tool could not look; SARIF
+  synthesizes no `helpUri`, since the draft's one absolute requirement URI
+  (Requirement Link1's box) drops the `req` segment its own class table
+  carries, so no dereferenceable URL can be built from a finding code — a
+  defect for the errata package below, not for cdb-lint.
 - ~~**Public conformance matrix**~~ — **done in 14b**: folded into the crate
   as `docs/CONFORMANCE.md`, guarded by `tests/conformance_matrix.rs`. The
   errata catalogue below can now be assembled from its §7 rather than from
