@@ -191,16 +191,20 @@ fn document(report: &ConformanceReport, baseline: Option<&BaselineDiff>) -> Valu
 /// [`std::path::absolute`] is lexical: it consults the process's working
 /// directory but never the filesystem, so a root given relatively still yields
 /// an absolute base without a `stat` and without resolving symlinks the report
-/// did not resolve either. A path it cannot absolutize stays as given, and the
-/// `file:` scheme is withheld from anything not rooted at `/` — `file://x/`
-/// would read `x` as a host, which is a different claim entirely.
+/// did not resolve either. A `/`-rooted path takes the `file:` scheme; a
+/// Windows drive-rooted one takes it through [`windows_file_uri`]; a path
+/// that is neither stays as given, encoded, because `file://x/` would read
+/// `x` as a host — a different claim entirely. The path's own bytes are
+/// encoded, never a lossy replacement of them.
 fn base_uri(root: &Path) -> String {
     let absolute = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
-    let text = absolute.to_string_lossy();
-    let mut uri = if text.starts_with('/') {
-        format!("file://{}", encode_uri(&text))
+    let bytes = absolute.as_os_str().as_encoded_bytes();
+    let mut uri = if bytes.first() == Some(&b'/') {
+        format!("file://{}", encode_uri(bytes))
+    } else if let Some(windows) = windows_file_uri(bytes) {
+        windows
     } else {
-        encode_uri(&text)
+        encode_uri(bytes)
     };
     if !uri.ends_with('/') {
         // Without the trailing separator, relative resolution against this
@@ -211,20 +215,56 @@ fn base_uri(root: &Path) -> String {
     uri
 }
 
-/// Percent-encodes a path into a URI reference (RFC 3986).
+/// A Windows drive-rooted path — `C:\srv\cdb` — as `file:///C:/srv/cdb`.
 ///
-/// `/` stays a separator; every other byte outside the unreserved set and the
-/// sub-delimiters a path segment admits is percent-encoded, non-ASCII included
-/// as its UTF-8 bytes. Requirement Name1 forbids a space in a CDB name — but
-/// a *non-conformant* datastore is exactly what this document describes, and
-/// a raw space is not a URI.
-fn encode_uri(path: &str) -> String {
-    /// RFC 3986's `pchar` less `%`, plus the `/` separator: what may stand
-    /// unescaped in the path of a URI.
-    const SAFE: &[u8] = b"-._~!$&'()*+,;=:@/";
+/// This is the one absolute shape `std::path::absolute` produces on Windows
+/// that does not begin with a solidus; left to the fallback it would encode
+/// as `C%3A%5Csrv%5Ccdb`, whose first segment URI-parses as a scheme. The
+/// drive colon stays literal — the conventional `file:` spelling — and the
+/// separators become `/` before the segments are encoded. Anything else (a
+/// UNC path, a relative fallback) is not claimed here.
+fn windows_file_uri(bytes: &[u8]) -> Option<String> {
+    let &[drive, b':', separator, ref rest @ ..] = bytes else {
+        return None;
+    };
+    if !drive.is_ascii_alphabetic() || !matches!(separator, b'\\' | b'/') {
+        return None;
+    }
+    let forward: Vec<u8> = rest
+        .iter()
+        .map(|&byte| if byte == b'\\' { b'/' } else { byte })
+        .collect();
+
+    Some(format!(
+        "file:///{}:/{}",
+        char::from(drive),
+        encode_uri(&forward)
+    ))
+}
+
+/// Percent-encodes a path's bytes into a URI reference (RFC 3986).
+///
+/// `/` stays a separator; every other byte outside the unreserved set and
+/// the sub-delimiters a path segment admits is percent-encoded — non-ASCII
+/// and non-UTF-8 bytes included, **as themselves**: the grammar goes out of
+/// its way to keep a non-UTF-8 datastore lintable, and a URI fabricated from
+/// U+FFFD replacements would address a file that does not exist. Requirement
+/// Name1 forbids a space in a CDB name — but a *non-conformant* datastore is
+/// exactly what this document describes, and a raw space is not a URI.
+///
+/// `:` is deliberately encoded although RFC 3986 admits it in a path
+/// *segment*: a **relative** reference whose first segment carries a raw
+/// colon parses as a scheme (`backup:2024` is a URI with scheme `backup`),
+/// and `:` sits in the library's own forbidden-character list, so exactly
+/// the datastores this tool convicts can put one in the first segment.
+/// Percent-encoded, the byte is unambiguous in every position.
+fn encode_uri(path: &[u8]) -> String {
+    /// RFC 3986's `pchar` less `%` and `:`, plus the `/` separator: what may
+    /// stand unescaped anywhere in the path of a URI reference.
+    const SAFE: &[u8] = b"-._~!$&'()*+,;=@/";
 
     let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
+    for &byte in path {
         if byte.is_ascii_alphanumeric() || SAFE.contains(&byte) {
             encoded.push(char::from(byte));
         } else {
@@ -434,7 +474,7 @@ fn result(
     level: &str,
     message: String,
     class: &str,
-    location: Option<String>,
+    location: Option<Vec<u8>>,
     baseline_state: Option<&str>,
 ) -> Value {
     let uri = match location.as_deref() {
@@ -493,7 +533,7 @@ enum Finding<'a> {
 /// Removing or reshaping a matched variant is a compile error, which is the
 /// correct outcome: `1.0` froze the API surface, so a variant that vanishes is
 /// news.
-fn locate(finding: Finding<'_>, root: &Path) -> Option<String> {
+fn locate(finding: Finding<'_>, root: &Path) -> Option<Vec<u8>> {
     match finding {
         Finding::Violation(violation) => locate_violation(violation, root),
         Finding::Warning(warning) => locate_warning(warning, root),
@@ -501,7 +541,7 @@ fn locate(finding: Finding<'_>, root: &Path) -> Option<String> {
 }
 
 /// [`locate`] over the violations.
-fn locate_violation(violation: &CdbViolation, root: &Path) -> Option<String> {
+fn locate_violation(violation: &CdbViolation, root: &Path) -> Option<Vec<u8>> {
     match violation {
         // Physical paths the library built from the datastore root.
         // `MissingGlobalMetadata` carries the root itself, which relativizes
@@ -566,7 +606,7 @@ fn locate_violation(violation: &CdbViolation, root: &Path) -> Option<String> {
 }
 
 /// [`locate`] over the warnings.
-fn locate_warning(warning: &CdbWarning, root: &Path) -> Option<String> {
+fn locate_warning(warning: &CdbWarning, root: &Path) -> Option<Vec<u8>> {
     match warning {
         CdbWarning::Hierarchy(HierarchyWarning::EmptyFolder(path)) => relative_to(root, path),
 
@@ -582,7 +622,7 @@ fn locate_warning(warning: &CdbWarning, root: &Path) -> Option<String> {
 }
 
 /// [`locate`] over a [`MetadataViolation`], wherever it is nested.
-fn locate_metadata(violation: &MetadataViolation, root: &Path) -> Option<String> {
+fn locate_metadata(violation: &MetadataViolation, root: &Path) -> Option<Vec<u8>> {
     match violation {
         MetadataViolation::MissingGlobalMetadata { searched } => relative_to(root, searched),
         // The Metadata5 sweep is handed both spellings: a bare file name for
@@ -594,17 +634,19 @@ fn locate_metadata(violation: &MetadataViolation, root: &Path) -> Option<String>
     }
 }
 
-/// `path` as a datastore-relative path, or `None` when it is the root itself
-/// or does not lie beneath it.
+/// `path` as a datastore-relative path in its own bytes, or `None` when it
+/// is the root itself or does not lie beneath it.
 ///
 /// Only ordinary components survive: a `..` would resolve outside
 /// `DATASTORE_ROOT`, which is a location the base was chosen to exclude.
-fn relative_to(root: &Path, path: &Path) -> Option<String> {
+/// The component bytes are kept as they are — a non-UTF-8 name is still the
+/// name on disk, and the URI encoder speaks bytes.
+fn relative_to(root: &Path, path: &Path) -> Option<Vec<u8>> {
     let relative = path.strip_prefix(root).ok()?;
-    let mut segments = Vec::new();
+    let mut segments: Vec<&[u8]> = Vec::new();
     for component in relative.components() {
         match component {
-            Component::Normal(name) => segments.push(name.to_string_lossy().into_owned()),
+            Component::Normal(name) => segments.push(name.as_encoded_bytes()),
             _ => return None,
         }
     }
@@ -612,7 +654,7 @@ fn relative_to(root: &Path, path: &Path) -> Option<String> {
         return None;
     }
 
-    Some(segments.join("/"))
+    Some(segments.join(&b"/"[..]))
 }
 
 /// A datastore **logical** path — the `/`-rooted form of Requirement File5,
@@ -622,7 +664,7 @@ fn relative_to(root: &Path, path: &Path) -> Option<String> {
 /// name is not a logical path, and gluing a directory onto one would invent a
 /// place the finding never named. Empty, `.` and `..` components are refused
 /// for the same reason [`relative_to`] refuses them.
-fn relative_logical(logical: &str) -> Option<String> {
+fn relative_logical(logical: &str) -> Option<Vec<u8>> {
     let relative = logical.strip_prefix('/')?;
     if relative.is_empty()
         || relative
@@ -632,7 +674,7 @@ fn relative_logical(logical: &str) -> Option<String> {
         return None;
     }
 
-    Some(relative.to_owned())
+    Some(relative.as_bytes().to_vec())
 }
 
 #[cfg(test)]
@@ -651,8 +693,13 @@ mod tests {
 
     /// Locate a violation, for the arms a real datastore cannot reach through
     /// `validate` (`tests/cli_sarif.rs` drives the ones it can).
-    fn locate_of(violation: CdbViolation) -> Option<String> {
+    fn locate_of(violation: CdbViolation) -> Option<Vec<u8>> {
         locate(Finding::Violation(&violation), &root())
+    }
+
+    /// A located path as bytes, for expectations.
+    fn at(path: &str) -> Option<Vec<u8>> {
+        Some(path.as_bytes().to_vec())
     }
 
     /// A variant carrying a real path under the root locates there; one
@@ -666,7 +713,7 @@ mod tests {
                 }
                 .into()
             ),
-            Some("global_metadata".to_owned())
+            at("global_metadata")
         );
         assert_eq!(
             locate_of(HierarchyViolation::MissingGlobalMetadata { root: root() }.into()),
@@ -702,7 +749,7 @@ mod tests {
 
         assert_eq!(
             mismatch("/Tiles/metadata/Roads.json"),
-            Some("Tiles/metadata/Roads.json".to_owned())
+            at("Tiles/metadata/Roads.json")
         );
         assert_eq!(
             mismatch("global_metadata.json"),
@@ -752,7 +799,7 @@ mod tests {
                 }
                 .into()
             ),
-            Some("Tiles/N32/W118/Roads.gpkg".to_owned())
+            at("Tiles/N32/W118/Roads.gpkg")
         );
         assert_eq!(
             locate_of(
@@ -784,7 +831,7 @@ mod tests {
         ));
         assert_eq!(
             locate(Finding::Warning(&warning), &root()),
-            Some("Tiles/Empty".to_owned())
+            at("Tiles/Empty")
         );
 
         let warning = CdbWarning::Hierarchy(HierarchyWarning::RootNameNotCdb {
@@ -836,11 +883,49 @@ mod tests {
     /// excludes from a path.
     #[test]
     fn cli_sarif_a_uri_is_percent_encoded() {
-        assert_eq!(encode_uri("Tiles/N32/Roads.gpkg"), "Tiles/N32/Roads.gpkg");
-        assert_eq!(encode_uri("My Tiles"), "My%20Tiles");
-        assert_eq!(encode_uri("100%"), "100%25");
-        assert_eq!(encode_uri("caf\u{e9}"), "caf%C3%A9");
-        assert_eq!(encode_uri("a?b#c"), "a%3Fb%23c");
+        assert_eq!(encode_uri(b"Tiles/N32/Roads.gpkg"), "Tiles/N32/Roads.gpkg");
+        assert_eq!(encode_uri(b"My Tiles"), "My%20Tiles");
+        assert_eq!(encode_uri(b"100%"), "100%25");
+        assert_eq!(encode_uri("caf\u{e9}".as_bytes()), "caf%C3%A9");
+        assert_eq!(encode_uri(b"a?b#c"), "a%3Fb%23c");
+    }
+
+    /// `:` is encoded although a path *segment* may carry one raw: a relative
+    /// reference opening with `backup:2024` URI-parses as scheme `backup`,
+    /// and `:` is in the library's own forbidden-character list, so exactly
+    /// the non-conformant names this document describes can carry one in the
+    /// first segment. Percent-encoded, the byte is unambiguous everywhere.
+    #[test]
+    fn cli_sarif_a_colon_is_percent_encoded() {
+        assert_eq!(encode_uri(b"backup:2024"), "backup%3A2024");
+        assert_eq!(base_uri(Path::new("/srv/c:db")), "file:///srv/c%3Adb/");
+    }
+
+    /// A non-UTF-8 path keeps its bytes. The grammar goes out of its way to
+    /// admit such roots (`cli_args_root_keeps_its_non_utf8_bytes`), and a URI
+    /// built from U+FFFD replacements would address a file that does not
+    /// exist — a fabricated location in a document whose locations are the
+    /// point.
+    #[cfg(unix)]
+    #[test]
+    fn cli_sarif_non_utf8_bytes_survive_into_the_uri() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let odd = Path::new(OsStr::from_bytes(b"/srv/cdb/My\xFFTiles"));
+        let warning = CdbWarning::Hierarchy(HierarchyWarning::EmptyFolder(odd.to_path_buf()));
+        let located = locate(Finding::Warning(&warning), &root());
+
+        assert_eq!(located, Some(b"My\xFFTiles".to_vec()));
+        assert_eq!(encode_uri(b"My\xFFTiles"), "My%FFTiles");
+        assert_eq!(
+            base_uri(Path::new(OsStr::from_bytes(b"/srv/\xFF"))),
+            "file:///srv/%FF/"
+        );
+        assert!(
+            !encode_uri(b"My\xFFTiles").contains("%EF%BF%BD"),
+            "no replacement-character fabrication"
+        );
     }
 
     /// The base URI is absolute, `file:`-schemed, and ends in a separator.
@@ -849,5 +934,33 @@ mod tests {
         assert_eq!(base_uri(Path::new("/srv/cdb")), "file:///srv/cdb/");
         assert_eq!(base_uri(Path::new("/srv/my cdb")), "file:///srv/my%20cdb/");
         assert_eq!(base_uri(Path::new("/")), "file:///");
+    }
+
+    /// A Windows drive-rooted absolute path takes the `file:` scheme with
+    /// forward slashes and a literal drive colon — `C%3A%5Csrv` would
+    /// URI-parse as scheme `C`, breaking every location that resolves
+    /// against the base. Exercised at the byte level, since only a Windows
+    /// host produces such paths from `std::path::absolute`.
+    #[test]
+    fn cli_sarif_a_windows_root_takes_the_file_scheme() {
+        assert_eq!(
+            windows_file_uri(br"C:\srv\my cdb"),
+            Some("file:///C:/srv/my%20cdb".to_owned())
+        );
+        assert_eq!(
+            windows_file_uri(b"d:/already/forward"),
+            Some("file:///d:/already/forward".to_owned())
+        );
+        assert_eq!(
+            windows_file_uri(br"\\server\share"),
+            None,
+            "UNC is not claimed"
+        );
+        assert_eq!(
+            windows_file_uri(b"/srv/cdb"),
+            None,
+            "posix roots go the posix way"
+        );
+        assert_eq!(windows_file_uri(b"relative"), None);
     }
 }
