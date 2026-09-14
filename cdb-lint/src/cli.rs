@@ -109,8 +109,10 @@ pub struct CheckArgs {
     /// exit code, never the verdict: a warning is a SHOULD, and a SHOULD
     /// does not decide conformance.
     pub deny_warnings: bool,
-    /// Omit passing class rows from the text report. Failing classes, the
-    /// findings, the coverage tally, and the verdict all survive it.
+    /// Omit class rows with nothing to report from the text report — not
+    /// "passing rows": a passing class that carries warnings stays, and a
+    /// findingless `[N/A]` or `[UNCHECKED]` row goes (design §14, amendment
+    /// 4). The findings, the coverage tally, and the verdict all survive it.
     pub quiet: bool,
     /// Whether to colour the text report.
     pub color: ColorChoice,
@@ -248,7 +250,8 @@ OPTIONS
     --baseline <path.json>         a previous `--format json` report; findings
                                    it already records stop failing the build
     --deny-warnings                exit 1 when warnings are present
-    -q, --quiet                    omit passing classes from the text report
+    -q, --quiet                    omit class rows with nothing to report,
+                                   from the text report
     --color <auto|always|never>    colour the text report [default: auto]
     -h, --help                     print this help
     -V, --version                  print version information
@@ -1010,6 +1013,19 @@ mod tests {
             assert!(HELP.contains(code), "the help text should list exit {code}");
         }
         assert!(HELP.ends_with('\n'), "the help text is written verbatim");
+
+        // Amendment 4's wording, not the pre-amendment one it corrected:
+        // `--quiet` drops rows with *nothing to report*. "Passing classes"
+        // reads as hiding a warning-carrying pass — which the renderer keeps
+        // — and as keeping a findingless [UNCHECKED] row, which it drops.
+        assert!(
+            HELP.contains("nothing to report"),
+            "the help text describes --quiet as the renderer behaves"
+        );
+        assert!(
+            !HELP.contains("omit passing classes"),
+            "the pre-amendment wording is the one amendment 4 corrected"
+        );
     }
 
     /// A repeated flag is an error, never last-wins. A script that appends
