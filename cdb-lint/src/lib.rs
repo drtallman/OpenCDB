@@ -270,7 +270,7 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         Format::Text => {
             let options = TextOptions {
                 encoding: profile.metadata_encoding(),
-                color: use_color(args.color, env),
+                color: use_color(args.color, env, args.output.is_some()),
                 quiet: args.quiet,
                 deny_warnings: args.deny_warnings,
             };
@@ -389,14 +389,19 @@ fn verdict_code(
 /// `NO_COLOR` wins over the flag, unconditionally: design §4 states that any
 /// non-empty value forces `never`, and a user who exported it did so to stop
 /// arguing with individual tools about it.
-fn use_color(choice: ColorChoice, env: &Env) -> bool {
+///
+/// `auto` asks about the artifact's destination, not merely the process's
+/// stdout: under `-o` the report is a file, whatever the terminal says, and
+/// a file full of escape bytes is a report nothing downstream can read.
+/// `always` still colours it — explicit is explicit.
+fn use_color(choice: ColorChoice, env: &Env, artifact_is_a_file: bool) -> bool {
     if env.no_color {
         return false;
     }
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
-        ColorChoice::Auto => env.stdout_is_terminal,
+        ColorChoice::Auto => !artifact_is_a_file && env.stdout_is_terminal,
     }
 }
 

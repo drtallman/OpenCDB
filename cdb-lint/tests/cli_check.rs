@@ -728,6 +728,41 @@ fn cli_check_colour_follows_the_flag_the_environment_and_the_terminal() {
     );
 }
 
+/// `--color auto` asks where the artifact is going, not merely whether the
+/// process's stdout is a terminal: under `-o` the report is a file, and a
+/// file gets no ANSI — a report full of escape bytes is a report nothing
+/// downstream can read (final review, 2026-09-14). `--color always` still
+/// colours it, because explicit is explicit.
+#[test]
+fn cli_check_auto_colour_follows_the_artifact_not_the_terminal() {
+    let profile = SimulationProfile::json();
+    let (tmp, root) = bare(&profile);
+    let root_text = root.to_string_lossy().into_owned();
+    let tty = Env {
+        no_color: false,
+        stdout_is_terminal: true,
+    };
+    let written = |extra: &[&str], name: &str| {
+        let path = tmp.path().join(name);
+        let path_text = path.to_string_lossy().into_owned();
+        let mut tokens = vec!["--profile", "simulation", "--encoding", "json"];
+        tokens.extend_from_slice(extra);
+        tokens.extend_from_slice(&["-o", &path_text, &root_text]);
+        let run = lint(&tokens, &tty);
+        assert_eq!(run.code, exit::OK, "{}", run.err);
+        fs::read_to_string(&path).expect("the artifact file")
+    };
+
+    assert!(
+        !written(&[], "auto.txt").contains('\u{1b}'),
+        "auto writes no ANSI into a file, terminal or not"
+    );
+    assert!(
+        written(&["--color", "always"], "always.txt").contains('\u{1b}'),
+        "always still colours the file, because explicit is explicit"
+    );
+}
+
 /// Each status token carries its own colour, and the row's alignment is
 /// unaffected by the invisible bytes.
 #[test]
