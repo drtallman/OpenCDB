@@ -722,6 +722,110 @@ fn req_profile_preflight_rejects_gpkg_as_a_deliberate_stance() {
     names(&message, &["metadata_encoding", "gpkg", "deliberate"]);
 }
 
+/// A name-shaped field whose value can never match one path component is a
+/// dead yardstick, and a dead yardstick exits 2 — never a report that
+/// quietly checked less than it claims.
+///
+/// The load-bearing case is `resource_metadata_dir`: a value carrying a
+/// path separator recognizes no record at all, so the Metadata and Links
+/// stages read nothing, and a datastore whose only violations live inside
+/// its records prints CONFORMANT. That is the false green the whole tool
+/// exists to prevent, reached through one trailing character in a
+/// descriptor (final review, 2026-09-14).
+#[test]
+fn req_profile_preflight_refuses_a_component_that_cannot_match() {
+    for (field, value) in [
+        ("resource_metadata_dir", json!("metadata/")),
+        ("resource_metadata_dir", json!("")),
+        ("resource_metadata_dir", json!("a/b")),
+        ("root_folder_name", json!("")),
+        ("root_folder_name", json!("srv/cdb")),
+    ] {
+        let mut descriptor = minimal();
+        descriptor[field] = value.clone();
+        let message = refused(&descriptor);
+        names(&message, &[field]);
+        assert!(
+            message.contains("component") || message.contains("match"),
+            "{field}={value}: the refusal says why the value is dead: {message}"
+        );
+    }
+}
+
+/// The profile's `name` is the report's `profile` field, the header line,
+/// and a baseline's identity. A blank name says nothing there, and a
+/// control character forges report structure — a newline yields a second
+/// `profile` header line a reader has no way to distrust.
+#[test]
+fn req_profile_preflight_refuses_an_unusable_name() {
+    for value in ["", "   ", "acme\nprofile    forged (xml)", "acme\rcr"] {
+        let mut descriptor = minimal();
+        descriptor["name"] = json!(value);
+        names(&refused(&descriptor), &["name"]);
+    }
+}
+
+/// A voucher entry that can never match vouches for nothing, and the author
+/// deserves to hear it at exit 2 rather than watch `--deny-warnings` fail a
+/// build on warnings they explicitly vouched away. The dotted diagnostic
+/// teaches the spelling: an extension is written without its dot.
+#[test]
+fn req_profile_preflight_refuses_inert_voucher_entries() {
+    for (field, value) in [
+        ("known_extensions", json!([""])),
+        ("known_extensions", json!(["a/b"])),
+        ("reserved_names", json!([""])),
+        ("reserved_names", json!(["a/b"])),
+    ] {
+        let mut descriptor = minimal();
+        descriptor[field] = value.clone();
+        names(&refused(&descriptor), &[field]);
+    }
+
+    let mut descriptor = minimal();
+    descriptor["known_extensions"] = json!([".tif"]);
+    names(
+        &refused(&descriptor),
+        &["known_extensions", "without its dot"],
+    );
+}
+
+/// The declared convention directory is exempt from the case rule
+/// automatically, exactly as `SimulationProfile` reserves its own
+/// `metadata/` (a Requirement Name5 duty): a minimal descriptor must not
+/// convict the very layout its own `resource_metadata_dir` default
+/// declares. Before this held, `minimal()` over a datastore the crate
+/// itself wrote filed a CaseRuleViolation for every lowercase `metadata`
+/// component (final review, 2026-09-14).
+#[test]
+fn cli_profile_the_convention_directory_is_reserved_automatically() {
+    let (_store, root) = rich(&SimulationProfile::json());
+
+    // The rich store declares CDB1GlobalGrid and holds a .wkt CRS record, so
+    // the descriptor states both — but deliberately never spells
+    // `reserved_names`.
+    let mut descriptor = minimal();
+    descriptor["tiling_scheme"] = json!("CDB1GlobalGrid");
+    descriptor["known_extensions"] = json!(["wkt"]);
+    let tmp = tempfile::tempdir().expect("a temporary directory");
+    let path = write_descriptor(tmp.path(), &descriptor);
+
+    let run = lint_descriptor(&path, &root, &[]);
+
+    assert_eq!(
+        run.code,
+        exit::OK,
+        "the crate's own layout conforms under a minimal descriptor\nstdout:\n{}\nstderr:\n{}",
+        run.out,
+        run.err
+    );
+    assert!(
+        !run.out.contains("name-case"),
+        "no case finding on the convention directory:\n{}",
+        run.out
+    );
+}
+
 // ---------------------------------------------------------------------------
 // One yardstick per run
 // ---------------------------------------------------------------------------

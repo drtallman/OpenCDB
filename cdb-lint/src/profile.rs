@@ -46,6 +46,7 @@ use serde::Deserialize;
 use rusty_cdb::attribution::{self, AttributeModel};
 use rusty_cdb::conformance::RequirementsClass;
 use rusty_cdb::crs::{CrsViolation, StorageCrs};
+use rusty_cdb::hierarchy;
 use rusty_cdb::metadata::{MetadataEncoding, MetadataStandard, UnitOfMeasure};
 use rusty_cdb::naming::{self, CaseRule, StyleGuide};
 use rusty_cdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
@@ -209,9 +210,9 @@ fn default_resource_metadata_dir() -> String {
     "metadata".to_owned()
 }
 
-/// The `cdb` root Recommendation RFile1 names.
+/// The root Recommendation RFile1 names, in the library's own spelling.
 fn default_root_folder_name() -> String {
-    "cdb".to_owned()
+    hierarchy::RECOMMENDED_ROOT_NAME.to_owned()
 }
 
 /// The `conformance_classes` keyword for every class the core defines.
@@ -378,6 +379,17 @@ impl Descriptor {
     /// diagnostic, and its directory is what a relative
     /// `storage_crs_wkt_path` resolves against.
     fn into_profile(self, path: &Path) -> Result<DescriptorProfile, UsageError> {
+        require_report_name(&self.name).map_err(|error| error.at(path))?;
+        require_component("resource_metadata_dir", &self.resource_metadata_dir)
+            .map_err(|error| error.at(path))?;
+        require_component("root_folder_name", &self.root_folder_name)
+            .map_err(|error| error.at(path))?;
+        for entry in &self.reserved_names {
+            require_entry_component("reserved_names", entry).map_err(|error| error.at(path))?;
+        }
+        for entry in &self.known_extensions {
+            require_extension_entry(entry).map_err(|error| error.at(path))?;
+        }
         let case_rule = parse_case_rule(&self.case_rule).map_err(|error| error.at(path))?;
         let metadata_standard =
             parse_metadata_standard(&self.metadata_standard).map_err(|error| error.at(path))?;
@@ -422,10 +434,15 @@ impl ApplicationProfile for DescriptorProfile {
 
     /// The Name6 case rule and Name3 language, plus every name the descriptor
     /// exempts from the rule. The library reserves the names the spec mandates
-    /// verbatim on its own, so `reserved_names` carries only the profile's own
-    /// conventions — `metadata`, for the two shipped profiles.
+    /// verbatim on its own; the declared convention directory is reserved
+    /// here automatically — exactly as `SimulationProfile::style_guide`
+    /// reserves its own `metadata` (a Requirement Name5 duty), because a
+    /// yardstick that convicted the layout its own `resource_metadata_dir`
+    /// declares would contradict itself. `reserved_names` carries only the
+    /// profile's *extra* exemptions.
     fn style_guide(&self) -> StyleGuide {
         let mut guide = StyleGuide::new(self.case_rule, self.language.clone());
+        guide.reserve_name(self.resource_metadata_dir.clone());
         for name in &self.reserved_names {
             guide.reserve_name(name.clone());
         }
@@ -523,6 +540,101 @@ impl FieldError {
     fn at(self, path: &Path) -> UsageError {
         invalid(path, format_args!("{}", self.message))
     }
+}
+
+/// The profile's `name`, which the report prints verbatim in its header,
+/// records as its `profile` field, and compares as a baseline's identity.
+///
+/// A blank name says nothing in all three places. A control character is
+/// worse than nothing: a newline forges a second header line a reader has
+/// no way to distrust, in a report whose whole job is to be quotable.
+fn require_report_name(value: &str) -> Result<(), FieldError> {
+    if value.trim().is_empty() {
+        return Err(FieldError {
+            message: "gives `name` as a blank string; the name is the report's `profile` \
+                      field and a baseline's identity, so it has to say something"
+                .to_owned(),
+        });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(FieldError {
+            message: format!(
+                "gives `name` as {value:?}, which carries a control character; the name is \
+                 printed verbatim in every report header, where a newline would forge a \
+                 second line"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A field whose value is matched against one path component: non-empty and
+/// free of the `/` separator, because a component is never empty and never
+/// contains one.
+///
+/// A value that cannot match is not a stricter yardstick — it is a dead
+/// one. `resource_metadata_dir: "metadata/"` recognizes no record at all,
+/// so the very violations the field exists to route go unread and the
+/// report claims more conformance than was checked: the false green of
+/// honesty rule 1, reached through one character in a descriptor.
+fn require_component(field: &str, value: &str) -> Result<(), FieldError> {
+    if value.is_empty() {
+        return Err(FieldError {
+            message: format!(
+                "gives `{field}` as an empty string, which no directory component can \
+                 ever equal, so the field would silently match nothing"
+            ),
+        });
+    }
+    if value.contains('/') {
+        return Err(FieldError {
+            message: format!(
+                "gives `{field}` as `{value}`, which contains a path separator and can \
+                 never equal one directory component, so the field would silently match \
+                 nothing"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// One entry of a component-matched list field, held to the same rule as
+/// [`require_component`] with the entry named in the diagnostic.
+fn require_entry_component(field: &str, entry: &str) -> Result<(), FieldError> {
+    require_component(field, entry).map_err(|_| FieldError {
+        message: format!(
+            "gives `{field}` an entry `{entry}` that no path component can ever equal — \
+             a component is never empty and never contains `/` — so the entry would \
+             silently exempt nothing"
+        ),
+    })
+}
+
+/// One entry of `known_extensions`: matched against a file's extension,
+/// which never contains a dot or a separator and is never empty. An entry
+/// that cannot match vouches for nothing, and the author finds out under
+/// `--deny-warnings`, when the build fails on warnings they meant to
+/// silence — so the inert spelling is refused here, where the fix is named.
+fn require_extension_entry(entry: &str) -> Result<(), FieldError> {
+    if entry.is_empty() || entry.contains('/') {
+        return Err(FieldError {
+            message: format!(
+                "gives `known_extensions` an entry `{entry}` that no file extension can \
+                 ever equal, so the entry would vouch for nothing"
+            ),
+        });
+    }
+    if entry.contains('.') {
+        return Err(FieldError {
+            message: format!(
+                "gives `known_extensions` an entry `{entry}` — an extension is spelled \
+                 without its dot (`{}`), and a dotted entry can never match one, so it \
+                 would vouch for nothing",
+                entry.trim_start_matches('.')
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// The diagnostic for a value outside a closed vocabulary.
@@ -974,7 +1086,30 @@ mod tests {
         assert!(profile.known_extensions().is_empty());
         assert!(profile.attribute_model().is_none());
         assert!(profile.is_resource_metadata("/Tiles/metadata/Roads.json"));
-        assert!(!profile.style_guide().is_reserved("metadata"));
+        // `reserved_names` defaults empty, but the convention directory is
+        // reserved on its own — see the dedicated test below.
+        assert!(profile.style_guide().is_reserved("metadata"));
+        assert!(!profile.style_guide().is_reserved("Odd_Name"));
+    }
+
+    /// The declared `resource_metadata_dir` is reserved from the case rule
+    /// automatically, exactly as `SimulationProfile::style_guide` reserves
+    /// its own `metadata` (Requirement Name5): a profile that convicted the
+    /// layout its own convention field declares would contradict itself.
+    /// `reserved_names` stays what it says — the profile's *extra* names.
+    #[test]
+    fn cli_profile_the_convention_directory_is_reserved_automatically() {
+        let mut descriptor: serde_json::Value =
+            serde_json::from_str(&minimal_json()).expect("json");
+        descriptor["resource_metadata_dir"] = serde_json::json!("Records");
+
+        let guide = loaded(&descriptor.to_string()).style_guide();
+
+        assert!(guide.is_reserved("Records"));
+        assert!(
+            !guide.is_reserved("metadata"),
+            "only the declared directory is reserved, not the default one"
+        );
     }
 
     /// `reserved_names` reaches the style guide, and the library's own
