@@ -44,12 +44,14 @@ use rusty_cdb::{CdbDatastore, hierarchy, metadata};
 use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
 use crate::render::text::{self, TextOptions};
 use crate::render::{json, sarif};
+use crate::snapshot::{BaselineDiff, ReportSnapshot};
 
 pub mod catalogue;
 pub mod cli;
 pub mod exit;
 pub mod profile;
 pub mod render;
+pub mod snapshot;
 
 /// The version of the `rusty_cdb` library whose judgment this build reports.
 ///
@@ -228,16 +230,24 @@ fn no_such_code(query: &str) -> String {
 /// about the run and never about conformance, so a missing directory exits 3
 /// and not 1. Only a report that was actually produced can reach
 /// [`exit::FINDINGS`].
+///
+/// A baseline is read **before** the datastore is opened. One that is absent,
+/// unreadable, malformed, or taken under another profile is a configuration
+/// error, and a configuration error belongs before any judging rather than
+/// after it — a run that judged a datastore and then discovered it could not
+/// read its baseline would have to throw the verdict away.
 fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) -> i32 {
     let profile = match profile::resolve(&args.profile) {
         Ok(profile) => profile,
         Err(error) => return usage(err, &error),
     };
-    // The baseline ratchet arrives in a later task. Saying so beats exiting
-    // 0 over a datastore whose findings were never compared to anything.
-    if args.baseline.is_some() {
-        return write_to(err, "not yet implemented\n", exit::OPERATIONAL);
-    }
+    let baseline = match args.baseline.as_deref() {
+        Some(path) => match load_baseline(path, profile.name()) {
+            Ok(snapshot) => Some((path, snapshot)),
+            Err(error) => return usage(err, &error),
+        },
+        None => None,
+    };
 
     let datastore = match CdbDatastore::open(&args.root) {
         Ok(datastore) => datastore,
@@ -247,6 +257,9 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         Ok(report) => report,
         Err(error) => return operational(err, &args.root, &error),
     };
+    let diff = baseline
+        .as_ref()
+        .map(|(path, snapshot)| snapshot.compare(&report, path));
 
     // Render into a buffer first, so where the artifact *goes* is one
     // decision taken once rather than a sink threaded through every
@@ -261,7 +274,7 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
                 quiet: args.quiet,
                 deny_warnings: args.deny_warnings,
             };
-            if text::render(&report, &options, &mut artifact).is_err() {
+            if text::render(&report, &options, diff.as_ref(), &mut artifact).is_err() {
                 return exit::OPERATIONAL;
             }
         }
@@ -271,7 +284,7 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
             }
         }
         Format::Sarif => {
-            if sarif::render(&report, &mut artifact).is_err() {
+            if sarif::render(&report, diff.as_ref(), &mut artifact).is_err() {
                 return exit::OPERATIONAL;
             }
         }
@@ -283,6 +296,18 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
 
     // Everything below is the conversation, and all of it goes to `err`.
     // The artifact is finished and, under `-o`, already on disk.
+    if let Some(diff) = diff.as_ref()
+        && args.format != Format::Text
+        && text::write_baseline_section(diff, err).is_err()
+    {
+        // The text report carries the diff itself; the two machine formats
+        // cannot. JSON is the library's frozen wire shape and may gain no
+        // field, and SARIF can mark a result `new` but has nowhere to mention
+        // a finding that no longer exists — design §8 forbids inventing an
+        // `absent` result for one. So both owe the section to stderr, and a
+        // run that could not say it did not fully report.
+        return exit::OPERATIONAL;
+    }
     if args.format == Format::Json && json::write_tally(&report, err).is_err() {
         // Honesty rule 2: the JSON artifact cannot carry the aggregate
         // without ceasing to be the frozen wire shape, so the tally is owed
@@ -299,7 +324,21 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         return exit::OPERATIONAL;
     }
 
-    verdict_code(&report, args.deny_warnings)
+    verdict_code(&report, args.deny_warnings, diff.as_ref())
+}
+
+/// Reads the baseline a run named, and refuses one it must not use.
+///
+/// # Errors
+///
+/// A [`UsageError`] for a baseline that is absent, unreadable, not a report, or
+/// taken under a different profile. All four are configuration errors: nothing
+/// about the datastore is in question, so nothing about the datastore is said.
+fn load_baseline(path: &Path, profile: &str) -> Result<ReportSnapshot, UsageError> {
+    let snapshot = ReportSnapshot::load(path)?;
+    snapshot.require_profile(profile, path)?;
+
+    Ok(snapshot)
 }
 
 /// The exit code a completed run answers with.
@@ -308,7 +347,27 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
 /// only when asked to: a warning is a SHOULD, and a SHOULD does not decide
 /// conformance — `--deny-warnings` moves the code without moving the verdict,
 /// and the report says so on its last line.
-fn verdict_code(report: &ConformanceReport, deny_warnings: bool) -> i32 {
+///
+/// Under `--baseline` the question changes from *does this datastore conform?*
+/// to *did this run make it worse?*, and only the second decides the code. That
+/// is the whole hazard of a ratchet in one sentence: **this function can answer
+/// [`exit::OK`] over a datastore that does not conform.** It is contained, not
+/// avoided — the report still says `NON-CONFORMANT`, and the verdict line names
+/// `--baseline` as the reason the code disagrees with it (design §5 rule 4).
+fn verdict_code(
+    report: &ConformanceReport,
+    deny_warnings: bool,
+    baseline: Option<&BaselineDiff>,
+) -> i32 {
+    if let Some(diff) = baseline {
+        if diff.new_violations() > 0 {
+            return exit::FINDINGS;
+        }
+        if deny_warnings && diff.new_warnings() > 0 {
+            return exit::FINDINGS;
+        }
+        return exit::OK;
+    }
     if !report.is_conformant() {
         return exit::FINDINGS;
     }

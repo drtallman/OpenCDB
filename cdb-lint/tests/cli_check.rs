@@ -652,6 +652,7 @@ fn req_cdb_lint_a_failing_row_still_prints_its_coverage_note() {
             quiet: false,
             deny_warnings: false,
         },
+        None,
         &mut out,
     )
     .unwrap();
@@ -881,35 +882,10 @@ fn cli_check_a_nonexistent_root_is_operational_not_a_finding() {
 // descriptor now that it resolves to a working yardstick, along with the
 // pre-flight that refuses a broken one.
 
-/// The baseline ratchet arrives in a later task. Until then it says so:
-/// a baseline that was silently ignored would exit 0 over findings nothing had
-/// compared, which is worse than an error.
-///
-/// `--format json` and `-o` are no longer here — `tests/cli_output.rs` owns
-/// them — and neither is `--format sarif`, which `tests/cli_sarif.rs` owns now
-/// that it does something.
-#[test]
-fn cli_check_the_baseline_is_still_a_stub() {
-    let (_tmp, root) = bare(&SimulationProfile::json());
-    let root = root.to_string_lossy().into_owned();
-
-    let run = lint(
-        &[
-            "--profile",
-            "simulation",
-            "--encoding",
-            "json",
-            "--baseline",
-            "base.json",
-            &root,
-        ],
-        &plain_env(),
-    );
-
-    assert_eq!(run.code, exit::OPERATIONAL);
-    assert!(run.out.is_empty(), "{}", run.out);
-    assert!(run.err.contains("not yet implemented"), "{}", run.err);
-}
+// `--baseline` is no longer here either: `tests/cli_baseline.rs` owns the
+// ratchet now that it does something, including the honesty rule that keeps it
+// from exiting 0 quietly. `--format json` and `-o` belong to
+// `tests/cli_output.rs`, and `--format sarif` to `tests/cli_sarif.rs`.
 
 // ---------------------------------------------------------------------------
 // A profile that declares less than its datastore holds

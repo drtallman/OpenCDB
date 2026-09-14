@@ -45,6 +45,26 @@
 //! differ only in their results. It also makes "every `ruleId` resolves" true
 //! by construction rather than by a filter that could drift.
 //!
+//! # `baselineState`, under `--baseline` only
+//!
+//! A `--baseline` run stamps every result with SARIF's own `baselineState`,
+//! and uses two of its four values: `unchanged` for a result the baseline
+//! already recorded, `new` for one it did not. For a triple the baseline
+//! records *n* times, the first *n* results in report order are `unchanged`
+//! and the rest are `new`. Which individual result gets which is arbitrary —
+//! two results for one triple are interchangeable — but it is **deterministic**,
+//! because report order is: `validate` sorts each directory's entries by name,
+//! so two runs over the same bytes produce the same document.
+//!
+//! `absent` is never synthesized. A resolved finding has no result to hang a
+//! state on, and inventing one would put a location, a rule, and a message
+//! into a document for something this run did not find; the text diff on
+//! stderr reports those instead (design §8).
+//!
+//! A run given no baseline stamps nothing. SARIF reads an absent
+//! `baselineState` as unknown, which is exactly the truth when there was
+//! nothing to compare against.
+//!
 //! # No synthesized `helpUri`
 //!
 //! The draft's only absolute requirement URI — Requirement Link1's box at
@@ -56,6 +76,7 @@
 //!
 //! [`ContentCoverage`]: rusty_cdb::conformance::ContentCoverage
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Component, Path};
 
@@ -76,6 +97,7 @@ use serde_json::{Map, Value, json};
 
 use crate::catalogue;
 use crate::render::Tally;
+use crate::snapshot::{self, BaselineDiff, FindingKey};
 
 /// The published 2.1.0 schema this document is written against.
 const SCHEMA: &str =
@@ -96,7 +118,17 @@ const ROOT_URI: &str = ".";
 /// in every rule's `help.text` in place of a URL that would not resolve.
 const SPEC: &str = "OGC 23-034 (http://www.opengis.net/doc/IS/CDB-core/2.0)";
 
+/// SARIF's `baselineState` for a result the baseline already recorded.
+const UNCHANGED: &str = "unchanged";
+
+/// SARIF's `baselineState` for a result the baseline did not record.
+const NEW: &str = "new";
+
 /// Renders `report` as a pretty-printed SARIF 2.1.0 document plus one newline.
+///
+/// `baseline` is the comparison a `--baseline` run made, or `None` for a run
+/// that compared against nothing; it decides `result.baselineState` and
+/// nothing else about the document.
 ///
 /// # Errors
 ///
@@ -104,13 +136,18 @@ const SPEC: &str = "OGC 23-034 (http://www.opengis.net/doc/IS/CDB-core/2.0)";
 /// sink's if it cannot be written. Either is a fact about the run, and the
 /// caller answers it with [`crate::exit::OPERATIONAL`] rather than with a
 /// verdict it did not deliver.
-pub fn render(report: &ConformanceReport, out: &mut dyn Write) -> io::Result<()> {
-    let document = serde_json::to_string_pretty(&document(report)).map_err(io::Error::other)?;
+pub fn render(
+    report: &ConformanceReport,
+    baseline: Option<&BaselineDiff>,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let document =
+        serde_json::to_string_pretty(&document(report, baseline)).map_err(io::Error::other)?;
     writeln!(out, "{document}")
 }
 
 /// The whole document: `version`, `$schema`, and the one run.
-fn document(report: &ConformanceReport) -> Value {
+fn document(report: &ConformanceReport, baseline: Option<&BaselineDiff>) -> Value {
     let tally = Tally::of(report);
     let mut bases = Map::new();
     bases.insert(
@@ -130,7 +167,7 @@ fn document(report: &ConformanceReport) -> Value {
                 }
             },
             "originalUriBaseIds": bases,
-            "results": results(report),
+            "results": results(report, baseline),
             // Honesty rule 2: no output omits coverage. Unlike the JSON
             // artifact — which is the library's frozen wire shape and cannot
             // gain a field, so its tally is owed to stderr — SARIF has a
@@ -235,29 +272,63 @@ fn rule(entry: &catalogue::Entry) -> Value {
 /// both: the content sweep files a violation against a class whose coverage is
 /// `unchecked`, and a document that dropped the `review` there would report a
 /// datastore as *more* checked the less its profile declared.
-fn results(report: &ConformanceReport) -> Vec<Value> {
+///
+/// `seen` counts how many results each triple has already produced, which is
+/// what makes "the first *n* are `unchanged`" a rule rather than a wish.
+fn results(report: &ConformanceReport, baseline: Option<&BaselineDiff>) -> Vec<Value> {
     let mut results = Vec::new();
+    let mut seen: BTreeMap<FindingKey, usize> = BTreeMap::new();
     for (class, findings) in report.classes() {
-        if let Some(result) = coverage_result(class, findings) {
+        if let Some(result) = coverage_result(class, findings, baseline) {
             results.push(result);
         }
         for violation in &findings.violations {
+            let key = FindingKey::new(class.as_str(), violation.code(), snapshot::VIOLATION);
+            let state = baseline_state(baseline, key, &mut seen);
             results.push(finding_result(
                 Finding::Violation(violation),
                 class,
                 report.root(),
+                state,
             ));
         }
         for warning in &findings.warnings {
+            let key = FindingKey::new(class.as_str(), warning.code(), snapshot::WARNING);
+            let state = baseline_state(baseline, key, &mut seen);
             results.push(finding_result(
                 Finding::Warning(warning),
                 class,
                 report.root(),
+                state,
             ));
         }
     }
 
     results
+}
+
+/// Whether this occurrence of `key` was in the baseline.
+///
+/// `seen` is the running count of results already emitted for each triple, so
+/// the *n*th occurrence of a triple the baseline records *n* times is the first
+/// to be `new`. Which of two interchangeable results is called `new` is
+/// arbitrary; that the same datastore always gets the same answer is not, and
+/// report order supplies it.
+///
+/// `None` when no baseline was given, and then nothing is counted either: a
+/// run with nothing to compare against makes no claim about a baseline.
+fn baseline_state(
+    baseline: Option<&BaselineDiff>,
+    key: FindingKey,
+    seen: &mut BTreeMap<FindingKey, usize>,
+) -> Option<&'static str> {
+    let diff = baseline?;
+    let recorded = diff.recorded(&key);
+    let occurrence = seen.entry(key).or_default();
+    let index = *occurrence;
+    *occurrence += 1;
+
+    Some(if index < recorded { UNCHANGED } else { NEW })
 }
 
 /// The class-level result standing for a coverage state, or `None` for a
@@ -266,7 +337,18 @@ fn results(report: &ConformanceReport) -> Vec<Value> {
 /// The `ruleId` is the class's own requirements URI, which is a real code in
 /// the vocabulary — the content sweep's `DeclarationMismatch` already cites it
 /// — so a class-level result resolves to a declared rule like any other.
-fn coverage_result(class: RequirementsClass, findings: &ClassFindings) -> Option<Value> {
+///
+/// Its `baselineState` compares coverage against coverage: a class the
+/// baseline already recorded in this state is `unchanged`, and a class that has
+/// *become* unjudged — content appeared that this crate does not check — is
+/// `new`, which is the news a reader wants. The finding key does not reach here
+/// because a coverage result is not a finding; it stands for a state of the
+/// class, so the state is what it is compared on.
+fn coverage_result(
+    class: RequirementsClass,
+    findings: &ClassFindings,
+    baseline: Option<&BaselineDiff>,
+) -> Option<Value> {
     let (kind, message) = match findings.coverage {
         // Checked and clean says itself by having nothing to say.
         ContentCoverage::Checked => return None,
@@ -289,6 +371,14 @@ fn coverage_result(class: RequirementsClass, findings: &ClassFindings) -> Option
         ),
     };
 
+    let state = baseline.map(|diff| {
+        if diff.coverage_of(class.as_str()) == Some(findings.coverage.as_str()) {
+            UNCHANGED
+        } else {
+            NEW
+        }
+    });
+
     Some(result(
         class.requirements_uri(),
         kind,
@@ -296,6 +386,7 @@ fn coverage_result(class: RequirementsClass, findings: &ClassFindings) -> Option
         message,
         class.as_str(),
         None,
+        state,
     ))
 }
 
@@ -309,7 +400,12 @@ fn coverage_result(class: RequirementsClass, findings: &ClassFindings) -> Option
 /// The message is the crate's own, reproduced verbatim. cdb-lint neither
 /// rewrites nor re-cases it — the code is the durable identity, and the prose
 /// is the library's to word.
-fn finding_result(finding: Finding<'_>, class: RequirementsClass, root: &Path) -> Value {
+fn finding_result(
+    finding: Finding<'_>,
+    class: RequirementsClass,
+    root: &Path,
+    baseline_state: Option<&str>,
+) -> Value {
     let (rule_id, level, message) = match finding {
         Finding::Violation(violation) => (violation.code(), "error", violation.to_string()),
         Finding::Warning(warning) => (warning.code(), "warning", warning.to_string()),
@@ -322,13 +418,16 @@ fn finding_result(finding: Finding<'_>, class: RequirementsClass, root: &Path) -
         message,
         class.as_str(),
         locate(finding, root),
+        baseline_state,
     )
 }
 
 /// One SARIF `result`.
 ///
 /// `location` is a datastore-relative path, or `None` for the datastore
-/// itself. Task 7's `--baseline` adds `baselineState` here and nowhere else.
+/// itself. `baseline_state` is `--baseline`'s only mark on the document, and it
+/// is set here and nowhere else: one builder, so no kind of result can acquire
+/// or lose the field by being built somewhere that forgot about it.
 fn result(
     rule_id: &str,
     kind: &str,
@@ -336,13 +435,14 @@ fn result(
     message: String,
     class: &str,
     location: Option<String>,
+    baseline_state: Option<&str>,
 ) -> Value {
     let uri = match location.as_deref() {
         Some(path) => encode_uri(path),
         None => ROOT_URI.to_owned(),
     };
 
-    json!({
+    let mut result = json!({
         "ruleId": rule_id,
         "kind": kind,
         // Explicit, always: an absent `level` defaults to `warning`, which
@@ -355,7 +455,16 @@ fn result(
             }
         }],
         "properties": { "class": class },
-    })
+    });
+
+    // Omitted rather than null when there was no baseline: SARIF reads an
+    // absent `baselineState` as unknown, and `null` is not a value the schema
+    // admits at all.
+    if let (Some(state), Some(object)) = (baseline_state, result.as_object_mut()) {
+        object.insert("baselineState".to_owned(), Value::from(state));
+    }
+
+    result
 }
 
 /// Either kind of finding, so the location matcher and the result builder are
@@ -698,9 +807,14 @@ mod tests {
             Finding::Violation(&violation),
             RequirementsClass::Links,
             &root(),
+            None,
         );
 
         assert_eq!(result["ruleId"], "/conf/minimal-core");
+        assert!(
+            result.get("baselineState").is_none(),
+            "no baseline, no state: {result}"
+        );
         assert_eq!(result["properties"]["class"], "links");
         assert_eq!(result["kind"], "fail");
         assert_eq!(result["level"], "error");

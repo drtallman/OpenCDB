@@ -42,6 +42,24 @@
 //! them: the code is the durable identity a reader takes to `cdb-lint
 //! explain`, and the message is the library's to word.
 //!
+//! # Under `--baseline`, the diff is part of the artifact
+//!
+//! A ratcheted run prints one more section — what is new, what grew, and
+//! (informationally) what went away — between the class rows and the tally:
+//!
+//! ```text
+//! baseline   /ci/cdb-baseline.json
+//!   new        violation  file-naming     /req/core/name-spaces
+//!   increased  warning    file-structure  /req/core/name-empty-folders-A  (baseline 1, now 2)
+//! ```
+//!
+//! **The rest of the report is unchanged.** A baseline moves the exit code and
+//! nothing else: the rows still say what they said, the verdict still reads
+//! `NON-CONFORMANT` over a datastore that does not conform, and the verdict
+//! line names the flag responsible for an exit code that no longer follows
+//! from it (design §5 rule 4). That containment is the whole reason a ratchet
+//! is safe to ship.
+//!
 //! [`code`]: rusty_cdb::conformance::CdbViolation::code
 
 use std::io::{self, Write};
@@ -52,6 +70,7 @@ use rusty_cdb::conformance::{
 use rusty_cdb::metadata::MetadataEncoding;
 
 use crate::render::{Tally, plural};
+use crate::snapshot::{BaselineDiff, Change, DiffRow};
 
 /// SGR green, for `PASS`.
 const GREEN: &str = "\u{1b}[32m";
@@ -76,6 +95,18 @@ const CLASS_WIDTH: usize = 19;
 /// Column the finding text starts in: six spaces of indent, a nine-column
 /// severity label, and two spaces.
 const FINDING_INDENT: usize = 17;
+
+/// Width of a diff row's change column, measured off the longest label,
+/// `increased`.
+const CHANGE_WIDTH: usize = 11;
+
+/// Width of a diff row's severity column, measured off `violation`.
+const SEVERITY_WIDTH: usize = 11;
+
+/// Width of a diff row's class column, measured off `file-structure`. Narrower
+/// than [`CLASS_WIDTH`] because a diff row has no coverage note to line up,
+/// and a code is easier to read closer to the class that filed it.
+const DIFF_CLASS_WIDTH: usize = 16;
 
 /// How the text report is rendered.
 ///
@@ -108,6 +139,10 @@ pub struct TextOptions {
 /// inherits that determinism by leaving it alone, so two runs over the same
 /// bytes produce the same text and a diff of two reports means something.
 ///
+/// `baseline` is the comparison a `--baseline` run made, or `None` for a run
+/// that compared against nothing. It adds a section and can change the verdict
+/// *line*; it never changes the verdict, the rows, or the findings.
+///
 /// # Errors
 ///
 /// Returns the sink's own error. A report that could not be written is a fact
@@ -116,6 +151,7 @@ pub struct TextOptions {
 pub fn render(
     report: &ConformanceReport,
     options: &TextOptions,
+    baseline: Option<&BaselineDiff>,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     writeln!(
@@ -152,9 +188,79 @@ pub fn render(
         }
     }
 
+    if let Some(diff) = baseline {
+        writeln!(out)?;
+        write_baseline_section(diff, out)?;
+    }
+
     writeln!(out)?;
     writeln!(out, "{}", tally.line())?;
-    write_verdict(out, report.is_conformant(), &tally, options.deny_warnings)
+    write_verdict(
+        out,
+        report.is_conformant(),
+        &tally,
+        options.deny_warnings,
+        baseline,
+    )
+}
+
+/// Writes the baseline diff: the file compared against, then one row per
+/// `(class, code, severity)` whose count moved.
+///
+/// Public because the machine formats owe their reader the same section
+/// without being allowed to carry it: the JSON artifact is the library's
+/// frozen wire shape and cannot gain a field, and SARIF can say `new` on a
+/// result but has no way to mention a finding that no longer exists — design
+/// §8 forbids synthesizing `absent` results for those. Both therefore print
+/// this section to **stderr**, where it reaches a human without entering a
+/// machine's document, exactly as the coverage tally does (design §6.2).
+///
+/// # Errors
+///
+/// Returns the sink's own error.
+pub fn write_baseline_section(diff: &BaselineDiff, out: &mut dyn Write) -> io::Result<()> {
+    writeln!(out, "baseline   {}", diff.source().display())?;
+
+    // Stated even when nothing moved, because "nothing is new" is the single
+    // most consequential thing a ratcheted run can say: it is the sentence
+    // that turns a non-conformant datastore into exit 0.
+    if diff.nothing_new() {
+        writeln!(out, "  no new findings since baseline")?;
+    }
+
+    for row in diff.rows() {
+        write_diff_row(out, row)?;
+    }
+
+    if diff.rows().iter().any(|row| row.change == Change::Resolved) {
+        writeln!(
+            out,
+            "  (resolved findings are informational: a build never fails because it got better)"
+        )?;
+    }
+
+    Ok(())
+}
+
+/// One diff row: what moved, at what severity, for which class and code.
+///
+/// The counts are appended except in the one case where they say nothing a
+/// reader cannot see — a finding that is wholly new and occurred once.
+fn write_diff_row(out: &mut dyn Write, row: &DiffRow) -> io::Result<()> {
+    let counts = if row.baseline == 0 && row.now == 1 {
+        String::new()
+    } else {
+        format!("  (baseline {}, now {})", row.baseline, row.now)
+    };
+
+    writeln!(
+        out,
+        "  {:CHANGE_WIDTH$}{:SEVERITY_WIDTH$}{:DIFF_CLASS_WIDTH$}{}{counts}",
+        row.change.label(),
+        row.key.severity,
+        row.key.class,
+        row.key.code
+    )
 }
 
 /// One class row: the status token, the class, and — when there is one — the
@@ -268,17 +374,32 @@ fn note(coverage: ContentCoverage) -> Option<&'static str> {
 
 /// The verdict line.
 ///
-/// Conformance is decided by violations alone, so `--deny-warnings` can only
-/// divorce the exit code from the verdict, never change it. When it does, the
-/// line says which flag is responsible: a build failing over a datastore the
+/// Conformance is decided by violations alone, so neither flag can change the
+/// verdict — only divorce the exit code from it, and in opposite directions.
+/// When one does, the line says which: a build failing over a datastore the
 /// report calls conformant is not a contradiction, but it is a surprise, and
-/// the surprise is owed an explanation on the same line (design §5 rule 4).
+/// so is a build passing over one it calls non-conformant. Both surprises are
+/// owed an explanation on the same line (design §5 rule 4).
 fn write_verdict(
     out: &mut dyn Write,
     conformant: bool,
     tally: &Tally,
     deny_warnings: bool,
+    baseline: Option<&BaselineDiff>,
 ) -> io::Result<()> {
+    if let Some(diff) = baseline {
+        return writeln!(
+            out,
+            "{}",
+            ratcheted_verdict(
+                conformant,
+                tally,
+                deny_warnings,
+                diff.new_violations(),
+                diff.new_warnings(),
+            )
+        );
+    }
     if !conformant {
         return writeln!(out, "NON-CONFORMANT");
     }
@@ -291,6 +412,84 @@ fn write_verdict(
         );
     }
     writeln!(out, "CONFORMANT")
+}
+
+/// The verdict line of a `--baseline` run: the verdict, what is new since the
+/// baseline, and — when a flag moved the exit code — which one.
+///
+/// A pure function of the five facts it is handed — the diff enters as its two
+/// counts rather than as a whole [`BaselineDiff`] — so the sentence a reader
+/// will quote back at us is pinned by unit tests rather than reconstructed from
+/// a rendered report.
+///
+/// The head always carries a count under `--baseline`, because the number the
+/// ratchet is absorbing is the number that matters: `NON-CONFORMANT` alone,
+/// beside exit 0, would be true and useless.
+fn ratcheted_verdict(
+    conformant: bool,
+    tally: &Tally,
+    deny_warnings: bool,
+    new_violations: usize,
+    new_warnings: usize,
+) -> String {
+    let head = if !conformant {
+        format!(
+            "NON-CONFORMANT ({} {})",
+            tally.violations,
+            plural(tally.violations, "violation", "violations")
+        )
+    } else if tally.warnings > 0 {
+        format!(
+            "CONFORMANT ({} {})",
+            tally.warnings,
+            plural(tally.warnings, "warning", "warnings")
+        )
+    } else {
+        "CONFORMANT".to_owned()
+    };
+
+    // What the run exits with, and what it would have exited with had no
+    // baseline been given. Naming a flag is warranted exactly when those two
+    // differ, which is what "the flag moved the exit code" means.
+    let failing = new_violations > 0 || (deny_warnings && new_warnings > 0);
+    let would_fail_unratcheted = !conformant || (deny_warnings && tally.warnings > 0);
+
+    let attribution = if !failing && would_fail_unratcheted {
+        "; exit 0 by --baseline"
+    } else if failing && new_violations == 0 {
+        // Nothing new failed on its own; the flag asked for this one.
+        "; exit 1 by --deny-warnings"
+    } else {
+        // The exit code follows the verdict, so no flag is responsible for it
+        // and naming one would be an invented explanation.
+        ""
+    };
+
+    format!(
+        "{head} — {} since baseline{attribution}",
+        new_summary(new_violations, new_warnings)
+    )
+}
+
+/// What is new since the baseline, as a phrase.
+///
+/// Violations and warnings are counted apart, because they fail a build under
+/// different conditions and a single total would hide which kind arrived.
+fn new_summary(violations: usize, warnings: usize) -> String {
+    let phrase = |count: usize, singular: &'static str, many: &'static str| {
+        format!("{count} new {}", plural(count, singular, many))
+    };
+
+    match (violations, warnings) {
+        (0, 0) => "no new findings".to_owned(),
+        (_, 0) => phrase(violations, "violation", "violations"),
+        (0, _) => phrase(warnings, "warning", "warnings"),
+        _ => format!(
+            "{}, {}",
+            phrase(violations, "violation", "violations"),
+            phrase(warnings, "warning", "warnings")
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -356,5 +555,144 @@ mod tests {
         assert_eq!(plural(0, "violation", "violations"), "violations");
         assert_eq!(plural(1, "violation", "violations"), "violation");
         assert_eq!(plural(2, "violation", "violations"), "violations");
+    }
+
+    /// A tally with `violations` violations and `warnings` warnings; the
+    /// coverage counts play no part in a verdict line.
+    fn tally(violations: usize, warnings: usize) -> Tally {
+        Tally {
+            classes: 11,
+            checked: 11,
+            no_content: 0,
+            unchecked: 0,
+            violations,
+            warnings,
+        }
+    }
+
+    /// **Honesty rule 4, as one table.** Both flags can take the exit code
+    /// away from the verdict, in opposite directions, and the line names
+    /// whichever one did it — never both, never neither, and never a flag that
+    /// changed nothing.
+    ///
+    /// The ratchet row is the dangerous one: exit 0 over a datastore the same
+    /// line calls `NON-CONFORMANT`. It is spelled out here, character for
+    /// character, because it is the sentence that stops an exit code from
+    /// being the only thing that speaks.
+    #[test]
+    fn req_cdb_lint_the_verdict_line_names_the_flag_that_moved_the_exit_code() {
+        // conformant, tally, deny-warnings, new violations, new warnings
+        let cases = [
+            (
+                (false, tally(3, 0), false, 0, 0),
+                "NON-CONFORMANT (3 violations) — no new findings since baseline; \
+                 exit 0 by --baseline",
+            ),
+            (
+                (false, tally(4, 0), false, 1, 0),
+                "NON-CONFORMANT (4 violations) — 1 new violation since baseline",
+            ),
+            (
+                (false, tally(3, 1), false, 0, 1),
+                "NON-CONFORMANT (3 violations) — 1 new warning since baseline; \
+                 exit 0 by --baseline",
+            ),
+            (
+                (false, tally(3, 1), true, 0, 1),
+                "NON-CONFORMANT (3 violations) — 1 new warning since baseline; \
+                 exit 1 by --deny-warnings",
+            ),
+            (
+                (true, tally(0, 0), false, 0, 0),
+                "CONFORMANT — no new findings since baseline",
+            ),
+            (
+                (true, tally(0, 2), true, 0, 0),
+                "CONFORMANT (2 warnings) — no new findings since baseline; exit 0 by --baseline",
+            ),
+            (
+                (true, tally(0, 2), true, 0, 1),
+                "CONFORMANT (2 warnings) — 1 new warning since baseline; \
+                 exit 1 by --deny-warnings",
+            ),
+            (
+                (true, tally(0, 2), false, 0, 1),
+                "CONFORMANT (2 warnings) — 1 new warning since baseline",
+            ),
+        ];
+
+        for ((conformant, tally, deny_warnings, violations, warnings), expected) in cases {
+            assert_eq!(
+                ratcheted_verdict(conformant, &tally, deny_warnings, violations, warnings),
+                expected
+            );
+        }
+    }
+
+    /// Without a baseline the line is the one it always was: a flag that was
+    /// never given cannot be blamed for an exit code.
+    #[test]
+    fn cli_text_an_unratcheted_verdict_is_unchanged() {
+        let rendered = |conformant: bool, warnings: usize, deny: bool| {
+            let mut out = Vec::new();
+            write_verdict(&mut out, conformant, &tally(0, warnings), deny, None).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        assert_eq!(rendered(true, 0, false), "CONFORMANT\n");
+        assert_eq!(rendered(true, 1, false), "CONFORMANT\n");
+        assert_eq!(rendered(false, 0, false), "NON-CONFORMANT\n");
+        assert_eq!(
+            rendered(true, 1, true),
+            "CONFORMANT (1 warning) — exit 1 by --deny-warnings\n"
+        );
+    }
+
+    /// Violations and warnings are counted apart, because they fail a build
+    /// under different conditions.
+    #[test]
+    fn cli_text_the_new_summary_counts_the_two_severities_apart() {
+        assert_eq!(new_summary(0, 0), "no new findings");
+        assert_eq!(new_summary(1, 0), "1 new violation");
+        assert_eq!(new_summary(0, 3), "3 new warnings");
+        assert_eq!(new_summary(2, 1), "2 new violations, 1 new warning");
+    }
+
+    /// A diff row's counts are appended except in the one case where they say
+    /// nothing a reader cannot already see.
+    #[test]
+    fn cli_text_a_diff_row_states_its_counts_unless_they_are_obvious() {
+        let row = |change: Change, baseline: usize, now: usize| {
+            let row = DiffRow {
+                change,
+                key: crate::snapshot::FindingKey::new(
+                    "file-naming",
+                    "/req/core/name-spaces",
+                    crate::snapshot::VIOLATION,
+                ),
+                baseline,
+                now,
+            };
+            let mut out = Vec::new();
+            write_diff_row(&mut out, &row).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        assert_eq!(
+            row(Change::New, 0, 1),
+            "  new        violation  file-naming     /req/core/name-spaces\n"
+        );
+        assert_eq!(
+            row(Change::New, 0, 3),
+            "  new        violation  file-naming     /req/core/name-spaces  (baseline 0, now 3)\n"
+        );
+        assert_eq!(
+            row(Change::Increased, 1, 2),
+            "  increased  violation  file-naming     /req/core/name-spaces  (baseline 1, now 2)\n"
+        );
+        assert_eq!(
+            row(Change::Resolved, 2, 0),
+            "  resolved   violation  file-naming     /req/core/name-spaces  (baseline 2, now 0)\n"
+        );
     }
 }
