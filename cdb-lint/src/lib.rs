@@ -42,8 +42,8 @@ use rusty_cdb::metadata::MetadataEncoding;
 use rusty_cdb::{CdbDatastore, hierarchy, metadata};
 
 use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
-use crate::render::json;
 use crate::render::text::{self, TextOptions};
+use crate::render::{json, sarif};
 
 pub mod catalogue;
 pub mod cli;
@@ -270,9 +270,11 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
                 return exit::OPERATIONAL;
             }
         }
-        // SARIF arrives with its own task, and needs the code catalogue that
-        // precedes it.
-        Format::Sarif => return write_to(err, "not yet implemented\n", exit::OPERATIONAL),
+        Format::Sarif => {
+            if sarif::render(&report, &mut artifact).is_err() {
+                return exit::OPERATIONAL;
+            }
+        }
     }
 
     if let Err(code) = emit(&artifact, args.output.as_deref(), out, err) {
@@ -285,6 +287,10 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
         // Honesty rule 2: the JSON artifact cannot carry the aggregate
         // without ceasing to be the frozen wire shape, so the tally is owed
         // to stderr and a run that could not say it did not fully report.
+        //
+        // Only that format. Text prints the tally as its penultimate line and
+        // SARIF carries the same counts in `run.properties`; repeating it here
+        // would put one number in two places and invite them to disagree.
         return exit::OPERATIONAL;
     }
     // A diagnostic, never a yardstick: the note goes to stderr and the report

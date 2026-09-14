@@ -10,16 +10,18 @@
 //!
 //! Honesty rule 2 asks every run to state how much was actually checked, and
 //! the formats discharge it differently: the text report prints the tally as
-//! its penultimate line, while the JSON artifact cannot carry it without
-//! ceasing to be the frozen wire shape, so the same line goes to stderr
-//! instead. Both call the same `Tally::line`. Two independent formatters
-//! would be two chances to disagree about a number whose whole purpose is to
-//! be trusted.
+//! its penultimate line, the SARIF document carries the same three counts in
+//! `run.properties`, and the JSON artifact — which cannot gain a field without
+//! ceasing to be the frozen wire shape — puts the line on stderr instead. All
+//! of them count through the same `Tally`. Independent counters would be
+//! independent chances to disagree about a number whose whole purpose is to be
+//! trusted.
 //!
 //! [`ConformanceReport`]: rusty_cdb::conformance::ConformanceReport
 //! [`ContentCoverage`]: rusty_cdb::conformance::ContentCoverage
 
 pub mod json;
+pub mod sarif;
 pub mod text;
 
 use rusty_cdb::conformance::{ClassFindings, ConformanceReport, ContentCoverage};

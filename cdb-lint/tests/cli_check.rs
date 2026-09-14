@@ -896,29 +896,34 @@ fn cli_check_profile_file_is_a_usage_error_for_now() {
     );
 }
 
-/// SARIF and the baseline arrive in later tasks. Until then each says so.
-/// Silence would be worse than an error in both cases: a caller waiting on
-/// SARIF would read a text report as a corrupt document, and a baseline that
-/// was silently ignored would exit 0 over findings nothing had compared.
+/// The baseline ratchet arrives in a later task. Until then it says so:
+/// a baseline that was silently ignored would exit 0 over findings nothing had
+/// compared, which is worse than an error.
 ///
-/// `--format json` and `-o` are no longer here: `tests/cli_output.rs` owns
-/// them now that they do something.
+/// `--format json` and `-o` are no longer here — `tests/cli_output.rs` owns
+/// them — and neither is `--format sarif`, which `tests/cli_sarif.rs` owns now
+/// that it does something.
 #[test]
-fn cli_check_the_later_tasks_are_still_stubs() {
+fn cli_check_the_baseline_is_still_a_stub() {
     let (_tmp, root) = bare(&SimulationProfile::json());
     let root = root.to_string_lossy().into_owned();
 
-    for extra in [vec!["--format", "sarif"], vec!["--baseline", "base.json"]] {
-        let mut tokens = vec!["--profile", "simulation", "--encoding", "json"];
-        tokens.extend_from_slice(&extra);
-        tokens.push(&root);
+    let run = lint(
+        &[
+            "--profile",
+            "simulation",
+            "--encoding",
+            "json",
+            "--baseline",
+            "base.json",
+            &root,
+        ],
+        &plain_env(),
+    );
 
-        let run = lint(&tokens, &plain_env());
-
-        assert_eq!(run.code, exit::OPERATIONAL, "{extra:?}");
-        assert!(run.out.is_empty(), "{extra:?}: {}", run.out);
-        assert!(run.err.contains("not yet implemented"), "{extra:?}");
-    }
+    assert_eq!(run.code, exit::OPERATIONAL);
+    assert!(run.out.is_empty(), "{}", run.out);
+    assert!(run.err.contains("not yet implemented"), "{}", run.err);
 }
 
 // ---------------------------------------------------------------------------
