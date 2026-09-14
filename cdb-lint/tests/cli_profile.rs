@@ -826,6 +826,38 @@ fn cli_profile_the_convention_directory_is_reserved_automatically() {
     );
 }
 
+/// The mismatch note speaks the caller's language. A `--profile-file` run
+/// never passed `--encoding`, and advising it to "re-run with `--encoding
+/// xml`" points at a command line the grammar rejects beside
+/// `--profile-file` — the remedy for a descriptor is the descriptor's own
+/// `metadata_encoding` field (final review, 2026-09-14). The report and the
+/// exit code are untouched either way: detection informs, never chooses.
+#[test]
+fn req_profile_encoding_hint_names_the_descriptor_field() {
+    let tmp = tempfile::tempdir().expect("a temporary directory");
+    let path = write_descriptor(tmp.path(), &minimal()); // declares json
+    let (_store, root) = datastore(&SimulationProfile::xml()); // xml on disk
+
+    let run = lint_descriptor(&path, &root, &[]);
+
+    assert_eq!(run.code, exit::FINDINGS, "{}\n{}", run.out, run.err);
+    assert!(
+        run.err.contains("metadata_encoding"),
+        "the note names the descriptor field: {}",
+        run.err
+    );
+    assert!(
+        !run.err.contains("re-run with `--encoding"),
+        "no advice to type a flag this run cannot take: {}",
+        run.err
+    );
+    assert!(
+        run.err.contains("unchanged"),
+        "the note still says the report stands: {}",
+        run.err
+    );
+}
+
 // ---------------------------------------------------------------------------
 // One yardstick per run
 // ---------------------------------------------------------------------------

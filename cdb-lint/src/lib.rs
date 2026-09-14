@@ -41,7 +41,7 @@ use rusty_cdb::conformance::ConformanceReport;
 use rusty_cdb::metadata::MetadataEncoding;
 use rusty_cdb::{CdbDatastore, hierarchy, metadata};
 
-use crate::cli::{CheckArgs, ColorChoice, Format, UsageError, UsageErrorKind};
+use crate::cli::{CheckArgs, ColorChoice, Format, ProfileChoice, UsageError, UsageErrorKind};
 use crate::render::text::{self, TextOptions};
 use crate::render::{json, sarif};
 use crate::snapshot::{BaselineDiff, ReportSnapshot};
@@ -320,7 +320,8 @@ fn check(args: &CheckArgs, out: &mut dyn Write, err: &mut dyn Write, env: &Env) 
     }
     // A diagnostic, never a yardstick: the note goes to stderr and the report
     // is unchanged (design §5 rule 5).
-    if hint_at_encoding_mismatch(&report, profile.metadata_encoding(), err).is_err() {
+    if hint_at_encoding_mismatch(&report, profile.metadata_encoding(), &args.profile, err).is_err()
+    {
         return exit::OPERATIONAL;
     }
 
@@ -429,6 +430,7 @@ fn use_color(choice: ColorChoice, env: &Env, artifact_is_a_file: bool) -> bool {
 fn hint_at_encoding_mismatch(
     report: &ConformanceReport,
     declared: MetadataEncoding,
+    choice: &ProfileChoice,
     err: &mut dyn Write,
 ) -> std::io::Result<()> {
     // Every class, keyed on the code alone. The clause is filed under
@@ -454,12 +456,30 @@ fn hint_at_encoding_mismatch(
     if detect_encoding(report.root()) != Some(other) {
         return Ok(());
     }
+    // The remedy speaks the caller's language: a descriptor run never passed
+    // `--encoding`, and that flag is rejected beside `--profile-file`, so
+    // advising it there would point away from the fix.
+    let (declared_clause, remedy) = match choice {
+        ProfileChoice::Builtin { .. } => (
+            format!("this run declared `--encoding {}`", declared.as_str()),
+            format!("re-run with `--encoding {other}`"),
+        ),
+        ProfileChoice::File(descriptor) => (
+            format!(
+                "this run's profile descriptor declared `metadata_encoding: {}`",
+                declared.as_str()
+            ),
+            format!(
+                "set `metadata_encoding` to `{other}` in {}",
+                descriptor.display()
+            ),
+        ),
+    };
     let note = format!(
-        "note: this run declared `--encoding {}`, and the datastore's global metadata \
-         record is global_metadata.{other} ({ENCODING_MISMATCH}). If the datastore is \
-         right, re-run with `--encoding {other}`. The report above is unchanged: a \
-         datastore is judged against the yardstick you stated, never against itself.\n",
-        declared.as_str()
+        "note: {declared_clause}, and the datastore's global metadata record is \
+         global_metadata.{other} ({ENCODING_MISMATCH}). If the datastore is right, \
+         {remedy}. The report above is unchanged: a datastore is judged against the \
+         yardstick you stated, never against itself.\n"
     );
     err.write_all(note.as_bytes())
 }
