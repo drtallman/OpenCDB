@@ -573,7 +573,14 @@ an ecosystem.
   synthesizes no `helpUri`, since the draft's one absolute requirement URI
   (Requirement Link1's box) drops the `req` segment its own class table
   carries, so no dereferenceable URL can be built from a finding code — a
-  defect for the errata package below, not for cdb-lint.
+  defect for the errata package below, not for cdb-lint. **Final review,
+  same day**: a whole-branch review and the independent oracle harness
+  (its sixth phase, sixth time finding real defects) surfaced fifteen
+  findings — chief among them a descriptor `resource_metadata_dir` that
+  could silence every record-level check into a false CONFORMANT — all
+  fixed on `main` with regression tests, and the hand-built SARIF was
+  validated against the published OASIS schema; the design spec's §15
+  holds the record.
 - ~~**Public conformance matrix**~~ — **done in 14b**: folded into the crate
   as `docs/CONFORMANCE.md`, guarded by `tests/conformance_matrix.rs`. The
   errata catalogue below can now be assembled from its §7 rather than from

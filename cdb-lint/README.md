@@ -105,9 +105,16 @@ stated or the run does not happen — see
 - **A repeated flag is an error**, not last-wins. A script that appends
   `--profile gnosis` to a command line that already says `--profile simulation`
   has a bug, and silently picking one of the two yardsticks would hide it.
-- `--color auto` emits ANSI only when stdout is a terminal. `NO_COLOR` set to
-  any non-empty value forces `never`, whatever the flag says. The `json` and
-  `sarif` formats are never coloured.
+- **A separated value may not look like a flag.** `-o --deny-warnings` is a
+  script's mistake, and swallowing the flag would misname the file *and*
+  silently drop the request — so it is an error naming both tokens. A file
+  genuinely named like a flag is reached with `--output=--deny-warnings` or a
+  `./` prefix; a bare `-` passes as a file name.
+- `--color auto` emits ANSI only when stdout is a terminal **and the artifact
+  is going there**: under `-o` the report is a file, and a file gets no ANSI
+  (`--color always` still colours it). `NO_COLOR` set to any non-empty value
+  forces `never`, whatever the flag says. The `json` and `sarif` formats are
+  never coloured.
 
 ### Output and streams
 
@@ -268,13 +275,13 @@ descriptor means the same thing wherever it is run from.
 | `uom` | yes | — | `M`, `FT`, `K`, `MI` |
 | `storage_crs_wkt` | one of the two | — | WKT-2 (ISO 19162) text |
 | `storage_crs_wkt_path` | one of the two | — | a path to a WKT-2 file, resolved **against the descriptor's own directory** |
-| `reserved_names` | no | `[]` | names exempted from the case rule, beyond the ones the library reserves itself |
+| `reserved_names` | no | `[]` | names exempted from the case rule, beyond the ones the library reserves itself; each entry must be one possible path component (non-empty, no `/`) |
 | `storage_technology` | no | `"file-system"` | `file-system` |
 | `conformance_classes` | no | `"all"` | `"all"`, `"mandatory"`, or an array of class tokens (`attribution`, `coverages`, `crs`, `file-naming`, `file-structure`, `geometry`, `links`, `metadata`, `tiling`, `topology`, `versioning`) |
 | `tiling_scheme` | no | none declared | `CDB1GlobalGrid`, `GNOSISGlobalGrid` |
-| `resource_metadata_dir` | no | `"metadata"` | the directory name holding resource-metadata records |
-| `root_folder_name` | no | `"cdb"` | the datastore's root folder name |
-| `known_extensions` | no | `[]` | file extensions outside the §7.4 table this profile vouches for |
+| `resource_metadata_dir` | no | `"metadata"` | the directory name holding resource-metadata records — one path component, and it is exempted from the case rule automatically, exactly as the built-ins exempt their own `metadata/` |
+| `root_folder_name` | no | `"cdb"` | the datastore's root folder name — one path component |
+| `known_extensions` | no | `[]` | file extensions outside the §7.4 table this profile vouches for, spelled without their dot (`tif`, not `.tif`) |
 | `attribute_model` | no | `null` | an inline attribute model, shaped exactly like a `vector_attributes.json` |
 
 Two behaviours are worth stating outright:
@@ -284,9 +291,14 @@ Two behaviours are worth stating outright:
 - **A broken descriptor exits 2, before the datastore is opened.** WKT that
   does not parse, a malformed language tag, an invalid attribute model, or
   `"metadata_encoding": "gpkg"` — which this build does not implement — are all
-  usage errors naming the field at fault. Letting validation meet them would
-  file the *profile's* defects as findings against a datastore that did nothing
-  wrong.
+  usage errors naming the field at fault. So is a field whose value could
+  never take effect: a `resource_metadata_dir` carrying a `/` matches no
+  directory component, so every resource record would go unrecognized and the
+  report would claim more conformance than was checked; a dotted
+  `known_extensions` entry vouches for nothing; a blank or newline-carrying
+  `name` would forge the report's own header. Letting validation meet any of
+  them would file the *profile's* defects as findings against a datastore
+  that did nothing wrong — or, worse, file nothing at all.
 
 ### Detection never chooses the yardstick
 
@@ -324,7 +336,10 @@ $ cdb-lint explain /req/core/attribute-model-content-B
 
 `cdb-lint explain --list` prints every code with its class, clause and gloss.
 An unknown code exits 2 and suggests the codes containing what you typed, so
-`explain name-spaces` finds `/req/core/name-spaces`.
+`explain name-spaces` finds `/req/core/name-spaces` — and a dash-leading
+fragment works too: after `explain`, a token no flag vocabulary recognizes is
+the query, so `explain -content-b` finds
+`/req/core/attribute-model-content-B`.
 
 The catalogue is documentation with a completeness check, not a derived
 artifact: a test scans the library for the codes it can emit and demands an
@@ -364,10 +379,21 @@ Message text is deliberately **not** part of the identity: wording may change
 within `1.x` of the library, and a message-keyed baseline would fail spuriously
 the day a sentence improved.
 
+Locations are not part of it either, because the report format carries none —
+which cuts one way worth knowing: a finding **fixed in one place can offset a
+new one of the same triple somewhere else**. Equal counts read as nothing new.
+The ratchet holds each triple's count, never its individual sites.
+
 A baseline taken under a **different profile** is refused (exit 2): two
 profiles judge by different rules, and absorbing one's findings into the
 other's run would swallow real ones. A baseline whose `root` differs is
 accepted — CI paths move, and a datastore's identity is not its path.
+
+The refusal compares the profile **name**, which is all the report records —
+and the name carries no `--encoding` half, so a baseline minted under
+`simulation`/`xml` reads as the same profile in a `simulation`/`json` run and
+can absorb real Metadata5 findings. **Re-mint the baseline whenever the
+declared encoding changes.** See [Two honest limits](#two-honest-limits).
 
 Findings that went away are reported and change nothing. A build never fails
 because it got better.
@@ -398,9 +424,13 @@ consume only `$?`, you are reading half of what the run said.
 
 1. **The baseline's profile check compares the profile *name*.** That is all
    the wire shape records, so two different descriptors that share a `name`
-   pass the check. cdb-lint cannot close that hole — the report carries a
-   string, not a profile — and saying so beats implying a guarantee the data
-   cannot support. Give descriptors distinct names.
+   pass the check — and the two built-in pairings of one profile share a name
+   *by construction*, since `--encoding` never reaches the wire: a
+   `simulation`/`xml` baseline is accepted by a `simulation`/`json` run.
+   cdb-lint cannot close that hole — the report carries a string, not a
+   profile — and saying so beats implying a guarantee the data cannot
+   support. Give descriptors distinct names, and re-mint a baseline whenever
+   the declared encoding changes.
 2. **Message text may change within `1.x`.** The library freezes its API at
    `1.0`, not the wording of its findings. Consumers key on `code` — which is
    stable, absolute, and what `explain` takes — and treat `message` as prose

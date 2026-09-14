@@ -31,6 +31,15 @@
 //!   records is new. A ratchet that counted only distinct codes would sit
 //!   quietly while one datastore got steadily worse in one place.
 //!
+//! And one consequence of counts, stated rather than implied: **a fix can
+//! offset a same-triple arrival.** The wire shape carries no locations, so a
+//! finding fixed in one place and a brand-new one of the same
+//! `(class, code, severity)` elsewhere compare as equal counts — nothing
+//! new, exit 0, and the SARIF `baselineState` stamps the newcomer
+//! `unchanged`. The ratchet holds the *count* of each triple, never the
+//! identity of individual sites; a consumer who needs per-site tracking
+//! needs a data channel this format does not carry.
+//!
 //! The class in a key is the class the report **filed the finding under** —
 //! the entry it sits in — on both sides of the comparison, so the two are
 //! derived the same way. (The library files every finding under its own
@@ -63,6 +72,16 @@
 //! the same descriptor it checks against is safe; a shop with two descriptors
 //! both named `acme` is not, and no amount of care inside this module changes
 //! that.
+//!
+//! **The built-in profiles reach the same hole out of the box** (final
+//! review, 2026-09-14): the wire records `simulation` or `gnosis` with no
+//! trace of the `--encoding` half, so a baseline minted under
+//! `simulation`/`xml` reads as the same profile in a `simulation`/`json`
+//! run — and a real Metadata5 violation the new run finds can be absorbed
+//! by the encoding violations the old yardstick recorded under the same
+//! triple. The data to refuse it does not exist in the file. Re-mint the
+//! baseline whenever the declared encoding changes; the README states the
+//! same duty.
 //!
 //! # The hazard
 //!
