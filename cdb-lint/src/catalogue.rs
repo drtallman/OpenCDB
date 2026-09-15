@@ -1,4 +1,4 @@
-//! The finding-code catalogue: one row per code `rusty_cdb` can put on the
+//! The finding-code catalogue: one row per code `opencdb` can put on the
 //! wire, and the data behind `cdb-lint explain`.
 //!
 //! A report says `/req/core/attribute-model-content-B` and stops there,
@@ -35,7 +35,7 @@
 //!
 //! | Column | Source |
 //! |---|---|
-//! | `code` | the literals in `rusty_cdb`'s `src/conformance/` tree |
+//! | `code` | the literals in `opencdb`'s `src/conformance/` tree |
 //! | `class` | the class the report files the code under — `CdbViolation::class` and `CdbWarning::class`, **not** the section of `CONFORMANCE.md` the requirement is documented in |
 //! | `section` | the requirement *box* in OGC 23-034, not the class table that lists the box |
 //! | `gloss` | the box's own text, or `CONFORMANCE.md` §4 and §5.1 where the draft has no clause to mirror |

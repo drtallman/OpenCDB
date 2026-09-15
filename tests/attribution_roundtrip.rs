@@ -4,7 +4,7 @@
 //! `global_metadata/` without disturbing Annex A `/conf/minimal-core`
 //! conformance.
 
-use rusty_cdb::{
+use opencdb::{
     AttributeDef, AttributeModel, CdbDatastore, DatastoreSeed, RequirementsClass, SimulationProfile,
 };
 

@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusty_cdb::conformance::RequirementsClass;
+use opencdb::conformance::RequirementsClass;
 
 /// The matrix document, read from the crate root.
 fn matrix() -> String {

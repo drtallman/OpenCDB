@@ -1,4 +1,4 @@
-//! `rusty_cdb` — a Rust API for reading, writing, and validating datastores
+//! `opencdb` — a Rust API for reading, writing, and validating datastores
 //! conformant with the OGC CDB 2.0 Core Standard (OGC 23-034).
 //!
 //! The CDB 2.0 Core is abstract by design; this crate encodes each core
@@ -48,7 +48,7 @@
 //! against Annex A `/conf/minimal-core`:
 //!
 //! ```
-//! use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+//! use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let tmp = tempfile::tempdir()?;
 //! let profile = SimulationProfile::json();

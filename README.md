@@ -12,7 +12,7 @@ djb's constant-database file format.
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `rusty_cdb` | 1.0.0 | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
+| `opencdb` | 1.0.0 | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
 | [`cdb-lint`](cdb-lint/README.md) | 0.1.0 | the CLI: judges a datastore against a profile and renders the report as text, JSON, or SARIF |
 
 ## The library
@@ -37,7 +37,7 @@ profile*. The crate mirrors that split.
   on every finding.
 
 ```rust
-use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
 let profile = SimulationProfile::json();
 let seed = DatastoreSeed::new("MyStore", "My Store", "Demo datastore", "ops@example.com");
@@ -54,7 +54,7 @@ cdb-lint --profile simulation --encoding json /path/to/datastore
 ```
 
 ```text
-cdb-lint 0.1.0 (rusty_cdb 1.0.0)
+cdb-lint 0.1.0 (opencdb 1.0.0)
 datastore  /path/to/datastore
 profile    simulation (json)
 
@@ -97,7 +97,7 @@ is reported as unchecked rather than passed, in every output format.
 
 ## What 1.0 freezes
 
-`rusty_cdb` 1.0 freezes the public API surface under semantic versioning:
+`opencdb` 1.0 freezes the public API surface under semantic versioning:
 types, traits, signatures, module paths, and the serde wire shape of a
 report. It deliberately leaves the content of findings unfrozen: the
 standard is a draft that carries recorded defects, so the findings a

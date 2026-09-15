@@ -1,4 +1,4 @@
-//! End-to-end datastore round-trips through the public [`rusty_cdb`] facade:
+//! End-to-end datastore round-trips through the public [`opencdb`] facade:
 //! create → write → reopen → read-back equality. At Phase 14a the round-tripped
 //! surface is the global metadata record (Metadata1/Metadata5), the storage CRS
 //! (CRS5, including a dynamic-reference-frame coordinate epoch, CRS7), and
@@ -6,16 +6,16 @@
 //! round-tripping arrives with Phase 14b, once those requirements classes
 //! exist. Every read and write flows through the facade only, so these tests
 //! also prove the datastore is self-describing on disk — no state hides in the
-//! [`rusty_cdb::CdbDatastore`] handle.
+//! [`opencdb::CdbDatastore`] handle.
 
 use std::fs;
 
-use rusty_cdb::crs::{CrsViolation, CrsWarning, Epoch, StorageCrs};
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
-use rusty_cdb::naming::StyleGuide;
-use rusty_cdb::profiles::{StorageTechnology, simulation::WGS84_2D_WKT};
-use rusty_cdb::{
+use opencdb::crs::{CrsViolation, CrsWarning, Epoch, StorageCrs};
+use opencdb::links::Link;
+use opencdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
+use opencdb::naming::StyleGuide;
+use opencdb::profiles::{StorageTechnology, simulation::WGS84_2D_WKT};
+use opencdb::{
     ApplicationProfile, CdbDatastore, CdbWarning, DatastoreSeed, RequirementsClass,
     SimulationProfile,
 };

@@ -15,12 +15,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use cdb_lint::{Env, exit, run};
-use rusty_cdb::conformance::{ContentCoverage, RequirementsClass};
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::ResourceMetadata;
-use rusty_cdb::profiles::ApplicationProfile;
-use rusty_cdb::topology::WindingOrder;
-use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::conformance::{ContentCoverage, RequirementsClass};
+use opencdb::links::Link;
+use opencdb::metadata::ResourceMetadata;
+use opencdb::profiles::ApplicationProfile;
+use opencdb::topology::WindingOrder;
+use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
 /// The report's documented listing order (`Ord` on `RequirementsClass`,
 /// alphabetical), written out rather than derived so the test would notice

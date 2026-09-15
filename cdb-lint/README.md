@@ -1,7 +1,7 @@
 # cdb-lint
 
 A command-line conformance checker for **OGC CDB 2.0 Core** (OGC 23-034)
-datastores. It wraps the `rusty_cdb` library's `CdbDatastore::validate` in a
+datastores. It wraps the `opencdb` library's `CdbDatastore::validate` in a
 command, so an implementer who writes CDB 2.0 datastores in any language has
 something to check the result with.
 
@@ -23,7 +23,7 @@ to find it out.
 ## Build and run
 
 cdb-lint is a member of this repository's Cargo workspace, alongside the
-`rusty_cdb` library it wraps.
+`opencdb` library it wraps.
 
 ```sh
 cargo run -p cdb-lint -- --help                       # from the repository root
@@ -35,7 +35,7 @@ A first real run:
 
 ```sh
 $ cdb-lint --profile simulation --encoding json /srv/data/cdb
-cdb-lint 0.1.0 (rusty_cdb 1.0.0)
+cdb-lint 0.1.0 (opencdb 1.0.0)
 datastore  /srv/data/cdb
 profile    simulation (json)
 
@@ -91,7 +91,7 @@ directory of either name is reached as `./check` or `./explain`.
 | `-q, --quiet` | off | omit class rows with nothing to report, from the text report |
 | `--color <auto\|always\|never>` | `auto` | colour the text report |
 | `-h, --help` | — | print the usage text |
-| `-V, --version` | — | print `cdb-lint <version> (rusty_cdb <version>)` |
+| `-V, --version` | — | print `cdb-lint <version> (opencdb <version>)` |
 
 There is **no default profile and no default encoding**. The yardstick is
 stated or the run does not happen — see
@@ -444,7 +444,7 @@ consume only `$?`, you are reading half of what the run said.
 output, its SARIF property names and its descriptor schema may change in a
 later `0.x`. Pin a version if a pipeline depends on the shape of what it reads.
 
-The library it wraps, **`rusty_cdb` 1.0**, is under semver — but the freeze
+The library it wraps, **`opencdb` 1.0**, is under semver — but the freeze
 covers the public *API surface*, not the *content* of a conformance report. A
 spec erratum or a revised interpretation may change what a validator reports
 without that being a breaking API change. `cdb-lint --version` names both

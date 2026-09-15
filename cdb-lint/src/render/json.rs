@@ -13,7 +13,7 @@
 //!   `--baseline` will accept, so the writer and the reader must agree on a
 //!   shape neither of them invented.
 //!
-//! The shape itself is `rusty_cdb`'s, hand-written there rather than derived
+//! The shape itself is `opencdb`'s, hand-written there rather than derived
 //! and frozen at `1.0`; `tests/cli_output.rs` pins its exact key sets so a
 //! change on either side of the boundary fails here.
 //!
@@ -28,7 +28,7 @@
 
 use std::io::{self, Write};
 
-use rusty_cdb::conformance::ConformanceReport;
+use opencdb::conformance::ConformanceReport;
 
 use crate::render::Tally;
 

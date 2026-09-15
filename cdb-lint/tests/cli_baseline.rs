@@ -24,9 +24,9 @@ use std::path::{Path, PathBuf};
 
 use cdb_lint::snapshot::ReportSnapshot;
 use cdb_lint::{Env, exit, run};
-use rusty_cdb::conformance::{ConformanceReport, RequirementsClass};
-use rusty_cdb::profiles::ApplicationProfile;
-use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::conformance::{ConformanceReport, RequirementsClass};
+use opencdb::profiles::ApplicationProfile;
+use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
 /// A terminal-free, colour-free environment: the deterministic one.
 fn plain_env() -> Env {

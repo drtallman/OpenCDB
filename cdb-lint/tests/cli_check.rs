@@ -23,18 +23,18 @@ use std::path::{Path, PathBuf};
 
 use cdb_lint::render::text::{TextOptions, render};
 use cdb_lint::{Env, exit, run};
-use rusty_cdb::attribution::{AttributeDef, AttributeModel};
-use rusty_cdb::conformance::{ContentCoverage, RequirementsClass};
-use rusty_cdb::coverage::DomainSet;
-use rusty_cdb::crs::{CrsViolation, StorageCrs};
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
-use rusty_cdb::naming::StyleGuide;
-use rusty_cdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
-use rusty_cdb::tiling::TilingScheme;
-use rusty_cdb::topology::WindingOrder;
-use rusty_cdb::versioning::PendingCollection;
-use rusty_cdb::{CdbDatastore, DatastoreSeed, GnosisProfile, SimulationProfile};
+use opencdb::attribution::{AttributeDef, AttributeModel};
+use opencdb::conformance::{ContentCoverage, RequirementsClass};
+use opencdb::coverage::DomainSet;
+use opencdb::crs::{CrsViolation, StorageCrs};
+use opencdb::links::Link;
+use opencdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
+use opencdb::naming::StyleGuide;
+use opencdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
+use opencdb::tiling::TilingScheme;
+use opencdb::topology::WindingOrder;
+use opencdb::versioning::PendingCollection;
+use opencdb::{CdbDatastore, DatastoreSeed, GnosisProfile, SimulationProfile};
 
 /// The ANSI sequences design §6.1 pins to the four status tokens. Written out
 /// here rather than imported so the test would notice the renderer silently
@@ -259,9 +259,9 @@ fn cli_check_header_names_the_tool_the_datastore_and_the_yardstick() {
 
     run.out_names(&[
         &format!(
-            "cdb-lint {} (rusty_cdb {})\n",
+            "cdb-lint {} (opencdb {})\n",
             env!("CARGO_PKG_VERSION"),
-            cdb_lint::RUSTY_CDB_VERSION
+            cdb_lint::OPENCDB_VERSION
         ),
         &root.display().to_string(),
         "simulation (json)",
@@ -288,7 +288,7 @@ fn cli_check_the_report_reproduces_the_layout_of_design_6_1() {
     let run = lint_sim(&root, &[]);
 
     let expected = format!(
-        "cdb-lint {} (rusty_cdb {})\n\
+        "cdb-lint {} (opencdb {})\n\
          datastore  {}\n\
          profile    simulation (json)\n\
          \n\
@@ -307,7 +307,7 @@ fn cli_check_the_report_reproduces_the_layout_of_design_6_1() {
          11 classes: 5 checked, 6 no content, 0 not checked · 0 violations · 0 warnings\n\
          CONFORMANT\n",
         env!("CARGO_PKG_VERSION"),
-        cdb_lint::RUSTY_CDB_VERSION,
+        cdb_lint::OPENCDB_VERSION,
         root.display(),
     );
 

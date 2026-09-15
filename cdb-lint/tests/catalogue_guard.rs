@@ -4,7 +4,7 @@
 //! `docs/CONFORMANCE.md`. This test is the machinery that stops it becoming
 //! *stale* documentation: it scans the library's `src/conformance/` tree for
 //! the code literals the library can emit and asserts an **exact two-way
-//! match** against the catalogue, so a new code in `rusty_cdb` fails
+//! match** against the catalogue, so a new code in `opencdb` fails
 //! cdb-lint's build until somebody writes its row.
 //!
 //! # What this proves, and what it does not
@@ -27,7 +27,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cdb_lint::catalogue::{self, CATALOGUE, Entry};
-use rusty_cdb::conformance::RequirementsClass;
+use opencdb::conformance::RequirementsClass;
 
 /// The library's conformance tree, found relative to *this* crate rather
 /// than to the working directory, which cargo is free to choose.

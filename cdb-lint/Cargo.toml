@@ -7,11 +7,11 @@ license = "Apache-2.0"
 repository = "https://github.com/drtallman/OpenCDB"
 
 # Nothing new ever enters the lockfile (design §2, decision 5): every crate
-# named here was already a dependency of `rusty_cdb`, at these exact versions.
+# named here was already a dependency of `opencdb`, at these exact versions.
 # `serde_json` renders the `--format json` artifact and parses a baseline;
 # the version pins match the library's so nothing re-resolves.
 [dependencies]
-rusty_cdb = { path = ".." }
+opencdb = { path = ".." }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
 

@@ -56,13 +56,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cdb_lint::{Env, exit, run};
-use rusty_cdb::conformance::{ConformanceReport, ContentCoverage, RequirementsClass};
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::{ResourceMetadata, UnitOfMeasure};
-use rusty_cdb::profiles::ApplicationProfile;
-use rusty_cdb::profiles::simulation::WGS84_2D_WKT;
-use rusty_cdb::topology::WindingOrder;
-use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::conformance::{ConformanceReport, ContentCoverage, RequirementsClass};
+use opencdb::links::Link;
+use opencdb::metadata::{ResourceMetadata, UnitOfMeasure};
+use opencdb::profiles::ApplicationProfile;
+use opencdb::profiles::simulation::WGS84_2D_WKT;
+use opencdb::topology::WindingOrder;
+use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 use serde_json::{Value, json};
 
 /// The three formats. Every rule below is asserted in each of them, in one

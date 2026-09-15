@@ -14,7 +14,7 @@ use crate::tiling::TilingViolation;
 use crate::topology::TopologyViolation;
 use crate::versioning::VersioningError;
 
-/// Top-level error for the `rusty_cdb` API.
+/// Top-level error for the `opencdb` API.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum CdbError {

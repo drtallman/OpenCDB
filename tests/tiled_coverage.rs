@@ -5,10 +5,10 @@
 //! metadata, coverage-instance validation, and grid addressing composed on
 //! a real datastore.
 
-use rusty_cdb::coverage::{DomainSet, validate_coverage_instance};
-use rusty_cdb::metadata::ResourceMetadata;
-use rusty_cdb::tiling::{Cdb1GlobalGrid, Cdb1Lod, TilingScheme, validate_tileset_metadata};
-use rusty_cdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::coverage::{DomainSet, validate_coverage_instance};
+use opencdb::metadata::ResourceMetadata;
+use opencdb::tiling::{Cdb1GlobalGrid, Cdb1Lod, TilingScheme, validate_tileset_metadata};
+use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
 /// §7.2.7 Rec Coverages7 /req/core/coverage-tiling-abstract and §7.2.8
 /// Rec Coverages8 /req/core/coverage-tiling-extension.

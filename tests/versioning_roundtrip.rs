@@ -4,7 +4,7 @@
 //! metadata encodings.
 
 use chrono::{DateTime, Utc};
-use rusty_cdb::{
+use opencdb::{
     CdbDatastore, ChangeAction, CollectionId, DatastoreSeed, PendingCollection, SimulationProfile,
 };
 
@@ -30,7 +30,7 @@ fn req_core_versioning_full_roundtrip_json() {
     store
         .write_resource_metadata(
             "/Tiles/metadata/RoadNetwork.json",
-            &rusty_cdb::metadata::ResourceMetadata::new("RoadNetwork", "Road Network", "Roads"),
+            &opencdb::metadata::ResourceMetadata::new("RoadNetwork", "Road Network", "Roads"),
         )
         .unwrap();
 

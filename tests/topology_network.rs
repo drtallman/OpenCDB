@@ -3,8 +3,8 @@
 //! Face4 winding-order metadata tie-in (§7.13.5.5) — exercised through
 //! the crate's public API only.
 
-use rusty_cdb::metadata::ResourceMetadata;
-use rusty_cdb::{
+use opencdb::metadata::ResourceMetadata;
+use opencdb::{
     Cdb1GlobalGrid, Cdb1Lod, DirectedEdge, EdgeId, FaceId, NodeId, Orientation, SignedEdge,
     TopoEdge, TopoFace, TopoGraph, TopoNode, TopologyViolation, WindingOrder,
     validate_topology_dataset,

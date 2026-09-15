@@ -1,4 +1,4 @@
-# rusty_cdb — TDD Plan for the OGC CDB 2.0 Core Standard
+# opencdb — TDD Plan for the OGC CDB 2.0 Core Standard
 
 Source spec: OGC CDB Version 2 Part 1: Core Standard (OGC 23-034, version 2.0),
 <http://www.opengis.net/doc/IS/CDB-core/2.0>. Design records referenced below
@@ -6,7 +6,7 @@ Source spec: OGC CDB Version 2 Part 1: Core Standard (OGC 23-034, version 2.0),
 
 ## 1. Goal and scope
 
-Build a Rust API (library crate `rusty_cdb`) for reading and writing CDB 2.0
+Build a Rust API (library crate `opencdb`) for reading and writing CDB 2.0
 datastores, developed test-first: every requirement (`/req/core/...`) in the
 spec becomes one or more failing tests before its implementation is written.
 

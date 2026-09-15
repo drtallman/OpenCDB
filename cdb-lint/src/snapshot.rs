@@ -98,7 +98,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use rusty_cdb::conformance::ConformanceReport;
+use opencdb::conformance::ConformanceReport;
 
 use crate::cli::UsageError;
 

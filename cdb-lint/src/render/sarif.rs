@@ -74,25 +74,25 @@
 //! omitted optional field. `help.text` carries the document's verified
 //! identity instead.
 //!
-//! [`ContentCoverage`]: rusty_cdb::conformance::ContentCoverage
+//! [`ContentCoverage`]: opencdb::conformance::ContentCoverage
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Component, Path};
 
-use rusty_cdb::attribution::AttributionViolation;
-use rusty_cdb::conformance::{
+use opencdb::attribution::AttributionViolation;
+use opencdb::conformance::{
     CdbViolation, CdbWarning, ClassFindings, ConformanceReport, ContentCoverage, RequirementsClass,
 };
-use rusty_cdb::coverage::CoverageViolation;
-use rusty_cdb::crs::CrsViolation;
-use rusty_cdb::geometry::GeometryViolation;
-use rusty_cdb::hierarchy::{HierarchyViolation, HierarchyWarning};
-use rusty_cdb::metadata::MetadataViolation;
-use rusty_cdb::naming::{NamingViolation, NamingWarning};
-use rusty_cdb::tiling::TilingViolation;
-use rusty_cdb::topology::TopologyViolation;
-use rusty_cdb::versioning::VersioningViolation;
+use opencdb::coverage::CoverageViolation;
+use opencdb::crs::CrsViolation;
+use opencdb::geometry::GeometryViolation;
+use opencdb::hierarchy::{HierarchyViolation, HierarchyWarning};
+use opencdb::metadata::MetadataViolation;
+use opencdb::naming::{NamingViolation, NamingWarning};
+use opencdb::tiling::TilingViolation;
+use opencdb::topology::TopologyViolation;
+use opencdb::versioning::VersioningViolation;
 use serde_json::{Map, Value, json};
 
 use crate::catalogue;
@@ -682,8 +682,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use rusty_cdb::metadata::MetadataEncoding;
-    use rusty_cdb::naming::CaseRule;
+    use opencdb::metadata::MetadataEncoding;
+    use opencdb::naming::CaseRule;
 
     /// A stand-in datastore root. Nothing here touches the filesystem — the
     /// matcher is a pure function of a finding and a root.

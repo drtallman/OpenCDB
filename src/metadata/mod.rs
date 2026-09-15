@@ -848,7 +848,7 @@ mod tests {
         GlobalMetadata::builder()
             .id("doi:10.5281/cdb.demo.1")
             .title("Yemen demonstration CDB data store")
-            .description("Demonstration datastore for the rusty_cdb core test suite")
+            .description("Demonstration datastore for the opencdb core test suite")
             .contact_point("CAE")
             .created(dt("2026-07-14T09:30:00Z"))
             .language(LanguageTag::new("en").unwrap())

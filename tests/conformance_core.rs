@@ -6,22 +6,22 @@
 //! mandatory requirements classes — CRS, File Naming, File Structure, Links,
 //! and Metadata (spec §2). These integration tests exercise that test end to
 //! end against real `tempfile` datastores driven through the public
-//! [`rusty_cdb`] facade: one test mechanizes the literal declaration
+//! [`opencdb`] facade: one test mechanizes the literal declaration
 //! inspection, one proves a fully-populated datastore conformant, and the rest
 //! break exactly one requirements class each and confirm the
-//! [`rusty_cdb::ConformanceReport`] localizes the failure to that class.
+//! [`opencdb::ConformanceReport`] localizes the failure to that class.
 
 use std::fs;
 
-use rusty_cdb::crs::{CrsViolation, StorageCrs};
-use rusty_cdb::hierarchy::HierarchyViolation;
-use rusty_cdb::links::{Link, LinkViolation};
-use rusty_cdb::metadata::{
+use opencdb::crs::{CrsViolation, StorageCrs};
+use opencdb::hierarchy::HierarchyViolation;
+use opencdb::links::{Link, LinkViolation};
+use opencdb::metadata::{
     MetadataEncoding, MetadataStandard, MetadataViolation, ResourceMetadata, UnitOfMeasure,
 };
-use rusty_cdb::naming::{NamingViolation, StyleGuide};
-use rusty_cdb::profiles::StorageTechnology;
-use rusty_cdb::{
+use opencdb::naming::{NamingViolation, StyleGuide};
+use opencdb::profiles::StorageTechnology;
+use opencdb::{
     ApplicationProfile, CdbDatastore, CdbViolation, DatastoreSeed, RequirementsClass,
     SimulationProfile,
 };

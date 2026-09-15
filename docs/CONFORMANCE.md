@@ -1,4 +1,4 @@
-# rusty_cdb — OGC CDB 2.0 Core conformance matrix
+# opencdb — OGC CDB 2.0 Core conformance matrix
 
 **Crate version 1.0.0** · **Standard:** OGC CDB Version 2, Part 1: Core
 (OGC 23-034, version 2.0) · **Audience:** implementers auditing this crate's

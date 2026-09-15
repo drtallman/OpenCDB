@@ -25,15 +25,15 @@ use std::path::{Path, PathBuf};
 
 use cdb_lint::profile::DescriptorProfile;
 use cdb_lint::{Env, exit, run};
-use rusty_cdb::attribution::{AttributeDef, AttributeModel};
-use rusty_cdb::coverage::DomainSet;
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::{ResourceMetadata, UnitOfMeasure};
-use rusty_cdb::profiles::simulation::WGS84_2D_WKT;
-use rusty_cdb::tiling::TilingScheme;
-use rusty_cdb::topology::WindingOrder;
-use rusty_cdb::versioning::PendingCollection;
-use rusty_cdb::{ApplicationProfile, CdbDatastore, DatastoreSeed, SimulationProfile};
+use opencdb::attribution::{AttributeDef, AttributeModel};
+use opencdb::coverage::DomainSet;
+use opencdb::links::Link;
+use opencdb::metadata::{ResourceMetadata, UnitOfMeasure};
+use opencdb::profiles::simulation::WGS84_2D_WKT;
+use opencdb::tiling::TilingScheme;
+use opencdb::topology::WindingOrder;
+use opencdb::versioning::PendingCollection;
+use opencdb::{ApplicationProfile, CdbDatastore, DatastoreSeed, SimulationProfile};
 use serde_json::{Value, json};
 
 /// A terminal-free, colour-free environment: the deterministic one.

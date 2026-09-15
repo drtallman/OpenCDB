@@ -35,21 +35,21 @@
 use std::fs;
 
 use chrono::{DateTime, Utc};
-use rusty_cdb::attribution::{AttributeDef, AttributeModel};
-use rusty_cdb::conformance::{CdbViolation, ContentCoverage, RequirementsClass};
-use rusty_cdb::coverage::DomainSet;
-use rusty_cdb::crs::{CrsViolation, StorageCrs};
-use rusty_cdb::links::Link;
-use rusty_cdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
-use rusty_cdb::naming::StyleGuide;
-use rusty_cdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
-use rusty_cdb::tiling::{
+use opencdb::attribution::{AttributeDef, AttributeModel};
+use opencdb::conformance::{CdbViolation, ContentCoverage, RequirementsClass};
+use opencdb::coverage::DomainSet;
+use opencdb::crs::{CrsViolation, StorageCrs};
+use opencdb::links::Link;
+use opencdb::metadata::{MetadataEncoding, MetadataStandard, ResourceMetadata, UnitOfMeasure};
+use opencdb::naming::StyleGuide;
+use opencdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
+use opencdb::tiling::{
     Cdb1GlobalGrid, Cdb1Lod, Cdb1TileAddress, GnosisGlobalGrid, GnosisLevel, GnosisTileAddress,
     TilingScheme,
 };
-use rusty_cdb::topology::WindingOrder;
-use rusty_cdb::versioning::{ChangeAction, CollectionId, PendingCollection};
-use rusty_cdb::{CdbDatastore, DatastoreSeed, GnosisProfile, SimulationProfile};
+use opencdb::topology::WindingOrder;
+use opencdb::versioning::{ChangeAction, CollectionId, PendingCollection};
+use opencdb::{CdbDatastore, DatastoreSeed, GnosisProfile, SimulationProfile};
 
 /// The instant the initial content collection is applied (V3-A).
 const APPLIED_LOAD: &str = "2026-09-12T09:00:00Z";

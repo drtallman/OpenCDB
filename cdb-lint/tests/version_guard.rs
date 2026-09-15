@@ -1,4 +1,4 @@
-//! A staleness guard for `cdb_lint::RUSTY_CDB_VERSION`.
+//! A staleness guard for `cdb_lint::OPENCDB_VERSION`.
 //!
 //! cdb-lint prints the library's version in its own version line and in
 //! every report header, because the library's version is what decided the
@@ -66,11 +66,11 @@ fn cli_version_guard_matches_the_library_manifest() {
 
     assert_eq!(
         shipped,
-        cdb_lint::RUSTY_CDB_VERSION,
+        cdb_lint::OPENCDB_VERSION,
         "the library now ships {shipped}, but cdb-lint reports {}. \
-         Bump RUSTY_CDB_VERSION in cdb-lint/src/lib.rs to {shipped}, and check \
+         Bump OPENCDB_VERSION in cdb-lint/src/lib.rs to {shipped}, and check \
          whether the release changed any finding this tool prints.",
-        cdb_lint::RUSTY_CDB_VERSION
+        cdb_lint::OPENCDB_VERSION
     );
 }
 
@@ -85,7 +85,7 @@ fn cli_version_guard_reads_only_the_package_section() {
 members = [\"cdb-lint\"]
 
 [package]
-name = \"rusty_cdb\"
+name = \"opencdb\"
 version = \"9.9.9\"
 edition = \"2024\"
 

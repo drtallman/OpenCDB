@@ -43,14 +43,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use rusty_cdb::attribution::{self, AttributeModel};
-use rusty_cdb::conformance::RequirementsClass;
-use rusty_cdb::crs::{CrsViolation, StorageCrs};
-use rusty_cdb::hierarchy;
-use rusty_cdb::metadata::{MetadataEncoding, MetadataStandard, UnitOfMeasure};
-use rusty_cdb::naming::{self, CaseRule, StyleGuide};
-use rusty_cdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
-use rusty_cdb::{GnosisProfile, SimulationProfile};
+use opencdb::attribution::{self, AttributeModel};
+use opencdb::conformance::RequirementsClass;
+use opencdb::crs::{CrsViolation, StorageCrs};
+use opencdb::hierarchy;
+use opencdb::metadata::{MetadataEncoding, MetadataStandard, UnitOfMeasure};
+use opencdb::naming::{self, CaseRule, StyleGuide};
+use opencdb::profiles::{ApplicationProfile, StorageTechnology, TilingSchemeId};
+use opencdb::{GnosisProfile, SimulationProfile};
 
 use crate::cli::{BuiltinProfile, Encoding, ProfileChoice, UsageError};
 
@@ -858,7 +858,7 @@ fn invalid(path: &Path, detail: fmt::Arguments<'_>) -> UsageError {
 mod tests {
     use super::*;
 
-    use rusty_cdb::profiles::simulation::WGS84_2D_WKT;
+    use opencdb::profiles::simulation::WGS84_2D_WKT;
 
     /// The resolved profile for a built-in pairing that must resolve.
     fn builtin_profile(profile: BuiltinProfile, encoding: Encoding) -> Box<dyn ApplicationProfile> {

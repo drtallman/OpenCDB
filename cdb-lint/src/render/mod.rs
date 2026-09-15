@@ -17,14 +17,14 @@
 //! independent chances to disagree about a number whose whole purpose is to be
 //! trusted.
 //!
-//! [`ConformanceReport`]: rusty_cdb::conformance::ConformanceReport
-//! [`ContentCoverage`]: rusty_cdb::conformance::ContentCoverage
+//! [`ConformanceReport`]: opencdb::conformance::ConformanceReport
+//! [`ContentCoverage`]: opencdb::conformance::ContentCoverage
 
 pub mod json;
 pub mod sarif;
 pub mod text;
 
-use rusty_cdb::conformance::{ClassFindings, ConformanceReport, ContentCoverage};
+use opencdb::conformance::{ClassFindings, ConformanceReport, ContentCoverage};
 
 /// The running counts behind the aggregate line.
 ///

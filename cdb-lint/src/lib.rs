@@ -1,7 +1,7 @@
 //! `cdb-lint` — a command-line conformance checker for OGC CDB 2.0 Core
 //! datastores.
 //!
-//! The library `rusty_cdb` can already judge a datastore, but only through a
+//! The library `opencdb` can already judge a datastore, but only through a
 //! Rust API, which reaches Rust programs and nobody else. cdb-lint turns
 //! that judgment into a command, so an implementer who writes CDB 2.0
 //! datastores in another language has something to check the result with.
@@ -37,9 +37,9 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
 
-use rusty_cdb::conformance::ConformanceReport;
-use rusty_cdb::metadata::MetadataEncoding;
-use rusty_cdb::{CdbDatastore, hierarchy, metadata};
+use opencdb::conformance::ConformanceReport;
+use opencdb::metadata::MetadataEncoding;
+use opencdb::{CdbDatastore, hierarchy, metadata};
 
 use crate::cli::{CheckArgs, ColorChoice, Format, ProfileChoice, UsageError, UsageErrorKind};
 use crate::render::text::{self, TextOptions};
@@ -53,13 +53,13 @@ pub mod profile;
 pub mod render;
 pub mod snapshot;
 
-/// The version of the `rusty_cdb` library whose judgment this build reports.
+/// The version of the `opencdb` library whose judgment this build reports.
 ///
 /// It is hand-maintained, and `tests/version_guard.rs` holds it against the
 /// library's own `Cargo.toml` so that it cannot quietly fall behind. It is a
 /// constant rather than a build-script product because the two crates live
 /// in one workspace and a build script would be machinery for a string.
-pub const RUSTY_CDB_VERSION: &str = "1.0.0";
+pub const OPENCDB_VERSION: &str = "1.0.0";
 
 /// The ambient state that would otherwise make a run non-reproducible.
 ///
@@ -93,7 +93,7 @@ pub fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write, env: &En
         Ok(cli::Command::Version) => write_to(
             out,
             &format!(
-                "cdb-lint {} (rusty_cdb {RUSTY_CDB_VERSION})\n",
+                "cdb-lint {} (opencdb {OPENCDB_VERSION})\n",
                 env!("CARGO_PKG_VERSION")
             ),
             exit::OK,
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "cdb-lint {} (rusty_cdb {RUSTY_CDB_VERSION})\n",
+                "cdb-lint {} (opencdb {OPENCDB_VERSION})\n",
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -784,14 +784,14 @@ mod tests {
     /// The constant is what `tests/version_guard.rs` holds against the
     /// library's manifest; it is a version triple and nothing else.
     #[test]
-    fn cli_run_rusty_cdb_version_is_a_version_triple() {
-        let parts: Vec<&str> = RUSTY_CDB_VERSION.split('.').collect();
+    fn cli_run_opencdb_version_is_a_version_triple() {
+        let parts: Vec<&str> = OPENCDB_VERSION.split('.').collect();
 
-        assert_eq!(parts.len(), 3, "{RUSTY_CDB_VERSION}");
+        assert_eq!(parts.len(), 3, "{OPENCDB_VERSION}");
         for part in parts {
             assert!(
                 !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()),
-                "{RUSTY_CDB_VERSION}"
+                "{OPENCDB_VERSION}"
             );
         }
     }

@@ -85,7 +85,7 @@ dependencies = [
 name = "cdb-lint"
 version = "0.1.0"
 dependencies = [
- "rusty_cdb",
+ "opencdb",
  "serde",
  "serde_json",
  "tempfile",
@@ -553,6 +553,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "opencdb"
+version = "1.0.0"
+dependencies = [
+ "approx",
+ "chrono",
+ "geo",
+ "geo-types",
+ "geojson",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "wkt",
+]
+
+[[package]]
 name = "pdqselect"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -736,23 +753,6 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
-
-[[package]]
-name = "rusty_cdb"
-version = "1.0.0"
-dependencies = [
- "approx",
- "chrono",
- "geo",
- "geo-types",
- "geojson",
- "quick-xml",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "wkt",
-]
 
 [[package]]
 name = "scopeguard"

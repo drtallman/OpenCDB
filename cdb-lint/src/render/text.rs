@@ -3,7 +3,7 @@
 //! and a verdict.
 //!
 //! ```text
-//! cdb-lint 0.1.0 (rusty_cdb 1.0.0)
+//! cdb-lint 0.1.0 (opencdb 1.0.0)
 //! datastore  /Users/x/cdb
 //! profile    simulation (json)
 //!
@@ -60,14 +60,12 @@
 //! from it (design §5 rule 4). That containment is the whole reason a ratchet
 //! is safe to ship.
 //!
-//! [`code`]: rusty_cdb::conformance::CdbViolation::code
+//! [`code`]: opencdb::conformance::CdbViolation::code
 
 use std::io::{self, Write};
 
-use rusty_cdb::conformance::{
-    ClassFindings, ConformanceReport, ContentCoverage, RequirementsClass,
-};
-use rusty_cdb::metadata::MetadataEncoding;
+use opencdb::conformance::{ClassFindings, ConformanceReport, ContentCoverage, RequirementsClass};
+use opencdb::metadata::MetadataEncoding;
 
 use crate::render::{Tally, plural};
 use crate::snapshot::{BaselineDiff, Change, DiffRow};
@@ -156,9 +154,9 @@ pub fn render(
 ) -> io::Result<()> {
     writeln!(
         out,
-        "cdb-lint {} (rusty_cdb {})",
+        "cdb-lint {} (opencdb {})",
         env!("CARGO_PKG_VERSION"),
-        crate::RUSTY_CDB_VERSION
+        crate::OPENCDB_VERSION
     )?;
     writeln!(out, "datastore  {}", report.root().display())?;
     writeln!(

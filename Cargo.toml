@@ -2,7 +2,7 @@
 members = ["cdb-lint"]
 
 [package]
-name = "rusty_cdb"
+name = "opencdb"
 version = "1.0.0"
 edition = "2024"
 description = "Read, write, and validate OGC CDB 2.0 Core datastores"
