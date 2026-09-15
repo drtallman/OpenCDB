@@ -174,6 +174,50 @@ The §7.9.4.2 conditional-element mechanism is how four optional classes make
 themselves visible at the datastore level; it is also the only signal the
 content sweep reads from a record (§2.4).
 
+#### The global record on the wire
+
+§7.9.4.1's element table is not the record's whole wire schema, and a reader
+who builds from that table alone writes a record this crate cannot parse. The
+canonical file is `global_metadata/global_metadata.json` (or `.xml`, per the
+declared encoding), and the record carries **nine required elements**, spelled
+exactly as follows:
+
+| Element | Value |
+|---|---|
+| `ID` | any string — upper-case, as §7.9.4.1's table prints it |
+| `title`, `description`, `contactPoint` | strings |
+| `created` | RFC 3339 §5.6 in UTC; written canonically with `Z` (Metadata6) |
+| `language` | a BCP 47 tag (Metadata4) |
+| `metadataStandard` | one of the ten §7.9.3.2 keywords, e.g. `DCAT` (Metadata2) |
+| `metadataEncoding` | `json`, `xml` or `gpkg` (Metadata5) |
+| `uom` | `M`, `FT`, `K` or `MI` (Metadata8) |
+
+`update`, `temporal`, `accessRights` and `license` are optional, and
+`tilingScheme` — Tiling8's conditional element, an object of `id`, `crs`,
+`uom` and `extent` (`west`/`south`/`east`/`north`) — appears on tiled
+datastores.
+
+The last four required rows are the metadata module's "one X per datastore"
+declarations, present on the record itself: each must also **agree with the
+profile's pin**, and a valid value that disagrees is convicted under that
+requirement's own code. `metadataStandard` and `metadataEncoding` have no row
+in §7.9.4.1's element table at all (erratum 22); `uom`'s element name is
+mandated by Metadata8-B, but the table equally lacks its row. Two
+consequences worth stating for implementers:
+
+- **A record that does not parse draws one violation under
+  `/req/core/metadata-encoding`,** naming the first failure — a missing
+  required element, a non-UTC datetime, an unlisted standard keyword, a
+  malformed language tag. The per-requirement codes
+  (`/req/core/metadata-standard`, `/req/core/metadata-language`,
+  `/req/core/metadata-uom-measure`, …) judge records that parse.
+- Discovery by trial is one absence per validation run, because a parser
+  reports only the first missing element. This table exists so nobody does
+  that again: a cold second-implementer build (September 2026), working from
+  the published documents alone, needed one validator round each to learn
+  `metadataStandard` and `metadataEncoding` — neither of which any published
+  document then named.
+
 ### 4.5 CRS — `/req/core/data-representation` (§7.3, mandatory)
 
 | Requirement | Code | API | Tests |
@@ -182,10 +226,19 @@ content sweep reads from a record (§2.4).
 | CRS3 — exactly one CRS per datastore | `/req/core/crs/crsStorage` | `StorageCrs::write_to`, `CrsViolation::CrsAlreadyDefined` | `req_core_crs_storage_one_crs_per_datastore`, `req_core_crs_storage_declaration_mismatch_detected` |
 | CRS4 — geodetic/geographic, never projected | `/req/core/crs/storageCrs-valid-value` | `StorageCrs::from_wkt`, `CrsViolation::NonGeodeticStorageCrs`, `CrsViolation::CompoundHorizontalNotGeodetic` | `req_core_crs_storage_valid_value_accepts_geographic`, `req_core_crs_storage_valid_value_rejects_non_geodetic`, `req_core_crs_storage_valid_value_simulation_crs_is_geographic` |
 | `/rec/core/crs/crs-definition` (SHOULD) — WGS-84 | `/rec/core/crs/crs-definition` | `CrsWarning::NotWgs84` | `rec_core_crs_definition_wgs84_recommended`, `rec_core_crs_definition_simulation_pins_wgs84` |
-| CRS5 — CRS metadata as WKT-2 in the global metadata folder | `/req/core/crs/crsMetadata` | `StorageCrs::read_from`/`write_to`, `CrsViolation::MissingCrsMetadata`, `CrsViolation::InvalidWkt` | `req_core_crs_metadata_file_roundtrip`, `conf_core_break_crs_reports_missing_crs_metadata` |
+| CRS5 — CRS metadata as WKT-2 in the global metadata folder, canonical file `global_metadata/crs.wkt` | `/req/core/crs/crsMetadata` | `StorageCrs::read_from`/`write_to`, `CrsViolation::MissingCrsMetadata`, `CrsViolation::InvalidWkt` | `req_core_crs_metadata_file_roundtrip`, `conf_core_break_crs_reports_missing_crs_metadata` |
 | CRS6 — one coordinate unit | `/req/core/crs/uom` | `CrsViolation::InconsistentCoordinateUnits` | `req_core_crs_uom_mismatch_detected` |
 | CRS7 — dynamic datum requires a decimal-year epoch | `/req/core/crs/crsEpoch`, `/req/core/crs/crsEpoch-B` | `crs::Epoch`, `CrsViolation::MissingEpoch`, `CrsViolation::InvalidEpoch` | `req_core_crs_epoch_dynamic_requires_epoch`, `req_core_crs_epoch_roundtrips_through_coordinatemetadata`, `req_core_crs_epoch_decimal_year_format` |
 | VCRS1–3 — vertical CRS, WKT-2, metres by default | `/req/core/crs/vcrs-topic2` | `crs::vertical`, `CrsViolation::NotAVerticalCrs` | `req_core_crs_vcrs_parses_spec_example`, `req_core_crs_vcrs_units_default_to_meters`, `req_core_crs_vcrs_rejects_non_vertical` |
+
+The CRS5 file name is part of the contract: the reader probes
+`global_metadata/crs.wkt` and nothing else — the spec names the folder and
+the encoding but no file, so this crate's spelling is the definition. A
+`.wkt` file under any other name is ordinary content: the class draws
+`/req/core/crs/crsMetadata` for the record that is not there, and unless the
+stray stem happens to satisfy the case rule, Name6 convicts it too. (The
+cold second-implementer build guessed `storage_crs.wkt` and lost both
+classes at once; nothing published then named the file.)
 
 ### 4.6 Attribution — `/req/core/attributes` (§7.1, optional)
 
@@ -494,6 +547,7 @@ file with the OGC CDB SWG.
 | 19 | §7.4.3, §7.4.5 | **Two recommendation boxes carry `/req/` URIs.** Recommendation Name1 is `/req/core/name-unicode` (spec line 1145) and Recommendation Name4 is `/req/core/name-empty-folders` (line 1164), although both boxes are labelled *Recommendation* and both state SHOULDs. Row 8's defect family, inverted: there, SHALL boxes carry `/rec/` prefixes. | Reproduced: both codes keep the `/req/core/` prefix the draft gave them, and both findings are `CdbWarning`s. This is the sole exception to §5 normalization 1, and it is noted there. |
 | 20 | §7.3.1.4, §7.3.1.5 | **CRS5 and CRS6 are the only two boxes in the document carrying a version segment.** Their boxes read `/req/2.0/core/crs/crsMetadata` (spec line 987) and `/req/2.0/core/crs/uom` (line 1024), while the §7.3.1 class table spells both without the `2.0` (lines 958, 960) — as does every other box in the draft. | Normalized to the class-table form, `/req/core/crs/crsMetadata` and `/req/core/crs/uom` (`finding.rs`). A version segment inside a clause URI would also make every code version-dependent, which Annex A's own `/conf/minimal-core` shows is not the draft's intent. |
 | 21 | §7.4.1 vs §7.4.2–.8 | **§7.4 numbers its own naming requirements two different ways.** The §7.4.1 class table (spec lines 1110–1136) reads Name1=`name-spaces`, Rec Name1=`name-unicode`, **Name2**=`name-language`, **Rec Name2**=`name-empty-folders`, **Name3** *and* **Name5** both =`name-ap-guide`, **Name4** *and* **Name6** both =`name-case`, Name7=`name-extensions`. The requirement boxes of §7.4.2–.8 read Name1, Rec Name1, **Name3**=`name-language`, **Rec Name4**=`name-empty-folders`, Name5, Name6=`name-case`, Name7. Same defect family as rows 4, 9 and 10. | **The boxes govern**, here and throughout §4.1: this document's labels are `Name3-A`/`Name3-B` for the language rule, `Rec Name4` for empty folders, `Name5` for the style-guide duty and `Name6` for the case rule. An auditor reading the class table and searching for "Name3-B" will land on `name-ap-guide` instead; that is the draft's disagreement with itself, not this crate's. (Smaller and adjacent: the §7.10.2 class table lists Recommendation Tiling1 as `/req/core/tiling-extension` while its own box, spec line 1932, says `*/rec/core/tiling-extension`; the crate uses the box.) |
+| 22 | §7.9.4.1 vs §7.9.3.2, §7.9.3.5 | **The global element table omits the elements two of its own module's requirements need on disk.** Metadata2 ("SHALL use one of the following metadata standards") and Metadata5 ("one encoding covers every metadata instance") each declare one value per datastore, but §7.9.4.1's element inventory — the table with the Mandatory/Optional column — has no row placing either declaration in the record, and names no element for them anywhere. Metadata8-B at least mandates its element's *name* ("SHALL be uom"), yet the table lacks that row too. A second implementer building the record from the table alone produces a file with no stated standard or encoding, and there is nowhere else the declarations could live. | The record carries them: `metadataStandard` and `metadataEncoding`, spelled in the table's own camelCase convention (`contactPoint`), alongside Metadata8-B's `uom`. All three are required elements; §4.4's "global record on the wire" table is the full schema. Discovered the hard way by the cold second-implementer build this document's §4.4 now cites. |
 
 ---
 
@@ -564,6 +618,12 @@ construction.
 | `StyleGuide::is_reserved` | The exemption gate that decides whether Name6 applies. Folding it would exempt `Global_Metadata` from the case rule — making Name6 vacuous for exactly the names the spec mandates verbatim. |
 | `attribution::parse_file_name` (Attr1-C) | The requirement mandates one literal name. |
 | `AttributeModel::validate`'s id uniqueness (Attr2-B) | An id is a requirement's subject, not a path; a profile whose vocabulary distinguishes `AL013` from `al013` would lose that distinction. |
+
+The exemption list itself, since a name off it answers to Name6: the library
+reserves four stems — `global_metadata`, `vector_attributes`, `crs`,
+`versions` — and a profile widens the set with its `reserved_names` and its
+resource-metadata directory, nothing else. `crs` is on the list for
+`crs.wkt`, the CRS5 record (§4.5).
 
 **The accepted cost.** On a case-sensitive volume, a genuine directory named
 `Versions/` or `Global_Metadata/` — one the datastore author meant as ordinary

@@ -306,6 +306,58 @@ Two behaviours are worth stating outright:
   them would file the *profile's* defects as findings against a datastore
   that did nothing wrong — or, worse, file nothing at all.
 
+### The smallest datastore this yardstick passes
+
+Two files. The whole discovery cost of the on-disk format concentrates here,
+so it is worth printing in full: a datastore holding nothing but these two
+files is, under the descriptor above, CONFORMANT with zero violations and
+zero warnings.
+
+```
+cdb/
+└── global_metadata/
+    ├── crs.wkt
+    └── global_metadata.json
+```
+
+`crs.wkt` holds the storage CRS as WKT-2 — under this descriptor, the exact
+`storage_crs_wkt` text above. The name is canonical: the library reads
+`global_metadata/crs.wkt` and nothing else, and a `.wkt` under any other name
+is ordinary content for the case rule to judge (`docs/CONFORMANCE.md` §4.5).
+
+`global_metadata.json` is the global record — nine required elements, all of
+them below, spelled exactly like this:
+
+```json
+{
+  "ID": "urn:example:acme:datastore:0001",
+  "title": "ACME minimal datastore",
+  "description": "The smallest datastore acme-sim passes.",
+  "contactPoint": "ACME Simulation",
+  "created": "2026-01-01T00:00:00Z",
+  "language": "en",
+  "metadataStandard": "DCAT",
+  "metadataEncoding": "json",
+  "uom": "M"
+}
+```
+
+The first six are the spec's own mandatory elements; the other three are the
+metadata module's one-per-datastore declarations living on the record —
+`metadataStandard` and `metadataEncoding` appear in no spec table at all
+(`docs/CONFORMANCE.md` §4.4 and its erratum 22 tell that story). Each of
+`language`, `metadataStandard`, `metadataEncoding` and `uom` must also agree
+with the profile's pin: a valid value that disagrees is convicted under that
+requirement's own code, while a record that fails to *parse* — a missing
+element, a non-UTC datetime, an unlisted keyword — draws one violation under
+`/req/core/metadata-encoding` naming the first failure. `created` is
+RFC 3339, UTC, the `Z` spelled out.
+
+Optional-class content — tiles, coverages, an attribute model — binds its
+class the moment it exists; absent, a declared class reports "no content this
+class governs" and passes. That is what makes the two-file floor a useful
+smoke test of a pipeline: it isolates the mandatory core.
+
 ### Detection never chooses the yardstick
 
 cdb-lint reads the datastore to **suggest** a flag and never to **choose** one.
