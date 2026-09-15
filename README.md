@@ -36,6 +36,11 @@ profile*. The crate mirrors that split.
   spec's SHALLs, warnings for its SHOULDs, and a stable requirement-URI code
   on every finding.
 
+```toml
+[dependencies]
+opencdb = "1.0"
+```
+
 ```rust
 use opencdb::{CdbDatastore, DatastoreSeed, SimulationProfile};
 
@@ -49,7 +54,7 @@ assert!(report.is_conformant());
 ## The linter
 
 ```sh
-cargo install --path cdb-lint
+cargo install cdb-lint
 cdb-lint --profile simulation --encoding json /path/to/datastore
 ```
 

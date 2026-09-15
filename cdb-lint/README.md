@@ -22,13 +22,19 @@ to find it out.
 
 ## Build and run
 
-cdb-lint is a member of this repository's Cargo workspace, alongside the
-`opencdb` library it wraps.
+cdb-lint is published on crates.io, and lives in this repository's Cargo
+workspace alongside the `opencdb` library it wraps.
+
+```sh
+cargo install cdb-lint                                # from crates.io → ~/.cargo/bin/cdb-lint
+```
+
+From a checkout of this repository:
 
 ```sh
 cargo run -p cdb-lint -- --help                       # from the repository root
 cargo build --release -p cdb-lint                     # → target/release/cdb-lint
-cargo install --path cdb-lint                         # → ~/.cargo/bin/cdb-lint
+cargo install --path cdb-lint                         # this checkout → ~/.cargo/bin/cdb-lint
 ```
 
 A first real run:
