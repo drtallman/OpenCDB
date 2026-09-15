@@ -6,3 +6,9 @@ target/
 
 /target
 .claude/
+
+# Local working notes and the OGC spec copy; kept out of the published tree
+/CLAUDE.md
+/docs/superpowers/
+/docs/OGC CDB Version 2 - Part 1_ Core Standard.html
+/docs/OGC CDB Version 2 - Part 1_ Core Standard_files/

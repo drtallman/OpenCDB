@@ -1,6 +1,8 @@
 # rusty_cdb — TDD Plan for the OGC CDB 2.0 Core Standard
 
-Source spec: `docs/OGC CDB Version 2 - Part 1_ Core Standard.html` (OGC 23-034, version 2.0).
+Source spec: OGC CDB Version 2 Part 1: Core Standard (OGC 23-034, version 2.0),
+<http://www.opengis.net/doc/IS/CDB-core/2.0>. Design records referenced below
+("design note") are working notes kept outside the published tree.
 
 ## 1. Goal and scope
 
@@ -164,8 +166,8 @@ required nodes), not a full parser — enough to satisfy CRS4/CRS5/VCRS tests.
 `geo-types` has no native Z/M; the Z/M variants are eight typed structs behind
 a closed enum, superseding the parallel-array `ZGeometry { xy, z: Vec<f64> }`
 sketch above — spec-absent combos (MultiPolygon Z, ZM) are then unrepresentable
-and Geom2's table holds by construction. Approved design record:
-`docs/superpowers/specs/2026-08-01-geometry-module-design.md`.
+and Geom2's table holds by construction. Approved design record: the
+2026-08-01 geometry design note.
 
 ### Phase 8 — Coverages (`/req/core/coverage-*`), optional
 | Req | Rule | Tests |
@@ -212,7 +214,7 @@ shipped, reviewer-verified convention (incl. the lat = 90 clamp).
 | u64 keys (§7.12.2, via TCE2-B) | (level,row,col) in one 64-bit key | `GnosisTileAddress::key`/`from_key`: level<<59 \| row<<30 \| col — 5+29+30 = exactly 64 at level 28; numeric order = (level,row,col) order |
 
 Phase 10 also resolved the two decisions deferred from Phase 9 (recorded in
-`docs/superpowers/specs/2026-08-26-gnosis-grid-design.md`): **no shared grid
+the 2026-08-26 GNOSIS-grid design note): **no shared grid
 trait** — the two grids are deliberately parallel surfaces by convention
 (rule of two: no generic consumer exists) — and the **symmetric rename**
 `Lod` → `Cdb1Lod`, `TileAddress` → `Cdb1TileAddress`, `LodOutOfRange` →
@@ -428,8 +430,8 @@ for Phase 9).
   against an anonymous datastore CRS counts as foreign). `GeometryViolation` has six variants and no warning type
   (§7.6 has no SHOULDs); Geom5-B/6-B and the ZM / MultiPolygon-Z absence hold
   by construction (members carry no CRS, spec-absent combos unrepresentable).
-  The Geom4 m-value UoM rides on the new `ResourceMetadata.uom`. Design record:
-  `docs/superpowers/specs/2026-08-01-geometry-module-design.md`.
+  The Geom4 m-value UoM rides on the new `ResourceMetadata.uom`. Design
+  record: the 2026-08-01 geometry design note.
 - Phase 8 done (commits `phase-8(coverage)` ×4, `phase-8(metadata)`, after a
   `refactor(crs)` that extracted the shared `authority_ids_match` and a `docs`
   prep commit), 166 tests (153 unit + 12 integration + 1 doc) — the second
@@ -447,8 +449,8 @@ for Phase 9).
   (Geom4, same enum) / free-form UCUM-style `DomainSet.uom` string. Coverages5/6
   ride on the new `ResourceMetadata.domain_set` (wire `domainSet`, the second
   §7.9.4.2 conditional element after Geom4's `uom`); Coverages7/8 (tiled-coverage
-  recommendations) defer to Phase 9. Design record:
-  `docs/superpowers/specs/2026-08-02-coverages-module-design.md`.
+  recommendations) defer to Phase 9. Design record: the 2026-08-02 coverages
+  design note.
 - Phase 9 done (commits `phase-9(tiling)` ×6 incl. one review fix,
   `phase-9(metadata)`, `phase-9(conformance)`), 183 tests (169 unit + 13
   integration + 1 doc) — the third optional phase, bringing two requirements
@@ -472,8 +474,7 @@ for Phase 9).
   `GlobalMetadata` its `Eq` derive, following the `ResourceMetadata`/`domainSet`
   precedent. The
   Coverages Rec7/8 reservation closes via the `tests/tiled_coverage.rs`
-  integration test. Design record:
-  `docs/superpowers/specs/2026-08-02-tiling-module-design.md`.
+  integration test. Design record: the 2026-08-02 tiling design note.
 - Phase 10 done (commits `phase-10(tiling)` ×7), 192 tests (178 unit + 13
   integration + 1 doc) — the fourth optional phase, completing the tiling
   extensions, shipped as `0.5.0`. `tiling::gnosis_grid` (§7.12): the
@@ -484,8 +485,8 @@ for Phase 9).
   `raster_size` (256×256 constant, registry-pinned) with 3-way pole
   splitting emerging from uniform factor-driven child enumeration. The
   deferred rule-of-two (no trait) and naming (symmetric `Cdb1`/`Gnosis`
-  prefixes; breaking) decisions are resolved per the design record
-  `docs/superpowers/specs/2026-08-26-gnosis-grid-design.md`; the parked
+  prefixes; breaking) decisions are resolved per the 2026-08-26 GNOSIS-grid
+  design note; the parked
   Tiling4 field-doc citation is fixed. Facade wiring of the tiling classes
   and any GNOSIS-declaring profile remain 14b scope.
 - Phase 11 done (`phase-11(topology)` commits): Topo1–6 + Face1–4 in
@@ -561,7 +562,7 @@ an ecosystem.
   ratcheting. Zero new dependencies entered the lockfile, and **nothing under
   `src/` changed** — the library kept its `v1.0.0` bytes, and the design spec
   makes any exception to that an explicit amendment rather than a quiet edit.
-  Design: `docs/superpowers/specs/2026-09-13-cdb-lint-design.md`; usage:
+  Design: the 2026-09-13 cdb-lint design note; usage:
   `cdb-lint/README.md`. Its six honesty rules — chief among them that
   `unchecked` never renders as a green pass — descend from
   `docs/CONFORMANCE.md` §6 and are held across all three formats by
@@ -605,5 +606,5 @@ an ecosystem.
   gated `gdal` or pure-Rust codecs) so "work with CDB" extends from
   structure/metadata into content; explicitly outside Part 1 Core scope.
 - **Reprojection** — feature-gated `proj` only if a profile genuinely
-  needs coordinate transformation (CLAUDE.md's standing rationale holds
+  needs coordinate transformation (§2's standing rationale holds
   until then).

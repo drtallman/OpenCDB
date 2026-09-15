@@ -457,6 +457,5 @@ versions for exactly that reason, and every report's header repeats them.
 | Document | What it holds |
 |---|---|
 | `docs/CONFORMANCE.md` | the public conformance matrix: requirement → API → test, the errata list, and §6's honesty notes that these rules descend from |
-| `docs/superpowers/specs/2026-09-13-cdb-lint-design.md` | this tool's design: the command surface, the honesty contract, the scope fence, and the risks |
 | `docs/TDD_PLAN.md` §8 | the post-1.0 charter this effort was drawn from |
 | OGC 23-034 | the standard itself — `http://www.opengis.net/doc/IS/CDB-core/2.0` |
