@@ -6,7 +6,7 @@ checker built on it.
 
 CDB is the Open Geospatial Consortium's standard for geospatial
 synthetic-environment datastores: the terrain, imagery, and feature databases
-that flight simulators and games stream at runtime. The standard lives at
+that flight simulators and GIS webapps stream at runtime. The standard lives at
 <http://www.opengis.net/doc/IS/CDB-core/2.0>. This CDB has no relation to
 djb's constant-database file format.
 
