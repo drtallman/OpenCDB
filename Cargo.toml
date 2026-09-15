@@ -5,6 +5,9 @@ members = ["cdb-lint"]
 name = "rusty_cdb"
 version = "1.0.0"
 edition = "2024"
+description = "Read, write, and validate OGC CDB 2.0 Core datastores"
+license = "Apache-2.0"
+repository = "https://github.com/drtallman/OpenCDB"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
