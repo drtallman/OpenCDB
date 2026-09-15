@@ -5,13 +5,15 @@ edition = "2024"
 description = "Command-line conformance checker for OGC CDB 2.0 Core datastores"
 license = "Apache-2.0"
 repository = "https://github.com/drtallman/OpenCDB"
+keywords = ["ogc", "cdb", "geospatial", "conformance", "lint"]
+categories = ["command-line-utilities", "science::geo"]
 
 # Nothing new ever enters the lockfile (design §2, decision 5): every crate
 # named here was already a dependency of `opencdb`, at these exact versions.
 # `serde_json` renders the `--format json` artifact and parses a baseline;
 # the version pins match the library's so nothing re-resolves.
 [dependencies]
-opencdb = { path = ".." }
+opencdb = { path = "..", version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
 
