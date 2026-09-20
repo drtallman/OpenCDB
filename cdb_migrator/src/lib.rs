@@ -2,5 +2,6 @@
 //! 2.0 datastores through `opencdb`'s public facade. Payloads are opaque
 //! bytes: this crate copies them, never decodes them.
 mod error;
+pub mod grammar;
 
 pub use error::Cdb1Error;
