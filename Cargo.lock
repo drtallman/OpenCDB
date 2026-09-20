@@ -92,6 +92,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdb_migrator"
+version = "0.1.0"
+dependencies = [
+ "opencdb",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
