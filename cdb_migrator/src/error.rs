@@ -39,7 +39,7 @@ mod tests {
     use super::Cdb1Error;
 
     #[test]
-    fn req_error_io_display_includes_path_and_cause() {
+    fn error_io_display_includes_path_and_cause() {
         let error = Cdb1Error::Io(
             PathBuf::from("source/CDB.xml"),
             io::Error::new(io::ErrorKind::NotFound, "missing"),
@@ -49,21 +49,21 @@ mod tests {
     }
 
     #[test]
-    fn req_error_not_a_directory_display_includes_path() {
+    fn error_not_a_directory_display_includes_path() {
         let error = Cdb1Error::NotADirectory(PathBuf::from("source"));
 
         assert_eq!(error.to_string(), "source is not a directory");
     }
 
     #[test]
-    fn req_error_xml_display_includes_path_and_reason() {
+    fn error_xml_display_includes_path_and_reason() {
         let error = Cdb1Error::Xml(PathBuf::from("source/Version.xml"), "bad root".into());
 
         assert_eq!(error.to_string(), "source/Version.xml: bad root");
     }
 
     #[test]
-    fn req_error_refused_display_is_reason() {
+    fn error_refused_display_is_reason() {
         let error = Cdb1Error::Refused("multiple roots are unsupported".into());
 
         assert_eq!(error.to_string(), "multiple roots are unsupported");

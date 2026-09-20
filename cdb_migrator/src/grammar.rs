@@ -148,9 +148,235 @@ fn parse_component(
         .fold(0_i16, |value, digit| value * 10 + i16::from(*digit - b'0')))
 }
 
+/// A CDB 1.x Level of Detail, −10..=23 (§8.6.2.4 and the LOD designation
+/// rule: `L` + 2 digits, `C` in lieu of the minus sign).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lod1x(i8);
+
+impl Lod1x {
+    /// Parses an `L00`..`L23` or `LC01`..`LC10` token.
+    pub fn parse(token: &str) -> Result<Self, String> {
+        let upper = token.to_ascii_uppercase();
+        if let Some(digits) = upper.strip_prefix("LC") {
+            if digits.len() != 2 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(format!("LOD token {token:?}: LC needs 2 ASCII digits"));
+            }
+            let magnitude = parse_ascii_u32(digits, "negative LOD")?;
+            if !(1..=10).contains(&magnitude) {
+                return Err(format!("negative LOD {token:?} out of LC01..LC10"));
+            }
+            return Ok(Self(-(magnitude as i8)));
+        }
+        if let Some(digits) = upper.strip_prefix('L') {
+            if digits.len() != 2 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(format!("LOD token {token:?}: L needs 2 ASCII digits"));
+            }
+            let value = parse_ascii_u32(digits, "LOD")?;
+            if value > 23 {
+                return Err(format!("LOD {token:?} out of L00..L23"));
+            }
+            return Ok(Self(value as i8));
+        }
+        Err(format!("LOD token {token:?} is not Lxx/LCxx"))
+    }
+
+    /// Returns the signed numeric LOD.
+    pub fn value(&self) -> i8 {
+        self.0
+    }
+
+    /// Returns the directory holding this LOD: `Lxx`, or `LC` for negatives.
+    pub fn dir_name(&self) -> String {
+        if self.0 < 0 {
+            "LC".to_string()
+        } else {
+            format!("L{:02}", self.0)
+        }
+    }
+
+    /// Returns the canonical file-name token: `Lxx` or `LCxx`.
+    pub fn token(&self) -> String {
+        if self.0 < 0 {
+            format!("LC{:02}", -self.0)
+        } else {
+            format!("L{:02}", self.0)
+        }
+    }
+}
+
+/// A CDB 1.x dataset directory named `nnn_Name` (§8.6.2.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetDir {
+    /// Three-digit dataset code.
+    pub code: u16,
+    /// Non-empty dataset name following the underscore.
+    pub name: String,
+}
+
+impl DatasetDir {
+    /// Parses a dataset directory name.
+    pub fn parse(dir: &str) -> Result<Self, String> {
+        let (digits, name) = dir
+            .split_once('_')
+            .ok_or_else(|| format!("dataset directory {dir:?} has no underscore"))?;
+        if digits.len() != 3 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(format!(
+                "dataset directory {dir:?} needs a 3-digit ASCII code"
+            ));
+        }
+        if name.is_empty() {
+            return Err(format!("dataset directory {dir:?} has an empty name"));
+        }
+        let code = parse_ascii_u32(digits, "dataset code")? as u16;
+        Ok(Self {
+            code,
+            name: name.to_string(),
+        })
+    }
+
+    /// Reconstructs the canonical directory name.
+    pub fn dir_name(&self) -> String {
+        format!("{:03}_{}", self.code, self.name)
+    }
+}
+
+/// A CDB 1.x Requirement 67 tiled-dataset file name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileFileName {
+    /// Geocell encoded by the leading latitude/longitude token.
+    pub geocell: GeocellId,
+    /// Dataset code from `Dnnn`.
+    pub dataset: u16,
+    /// First component selector from `Snnn`.
+    pub cs1: u16,
+    /// Second component selector from `Tnnn`.
+    pub cs2: u16,
+    /// Level of detail.
+    pub lod: Lod1x,
+    /// Variable-width U reference.
+    pub uref: u32,
+    /// Variable-width R reference.
+    pub rref: u32,
+    /// Lowercase ASCII file extension without the dot.
+    pub extension: String,
+}
+
+impl TileFileName {
+    /// Parses `LatLon_Dnnn_Snnn_Tnnn_LOD_Un_Rn.<ext>` case-insensitively.
+    pub fn parse(file: &str) -> Result<Self, String> {
+        let (stem, extension) = file
+            .rsplit_once('.')
+            .ok_or_else(|| format!("tile file {file:?} has no extension"))?;
+        if extension.is_empty()
+            || !extension.is_ascii()
+            || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(format!(
+                "tile file {file:?} needs a non-empty ASCII alphanumeric extension"
+            ));
+        }
+
+        let mut parts = stem.split('_');
+        let latlon = parts
+            .next()
+            .ok_or_else(|| format!("tile file {file:?} has no geocell field"))?;
+        let (latitude, longitude) = match (latlon.get(..3), latlon.get(3..)) {
+            (Some(latitude), Some(longitude)) if latlon.len() == 7 => (latitude, longitude),
+            _ => {
+                return Err(format!(
+                    "geocell field {latlon:?} is not an ASCII-safe LatLon token"
+                ));
+            }
+        };
+        let geocell = GeocellId::from_dirs(latitude, longitude)?;
+        let dataset = parse_fixed_field(parts.next(), b'D', 3)? as u16;
+        let cs1 = parse_fixed_field(parts.next(), b'S', 3)? as u16;
+        let cs2 = parse_fixed_field(parts.next(), b'T', 3)? as u16;
+        let lod = Lod1x::parse(
+            parts
+                .next()
+                .ok_or_else(|| "missing LOD field".to_string())?,
+        )?;
+        let uref = parse_variable_field(parts.next(), b'U')?;
+        let rref = parse_variable_field(parts.next(), b'R')?;
+        if parts.next().is_some() {
+            return Err(format!("tile file {file:?} has trailing fields"));
+        }
+
+        Ok(Self {
+            geocell,
+            dataset,
+            cs1,
+            cs2,
+            lod,
+            uref,
+            rref,
+            extension: extension.to_ascii_lowercase(),
+        })
+    }
+
+    /// Reconstructs the canonical spec spelling.
+    pub fn canonical(&self) -> String {
+        format!(
+            "{}{}_D{:03}_S{:03}_T{:03}_{}_U{}_R{}.{}",
+            self.geocell.lat_dir_name(),
+            self.geocell.lon_dir_name(),
+            self.dataset,
+            self.cs1,
+            self.cs2,
+            self.lod.token(),
+            self.uref,
+            self.rref,
+            self.extension
+        )
+    }
+}
+
+fn parse_fixed_field(part: Option<&str>, prefix: u8, digits: usize) -> Result<u32, String> {
+    let prefix_char = char::from(prefix);
+    let part = part.ok_or_else(|| format!("missing {prefix_char} field"))?;
+    let body = ascii_prefixed_body(part, prefix)
+        .ok_or_else(|| format!("field {part:?} does not start with {prefix_char}"))?;
+    if body.len() != digits || !body.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "field {part:?} is not {prefix_char}+{digits} ASCII digits"
+        ));
+    }
+    parse_ascii_u32(body, &format!("{prefix_char} field"))
+}
+
+fn parse_variable_field(part: Option<&str>, prefix: u8) -> Result<u32, String> {
+    let prefix_char = char::from(prefix);
+    let part = part.ok_or_else(|| format!("missing {prefix_char} field"))?;
+    let body = ascii_prefixed_body(part, prefix)
+        .ok_or_else(|| format!("field {part:?} does not start with {prefix_char}"))?;
+    if body.is_empty() || !body.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("field {part:?} is not {prefix_char}+ASCII digits"));
+    }
+    parse_ascii_u32(body, &format!("{prefix_char} field"))
+}
+
+fn ascii_prefixed_body(value: &str, prefix: u8) -> Option<&str> {
+    let bytes = value.as_bytes();
+    if bytes
+        .first()
+        .is_some_and(|first| first.eq_ignore_ascii_case(&prefix))
+    {
+        value.get(1..)
+    } else {
+        None
+    }
+}
+
+fn parse_ascii_u32(digits: &str, field: &str) -> Result<u32, String> {
+    digits
+        .parse()
+        .map_err(|_| format!("{field} {digits:?} overflows"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fold, GeocellId};
+    use super::{fold, DatasetDir, GeocellId, Lod1x, TileFileName};
 
     /// Requirement 65 (§8.6.2.1) and Requirement 66 (§8.6.2.2): geocell
     /// directory names encode the southwest corner; longitude directories
@@ -284,5 +510,127 @@ mod tests {
         );
         assert_eq!(fold("already_lower"), "already_lower");
         assert_eq!(fold("CAFÉ"), "cafÉ");
+    }
+
+    /// LOD designation rule (15-113r6 line "C in lieu of the minus sign"):
+    /// L00..L23 positive, LC01..LC10 negative; LC is the directory for all
+    /// negative LODs (§8.6.2.4).
+    #[test]
+    fn r1x_lod_tokens_roundtrip() {
+        assert_eq!(Lod1x::parse("L00").unwrap().value(), 0);
+        assert_eq!(Lod1x::parse("L23").unwrap().value(), 23);
+        assert_eq!(Lod1x::parse("LC05").unwrap().value(), -5);
+        assert_eq!(Lod1x::parse("LC10").unwrap().value(), -10);
+        assert_eq!(Lod1x::parse("L02").unwrap().dir_name(), "L02");
+        assert_eq!(Lod1x::parse("LC05").unwrap().dir_name(), "LC");
+        assert_eq!(Lod1x::parse("LC05").unwrap().token(), "LC05");
+        assert_eq!(Lod1x::parse("lc05").unwrap().token(), "LC05");
+        assert!(Lod1x::parse("L24").is_err());
+        assert!(Lod1x::parse("LC00").is_err());
+        assert!(Lod1x::parse("LC11").is_err());
+        assert!(Lod1x::parse("L2").is_err());
+    }
+
+    /// LOD digits are exact-width ASCII tokens without signs or Unicode.
+    #[test]
+    fn mig_lod_rejects_signed_or_non_ascii_digits() {
+        for token in ["L+2", "L-2", "L٠٢", "L０２", "LC+5", "LC-5", "LC٠٥"] {
+            assert!(Lod1x::parse(token).is_err(), "{token:?}");
+        }
+    }
+
+    /// Dataset directory `nnn_Name` (§8.6.2.3).
+    #[test]
+    fn r1x_dataset_dir_roundtrip() {
+        let d = DatasetDir::parse("201_RoadNetwork").unwrap();
+        assert_eq!((d.code, d.name.as_str()), (201, "RoadNetwork"));
+        assert_eq!(d.dir_name(), "201_RoadNetwork");
+        assert!(DatasetDir::parse("20_RoadNetwork").is_err());
+        assert!(DatasetDir::parse("201-RoadNetwork").is_err());
+        assert!(DatasetDir::parse("201_").is_err());
+    }
+
+    /// Dataset codes are exactly three unsigned ASCII digits.
+    #[test]
+    fn mig_dataset_dir_rejects_signed_or_non_ascii_codes() {
+        for dir in [
+            "+01_RoadNetwork",
+            "-01_RoadNetwork",
+            "٢٠١_RoadNetwork",
+            "２０１_RoadNetwork",
+        ] {
+            assert!(DatasetDir::parse(dir).is_err(), "{dir:?}");
+        }
+    }
+
+    /// Requirement 67 (§8.6.3.1): LatLon_Dnnn_Snnn_Tnnn_LOD_Un_Rn.<ext>,
+    /// spec's own examples verbatim.
+    #[test]
+    fn r1x_tile_file_name_spec_examples() {
+        let t = TileFileName::parse("S06E045_D001_S001_T001_L02_U3_R0.tif").unwrap();
+        assert_eq!((t.geocell.lat_sw, t.geocell.lon_sw), (-6, 45));
+        assert_eq!((t.dataset, t.cs1, t.cs2), (1, 1, 1));
+        assert_eq!((t.lod.value(), t.uref, t.rref), (2, 3, 0));
+        assert_eq!(t.extension, "tif");
+        assert_eq!(t.canonical(), "S06E045_D001_S001_T001_L02_U3_R0.tif");
+
+        let t = TileFileName::parse("N62W162_D100_S001_T001_L07_U38_R102.shp").unwrap();
+        assert_eq!((t.uref, t.rref), (38, 102));
+
+        let t = TileFileName::parse("N32W118_D201_S002_T003_LC05_U0_R0.dbf").unwrap();
+        assert_eq!(t.lod.value(), -5);
+    }
+
+    /// Folded grammar spelling remains parseable and canonical formatting
+    /// restores the spec case rather than retaining arbitrary input case.
+    #[test]
+    fn mig_fold_inverts_via_grammar() {
+        let original = "N32W118_D201_S002_T003_LC05_U0_R0.shp";
+        let folded = fold(original);
+        let parsed = TileFileName::parse(&folded).unwrap();
+        assert_eq!(parsed.canonical(), original);
+
+        let parsed = TileFileName::parse("n32w118_d201_s002_t003_lc05_u0_r0.SHP").unwrap();
+        assert_eq!(parsed.canonical(), original);
+    }
+
+    /// Malformed seven-byte geocell fields containing a split UTF-8 code
+    /// point return an error instead of panicking at a byte boundary.
+    #[test]
+    fn mig_tile_file_name_rejects_non_ascii_geocell_without_panicking() {
+        let malformed = "N0éE04_D001_S001_T001_L02_U3_R0.tif";
+        assert!(TileFileName::parse(malformed).is_err());
+    }
+
+    /// Requirement 67 fields reject signs, Unicode digits, overflow, missing
+    /// values, and fields after R rather than accepting partial parses.
+    #[test]
+    fn mig_tile_file_name_rejects_malformed_numeric_or_trailing_fields() {
+        for file in [
+            "N32W118_D+01_S002_T003_L02_U0_R0.shp",
+            "N32W118_D201_S-02_T003_L02_U0_R0.shp",
+            "N32W118_D201_S002_T٠٠٣_L02_U0_R0.shp",
+            "N32W118_D201_S002_T003_L02_U-1_R0.shp",
+            "N32W118_D201_S002_T003_L02_U0_R+1.shp",
+            "N32W118_D201_S002_T003_L02_U4294967296_R0.shp",
+            "N32W118_D201_S002_T003_L02_U_R0.shp",
+            "N32W118_D201_S002_T003_L02_U0_R0_X1.shp",
+        ] {
+            assert!(TileFileName::parse(file).is_err(), "{file:?}");
+        }
+    }
+
+    /// An extension is required and must contain only ASCII token characters.
+    #[test]
+    fn mig_tile_file_name_rejects_missing_empty_or_non_ascii_extension() {
+        for file in [
+            "N32W118_D201_S002_T003_L02_U0_R0",
+            "N32W118_D201_S002_T003_L02_U0_R0.",
+            "N32W118_D201_S002_T003_L02_U0_R0.é",
+            "N32W118_D201_S002_T003_L02_U0_R0.ti-f",
+            "N32W118_D201_S002_T003_L02_U0_R0.tif_",
+        ] {
+            assert!(TileFileName::parse(file).is_err(), "{file:?}");
+        }
     }
 }
