@@ -62,6 +62,14 @@ fn usage(message: &str) -> Cdb1Error {
 fn read_input(path: &str) -> Result<String, Cdb1Error> {
     std::fs::read_to_string(path).map_err(|e| Cdb1Error::Io(path.into(), e))
 }
+fn require_path(value: &str, slot: &str) -> Result<(), Cdb1Error> {
+    if value.starts_with('-') {
+        return Err(usage(&format!(
+            "{slot} requires a path, not an option; prefix a literal option-named path with ./"
+        )));
+    }
+    Ok(())
+}
 fn execute(args: &[String], out: &mut dyn Write) -> Result<i32, Cdb1Error> {
     if args == ["--help"]
         || (args.len() == 2
@@ -73,11 +81,14 @@ fn execute(args: &[String], out: &mut dyn Write) -> Result<i32, Cdb1Error> {
     }
     match args.first().map(String::as_str) {
         Some("inventory") if args.len() == 2 => {
+            require_path(&args[1], "root")?;
             let tree = Cdb1Tree::open(Path::new(&args[1]))?;
             render_inventory(&tree.inventory()?, out)?;
             Ok(0)
         }
         Some("migrate") if args.len() >= 3 => {
+            require_path(&args[1], "root")?;
+            require_path(&args[2], "out-parent")?;
             let mut options = PlanOptions::default();
             let mut dry_run = false;
             let mut timestamp = None;
@@ -279,6 +290,22 @@ mod tests {
             vec!["migrate", "x", "y", "--id", "a", "--id", "b"],
             vec!["migrate", "x", "y", "--carry-extras", "--skip-extras"],
             vec!["migrate", "x", "y", "--timestamp", "bad", "--dry-run"],
+        ] {
+            let (code, out, err) = invoke(&args);
+            assert_eq!(code, 2, "{args:?}: {err}");
+            assert!(out.is_empty());
+            assert!(!err.is_empty());
+        }
+    }
+    /// Bare option tokens cannot occupy required path slots, even for missing roots.
+    #[test]
+    fn mig_cli_positional_option_tokens_refuse_before_filesystem() {
+        for args in [
+            vec!["inventory", "--dry-run"],
+            vec!["inventory", "-h"],
+            vec!["migrate", "--dry-run", "/nonexistent/xyzzy/output"],
+            vec!["migrate", "/nonexistent/xyzzy/source", "--dry-run"],
+            vec!["migrate", "/nonexistent/xyzzy/source", "--skip-extras"],
         ] {
             let (code, out, err) = invoke(&args);
             assert_eq!(code, 2, "{args:?}: {err}");

@@ -58,7 +58,9 @@ Non-UTF-8 command arguments are refused without replacement or panic.
 | `--timestamp RFC3339` | UTC creation/update/collection time; otherwise use the facade clock |
 | `--dry-run` | Print planned `MOVE`/`SKIP` rows and counts; create nothing |
 
-Options follow both positional paths. Repeated or unknown options are rejected.
+Options follow both positional paths. Bare option tokens cannot fill either path
+slot; use an explicit path such as `./--dry-run` for a literal name beginning
+with `-`. Repeated or unknown options are rejected.
 A dry run validates the source and operator plan only: its rows are planned,
 not copied or verified, and it makes no output-conformance claim. Destination
 preflight, collection capacity, actual I/O and validation occur during migration.
@@ -142,8 +144,17 @@ JSON object, for example:
 This preserves the final `attr` extension while removing the interior dot from
 the stem. Values are literal safe destination-relative names; they are not
 silently folded. Tile overrides must preserve parsed tile identity and address.
-Explicit directory mappings can separate case aliases. Embedded references
-are **unchecked and may break** after any case folding or rename.
+Rename-map keys identify files, not directories. Per-file mappings can separate
+case aliases by placing their files in distinct destination directories:
+
+```json
+{
+  "Foo/a.txt": "extras/foo_upper/a.txt",
+  "foo/b.txt": "extras/foo_lower/b.txt"
+}
+```
+
+Embedded references are **unchecked and may break** after any case folding or rename.
 
 Without an extras flag, migration refuses only when unrecognized entries exist.
 `--carry-extras` puts those files under `extras/`; `--skip-extras` records their
