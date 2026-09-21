@@ -45,7 +45,8 @@ pub struct PlanOptions {
     /// Exact source-relative file keys to literal target-relative file paths.
     /// Defaults are ASCII-folded; explicit values are never silently folded.
     pub rename_map: BTreeMap<String, String>,
-    /// Required even when its resources array is empty.
+    /// Required records for recognized Tile/Global payloads. Absence means an
+    /// empty effective manifest for sources without recognized payloads.
     pub metadata: Option<MetadataManifest>,
 }
 
@@ -238,10 +239,11 @@ pub fn plan(
     let effective = validate_controls(&fresh)?.cloned();
     let inventory = fresh.inventory()?;
     let before = snapshot(&inventory)?;
-    let metadata = options
-        .metadata
-        .as_ref()
-        .ok_or_else(|| refused("metadata manifest is required"))?;
+    let empty_metadata = MetadataManifest {
+        resources: Vec::new(),
+        attribute_model: None,
+    };
+    let metadata = options.metadata.as_ref().unwrap_or(&empty_metadata);
     metadata.validate()?;
     let mut errors = Vec::new();
     let declarations: BTreeMap<_, _> = metadata
@@ -578,6 +580,7 @@ fn collisions(moves: &[PlannedMove], resources: &[PlannedResource], errors: &mut
     for r in resources {
         paths.entry(fold(&r.target)).or_default().push(&r.source);
     }
+    directory_collisions(moves, errors);
     for path in [
         "global_metadata/global_metadata.json",
         "global_metadata/crs.wkt",
@@ -607,6 +610,61 @@ fn collisions(moves: &[PlannedMove], resources: &[PlannedResource], errors: &mut
         }
     }
 }
+// Preserve distinct case spellings of source directories, not every original
+// hierarchy: explicit maps may reorganize unrelated directories. For each
+// source prefix, remove unchanged descendant directories from the actual target
+// parent. The remaining target branch represents that source directory. This
+// follows all default bucket mappings while allowing explicit maps to choose
+// distinct branches even when they change depth. Synthetic bucket containers
+// have no source identity and therefore never receive their own registration.
+fn directory_collisions(moves: &[PlannedMove], errors: &mut Vec<String>) {
+    let mut branches: BTreeMap<(String, String), BTreeMap<String, BTreeSet<&str>>> =
+        BTreeMap::new();
+    for movement in moves {
+        let source_parts: Vec<_> = movement.source.split('/').collect();
+        let target_parts: Vec<_> = movement.target.split('/').collect();
+        let source_dirs = &source_parts[..source_parts.len().saturating_sub(1)];
+        let target_dirs = &target_parts[..target_parts.len().saturating_sub(1)];
+        for depth in 1..=source_dirs.len() {
+            let original = source_dirs[..depth].join("/");
+            let mut target_depth = target_dirs.len();
+            for descendant in source_dirs[depth..].iter().rev() {
+                if target_depth > 0
+                    && descendant.eq_ignore_ascii_case(target_dirs[target_depth - 1])
+                {
+                    target_depth -= 1;
+                } else {
+                    break;
+                }
+            }
+            let target = fold(&target_dirs[..target_depth].join("/"));
+            branches
+                .entry((fold(&original), target))
+                .or_default()
+                .entry(original)
+                .or_default()
+                .insert(&movement.source);
+        }
+    }
+    for ((_, target), identities) in branches {
+        if identities.len() > 1 {
+            let originals = identities
+                .iter()
+                .map(|(directory, files)| {
+                    format!(
+                        "{directory:?}: {}",
+                        files.iter().copied().collect::<Vec<_>>().join(", ")
+                    )
+                })
+                .collect::<Vec<_>>();
+            errors.push(format!(
+                "source directory collision at {target:?}: {}",
+                originals.join("; ")
+            ));
+        }
+    }
+}
+
 fn validate_seed(seed: &PlannedSeed, profile: &MigrationProfile) -> Result<(), Cdb1Error> {
     // A deterministic validation-only timestamp; the materializer uses the
     // supplied DatastoreSeed creation time or the facade's normal clock.
@@ -1152,16 +1210,14 @@ mod tests {
 
     /// Recognized metadata is always carried, and unknown skips remain explicit.
     #[test]
-    fn mig_plan_skip_only_unknown_metadata_capture_and_missing_manifest() {
+    fn mig_plan_skip_only_unknown_metadata_capture() {
         let tmp = source();
         put(&tmp, "Metadata/Version.xml", b"<Version/>");
         put(&tmp, "notes.txt", b"x");
-        assert!(run(&tmp, &PlanOptions::default())
-            .unwrap_err()
-            .to_string()
-            .contains("manifest"));
-        let mut opts = options();
-        opts.extras = ExtrasPolicy::Skip;
+        let mut opts = PlanOptions {
+            extras: ExtrasPolicy::Skip,
+            ..Default::default()
+        };
         let p = run(&tmp, &opts).unwrap();
         assert_eq!(p.moves().len(), 1);
         assert_eq!(p.skipped(), &["notes.txt"]);
@@ -1221,5 +1277,105 @@ mod tests {
             .to_string()
             .contains("keywords"));
         p.verify_source().unwrap();
+    }
+
+    fn synthetic_move(source: &str, target: &str) -> PlannedMove {
+        PlannedMove {
+            source: source.into(),
+            target: target.into(),
+            bucket: Bucket::Extra,
+            source_path: PathBuf::from("/source").join(source),
+        }
+    }
+    /// Distinct source directories cannot merge merely because leaves differ.
+    #[test]
+    fn mig_plan_case_distinct_source_directories_refuse_merging() {
+        let moves = vec![
+            synthetic_move("Foo/a.txt", "extras/foo/a.txt"),
+            synthetic_move("foo/b.txt", "extras/foo/b.txt"),
+        ];
+        let mut errors = vec![];
+        collisions(&moves, &[], &mut errors);
+        assert!(!errors.is_empty());
+        let text = errors.join("\n");
+        for original in ["Foo/a.txt", "foo/b.txt"] {
+            assert!(text.contains(original), "{text}");
+        }
+    }
+    /// Empty stores and opaque-only carries need no unused metadata manifest.
+    #[test]
+    fn mig_plan_absent_metadata_for_no_recognized_payloads() {
+        let tmp = source();
+        let mut opts = PlanOptions::default();
+        let p = run(&tmp, &opts).unwrap();
+        assert!(p.operator_metadata().resources.is_empty());
+        assert!(p.options().metadata.is_none());
+        put(&tmp, "Metadata/Version.xml", b"<Version/>");
+        assert_eq!(run(&tmp, &opts).unwrap().moves().len(), 1);
+        put(&tmp, "notes.txt", b"opaque");
+        opts.extras = ExtrasPolicy::Carry;
+        assert_eq!(run(&tmp, &opts).unwrap().moves().len(), 2);
+        opts.extras = ExtrasPolicy::Skip;
+        let p = run(&tmp, &opts).unwrap();
+        assert_eq!(p.skipped(), &["notes.txt"]);
+        put(&tmp, TILE, b"payload");
+        put(&tmp, "GTModel/model.flt", b"payload");
+        let error = run(&tmp, &opts).unwrap_err().to_string();
+        for path in [TILE, "GTModel/model.flt"] {
+            assert!(error.contains(path), "{error}");
+        }
+    }
+
+    /// Descendant leaves cannot conceal collisions in an original ancestor.
+    #[test]
+    fn mig_plan_nested_directory_aliases_and_synthetic_buckets() {
+        let moves = vec![
+            synthetic_move("Foo/Left/a.txt", "extras/foo/left/a.txt"),
+            synthetic_move("foo/Right/b.txt", "extras/foo/right/b.txt"),
+            synthetic_move("Foo/Left/c.txt", "extras/foo/left/c.txt"),
+        ];
+        let mut errors = vec![];
+        collisions(&moves, &[], &mut errors);
+        assert_eq!(errors.len(), 1);
+        for original in ["Foo/Left/a.txt", "foo/Right/b.txt", "Foo/Left/c.txt"] {
+            assert!(errors[0].contains(original), "{:?}", errors);
+        }
+        let unrelated = vec![
+            synthetic_move("Foo/a.txt", "extras/foo/a.txt"),
+            synthetic_move("Bar/b.txt", "extras/bar/b.txt"),
+            synthetic_move("Metadata/Version.xml", "extras/source_metadata/version.xml"),
+        ];
+        let mut errors = vec![];
+        collisions(&unrelated, &[], &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    /// Explicit distinct branches resolve case aliases, even at different depths.
+    #[test]
+    fn mig_plan_directory_aliases_can_be_explicitly_separated() {
+        for moves in [
+            vec![
+                synthetic_move("Foo/a.txt", "extras/foo_upper/a.txt"),
+                synthetic_move("foo/b.txt", "extras/foo_lower/b.txt"),
+            ],
+            vec![
+                synthetic_move("Foo/Left/a.txt", "extras/wrapper/upper/a.txt"),
+                synthetic_move("foo/Right/b.txt", "extras/wrapper/lower/b.txt"),
+            ],
+            vec![
+                synthetic_move("Foo/a.txt", "extras/combined/a.txt"),
+                synthetic_move("Bar/b.txt", "extras/combined/b.txt"),
+            ],
+        ] {
+            let mut errors = vec![];
+            collisions(&moves, &[], &mut errors);
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        let merged = vec![
+            synthetic_move("Foo/Left/a.txt", "extras/combined/a.txt"),
+            synthetic_move("foo/Right/b.txt", "extras/combined/b.txt"),
+        ];
+        let mut errors = vec![];
+        collisions(&merged, &[], &mut errors);
+        assert!(!errors.is_empty());
     }
 }
