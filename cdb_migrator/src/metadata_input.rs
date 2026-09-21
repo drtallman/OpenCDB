@@ -422,7 +422,7 @@ fn check_attribute_keys(value: &Value) -> Result<(), String> {
 
 // serde_json::Value normally retains the last duplicate object key. Detect
 // duplicates recursively before any Value-based validation can discard them.
-struct StrictValue(Value);
+pub(crate) struct StrictValue(pub(crate) Value);
 
 impl<'de> Deserialize<'de> for StrictValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
