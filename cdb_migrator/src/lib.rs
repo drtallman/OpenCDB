@@ -15,3 +15,5 @@ pub mod metadata_input;
 pub mod migrate;
 
 pub mod plan;
+
+pub mod cli;
