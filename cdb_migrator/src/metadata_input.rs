@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use opencdb::metadata::ResourceMetadata;
+use opencdb::metadata::{temporal, ResourceMetadata};
 use opencdb::AttributeModel;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -192,6 +192,18 @@ impl ResourceDeclaration {
         self.record
             .validate()
             .map_err(|error| refused(&format!("{}: record", self.source_path), error))?;
+        // DateTime<Utc> can hold extended years that its RFC3339 reader
+        // rejects. Validate the emitted form for programmatic inputs too.
+        for (field, value) in [
+            ("created", self.record.created.as_ref()),
+            ("updated", self.record.updated.as_ref()),
+        ] {
+            if let Some(value) = value {
+                temporal::parse_datetime(&temporal::format_datetime(value)).map_err(|error| {
+                    refused(&format!("{}: record.{field}", self.source_path), error)
+                })?;
+            }
+        }
         for (flag, applicable, field, present) in [
             (
                 "coverage",
@@ -633,6 +645,42 @@ mod tests {
             .to_string()
             .contains("duplicate"));
         assert!(MetadataManifest::from_json_str("{\"resources\":[],\"resource\":[]}").is_err());
+    }
+
+    fn assert_programmatic_timestamp_is_refused(field: &str) {
+        use opencdb::metadata::temporal::{format_datetime, parse_datetime};
+        let mut input = parse(entry()).unwrap();
+        let last_day = parse_datetime("9999-12-31T00:00:00Z").unwrap();
+        let one_day = last_day - parse_datetime("9999-12-30T00:00:00Z").unwrap();
+        let extended = last_day.checked_add_signed(one_day).unwrap();
+        assert!(parse_datetime(&format_datetime(&extended)).is_err());
+        let record = &mut input.resources[0].record;
+        match field {
+            "created" => record.created = Some(extended),
+            "updated" => record.updated = Some(extended),
+            _ => unreachable!(),
+        }
+        // Verify the actual failure mode: the public writer emits a value its
+        // public reader rejects, even though the value is a DateTime<Utc>.
+        assert!(ResourceMetadata::from_json_str(&record.to_json_string().unwrap()).is_err());
+        let error = input.validate().unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("record.{field}"))
+                && error.contains(&input.resources[0].source_path),
+            "{error}"
+        );
+    }
+
+    /// Metadata6: programmatic created timestamps must survive RFC3339 output.
+    #[test]
+    fn mig_metadata_programmatic_extended_created_year_is_refused() {
+        assert_programmatic_timestamp_is_refused("created");
+    }
+
+    /// Metadata6: updated needs the same validation as created, independently.
+    #[test]
+    fn mig_metadata_programmatic_extended_updated_year_is_refused() {
+        assert_programmatic_timestamp_is_refused("updated");
     }
 
     /// Metadata7 still applies when a library caller directly builds Temporal.
