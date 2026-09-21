@@ -600,8 +600,8 @@ an ecosystem.
   migrator maps 1.x tile files onto identical 2.0 tile addresses and
   translates layout/metadata around them — the tiling itself round-trips.
   **Chartered 2026-09-15** (the 2026-09-15 CDB 1.x migrator design note and
-  its implementation plan; implementation awaits owner review and a crate
-  name): reader + migrator in a third workspace crate, zero new
+  its implementation plan; approved for execution as `cdb_migrator`):
+  reader + migrator in a third workspace crate, zero new
   dependencies, payloads opaque; reads every version a 1.x Version.xml can
   declare (1.0/1.1/1.2 and pre-OGC 3.0/3.1/3.2, per OGC 15-113r6 §10.1.7)
   and tolerates the undeclared trees that real corpora are; the 1.x↔2.0
@@ -615,6 +615,16 @@ an ecosystem.
   CONFORMANT under the emitted yardstick" (a folded mini-layout already
   judges conformant with zero findings). v1 is single-root: version
   chains and multi-version configurations are refused, not flattened.
+  **Implementation status, 2026-09-21:** reader, address bridge, explicit
+  operator metadata, immutable source-bound planning, and library materialization
+  are implemented. Materialization uses one collection per carried file (v1
+  limit: 999,999), verifies bytes and filename-derived addresses, and emits the
+  full conformance report and descriptor beside the datastore. Required records
+  use operator assertions; payload semantics and embedded-reference usability
+  remain unchecked, and renaming can break case-sensitive embedded paths.
+  Memory includes inventory, plan, operator manifest, report and journal metadata
+  plus the largest buffered payload; no large-corpus capacity claim is made.
+  CLI integration and external-corpus migration acceptance remain next.
 - **GeoPackage metadata encoding** — lift the deliberate
   `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
   (needs a sqlite/gpkg dependency; keep out of the core path).

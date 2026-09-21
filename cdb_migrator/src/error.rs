@@ -14,6 +14,8 @@ pub enum Cdb1Error {
     Xml(PathBuf, String),
     /// A well-formed situation this version deliberately does not handle.
     Refused(String),
+    /// A facade or serialization failure prevented completed migration.
+    Operational(String),
 }
 
 impl fmt::Display for Cdb1Error {
@@ -25,6 +27,7 @@ impl fmt::Display for Cdb1Error {
             }
             Cdb1Error::Xml(path, why) => write!(f, "{}: {why}", path.display()),
             Cdb1Error::Refused(why) => f.write_str(why),
+            Cdb1Error::Operational(why) => write!(f, "migration operation failed: {why}"),
         }
     }
 }
