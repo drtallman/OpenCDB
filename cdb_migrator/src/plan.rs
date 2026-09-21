@@ -615,8 +615,10 @@ fn collisions(moves: &[PlannedMove], resources: &[PlannedResource], errors: &mut
 // source prefix, remove unchanged descendant directories from the actual target
 // parent. The remaining target branch represents that source directory. This
 // follows all default bucket mappings while allowing explicit maps to choose
-// distinct branches even when they change depth. Synthetic bucket containers
-// have no source identity and therefore never receive their own registration.
+// distinct branches even when they change depth. Also register the actual
+// target parent: asymmetric suffix matches must not conceal files arriving in
+// the same directory. Synthetic bucket containers have no source identity and
+// therefore never receive their own registration.
 fn directory_collisions(moves: &[PlannedMove], errors: &mut Vec<String>) {
     let mut branches: BTreeMap<(String, String), BTreeMap<String, BTreeSet<&str>>> =
         BTreeMap::new();
@@ -637,13 +639,15 @@ fn directory_collisions(moves: &[PlannedMove], errors: &mut Vec<String>) {
                     break;
                 }
             }
-            let target = fold(&target_dirs[..target_depth].join("/"));
-            branches
-                .entry((fold(&original), target))
-                .or_default()
-                .entry(original)
-                .or_default()
-                .insert(&movement.source);
+            for branch_depth in [target_depth, target_dirs.len()] {
+                let target = fold(&target_dirs[..branch_depth].join("/"));
+                branches
+                    .entry((fold(&original), target))
+                    .or_default()
+                    .entry(original.clone())
+                    .or_default()
+                    .insert(&movement.source);
+            }
         }
     }
     for ((_, target), identities) in branches {
@@ -1377,5 +1381,21 @@ mod tests {
         let mut errors = vec![];
         collisions(&merged, &[], &mut errors);
         assert!(!errors.is_empty());
+    }
+
+    /// An asymmetric suffix match cannot hide a shared actual destination parent.
+    #[test]
+    fn mig_plan_asymmetric_directory_projection_cannot_hide_merge() {
+        let moves = vec![
+            synthetic_move("Foo/Left/a.txt", "extras/combined/left/a.txt"),
+            synthetic_move("foo/Right/b.txt", "extras/combined/left/b.txt"),
+        ];
+        let mut errors = vec![];
+        collisions(&moves, &[], &mut errors);
+        assert!(!errors.is_empty());
+        let text = errors.join("\n");
+        for original in ["Foo/Left/a.txt", "foo/Right/b.txt"] {
+            assert!(text.contains(original), "{text}");
+        }
     }
 }
