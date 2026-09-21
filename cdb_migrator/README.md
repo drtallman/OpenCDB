@@ -41,10 +41,14 @@ this is not an atomic snapshot or protection against malicious ancestor replacem
 `META`, `UNRECOGNIZED` with a reason, or `UNSAFE` with a reason. A `SUMMARY` gives
 all counts. Backslashes and control characters are escaped (`\\`, `\t`, `\n`,
 `\r`, `\u{...}`), so raw filenames cannot introduce rows. Non-UTF-8 unsafe paths
-are explicitly rendered as `raw-path-hex:` followed by their original absolute
-platform-encoded bytes. Neither display convention changes source identity.
-Inventory success means classification completed, not that the source conforms
-or can be migrated. It can include unsafe entries or malformed-control findings.
+are explicitly rendered as `raw-path-hex:` followed by the original raw path's
+platform-encoded bytes. The raw path follows the supplied root spelling and can
+be relative. Neither display convention changes source identity. Inventory
+success means entry classification completed, not that the source conforms or
+can be migrated. It can include unsafe entries and can complete when control
+metadata is malformed. The command does not print tree or control findings;
+callers can inspect them through `Cdb1Tree::findings()`, and migration retains
+them in refusal diagnostics or report provenance, as applicable.
 Non-UTF-8 command arguments are refused without replacement or panic.
 
 `migrate <root> <out-parent>` accepts:
