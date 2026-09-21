@@ -1,8 +1,9 @@
 //! The CDB 1.x name grammar of OGC 15-113r6 §8.6.2–8.6.3: geocell
 //! directories, dataset directories, LOD and UREF directories, and the
 //! tiled-dataset file naming convention. Parsing accepts ASCII case variants;
-//! formatting reconstructs the uppercase canonical spelling. Callers that
-//! need original-byte provenance preserve the raw source path separately.
+//! formatting reconstructs canonical grammar tokens while retaining arbitrary
+//! dataset labels verbatim. Callers that need original-byte provenance
+//! preserve the raw source path separately.
 
 /// Table 3-29 as (exclusive upper |latitude| bound, zone width in degrees),
 /// ascending. Value-identical to `opencdb`'s CDB1GlobalGrid bands.
@@ -150,8 +151,20 @@ fn parse_component(
 
 /// A CDB 1.x Level of Detail, −10..=23 (§8.6.2.4 and the LOD designation
 /// rule: `L` + 2 digits, `C` in lieu of the minus sign).
+///
+/// The numeric field is public for downstream address conversion. Parsers
+/// validate the supported −10..=23 range; direct construction remains
+/// representable and formatting stays defined across the full `i8` domain.
+///
+/// ```
+/// use cdb_migrator::grammar::Lod1x;
+///
+/// let lod = Lod1x(-5);
+/// let Lod1x(value) = lod;
+/// assert_eq!(value, -5);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Lod1x(i8);
+pub struct Lod1x(pub i8);
 
 impl Lod1x {
     /// Parses an `L00`..`L23` or `LC01`..`LC10` token.
@@ -194,12 +207,15 @@ impl Lod1x {
         }
     }
 
-    /// Returns the canonical file-name token: `Lxx` or `LCxx`.
+    /// Formats the file-name token as `Lxx` or `LCxx`. Parsed values are in
+    /// the canonical ranges; directly constructed values remain safely
+    /// representable.
     pub fn token(&self) -> String {
-        if self.0 < 0 {
-            format!("LC{:02}", -self.0)
+        let value = i16::from(self.0);
+        if value < 0 {
+            format!("LC{:02}", value.unsigned_abs())
         } else {
-            format!("L{:02}", self.0)
+            format!("L{value:02}")
         }
     }
 }
@@ -234,7 +250,9 @@ impl DatasetDir {
         })
     }
 
-    /// Reconstructs the canonical directory name.
+    /// Formats the code to three digits and retains the semantic label
+    /// verbatim; CDB 1.x does not define a registry from which to recover its
+    /// original case.
     pub fn dir_name(&self) -> String {
         format!("{:03}_{}", self.code, self.name)
     }
@@ -539,12 +557,29 @@ mod tests {
         }
     }
 
+    /// Public construction may bypass the parser, so formatting remains
+    /// defined at both integer extremes without narrow signed negation.
+    #[test]
+    fn mig_lod_public_field_extremes_format_without_overflow() {
+        let minimum = Lod1x(i8::MIN);
+        assert_eq!(minimum.value(), i8::MIN);
+        assert_eq!(minimum.dir_name(), "LC");
+        assert_eq!(minimum.token(), "LC128");
+
+        let maximum = Lod1x(i8::MAX);
+        assert_eq!(maximum.value(), i8::MAX);
+        assert_eq!(maximum.dir_name(), "L127");
+        assert_eq!(maximum.token(), "L127");
+    }
+
     /// Dataset directory `nnn_Name` (§8.6.2.3).
     #[test]
     fn r1x_dataset_dir_roundtrip() {
         let d = DatasetDir::parse("201_RoadNetwork").unwrap();
         assert_eq!((d.code, d.name.as_str()), (201, "RoadNetwork"));
         assert_eq!(d.dir_name(), "201_RoadNetwork");
+        let folded = DatasetDir::parse("201_roadnetwork").unwrap();
+        assert_eq!(folded.dir_name(), "201_roadnetwork");
         assert!(DatasetDir::parse("20_RoadNetwork").is_err());
         assert!(DatasetDir::parse("201-RoadNetwork").is_err());
         assert!(DatasetDir::parse("201_").is_err());
