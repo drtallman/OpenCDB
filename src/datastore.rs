@@ -11,6 +11,9 @@
 //! Conformance reporting lives in [`crate::conformance`];
 //! [`CdbDatastore::validate`] is the facade's entry point into it.
 
+#[cfg(feature = "gpkg-metadata")]
+mod gpkg_versioning;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -215,13 +218,18 @@ impl CdbDatastore {
     /// (`declared` = the incoming record's encoding, `found` = the on-disk
     /// file's). A same-encoding rewrite — e.g. adding a license — is allowed.
     pub fn write_global_metadata(&self, metadata: &GlobalMetadata) -> Result<PathBuf, CdbError> {
+        self.check_global_metadata_encoding(metadata.encoding)?;
+        Ok(metadata.write_to(&self.layout)?)
+    }
+
+    fn check_global_metadata_encoding(&self, encoding: MetadataEncoding) -> Result<(), CdbError> {
         let dir = self.layout.global_metadata_dir();
         for (extension, found) in [
             ("json", MetadataEncoding::Json),
             ("xml", MetadataEncoding::Xml),
             ("gpkg", MetadataEncoding::Gpkg),
         ] {
-            if found != metadata.encoding {
+            if found != encoding {
                 let name = format!("{GLOBAL_METADATA_STEM}.{extension}");
                 let is_file = match fs::metadata(dir.join(&name)) {
                     Ok(metadata) => metadata.is_file(),
@@ -232,14 +240,14 @@ impl CdbDatastore {
                     return Err(CdbError::Metadata(MetadataError::Violation(
                         MetadataViolation::EncodingMismatch {
                             file: name,
-                            declared: metadata.encoding,
+                            declared: encoding,
                             found,
                         },
                     )));
                 }
             }
         }
-        Ok(metadata.write_to(&self.layout)?)
+        Ok(())
     }
 
     /// Reads the datastore's storage CRS (Requirement CRS5).
@@ -530,14 +538,19 @@ impl CdbDatastore {
         encoding: MetadataEncoding,
     ) -> Result<CollectionManifest, CdbError> {
         let path = self.manifest_path(id, encoding);
-        let content = fs::read_to_string(&path).map_err(versioning_io)?;
         let manifest = match encoding {
-            MetadataEncoding::Json => CollectionManifest::from_json_str(&content),
-            MetadataEncoding::Xml => CollectionManifest::from_xml_str(&content),
+            MetadataEncoding::Json => CollectionManifest::from_json_str(
+                &fs::read_to_string(&path).map_err(versioning_io)?,
+            ),
+            MetadataEncoding::Xml => {
+                CollectionManifest::from_xml_str(&fs::read_to_string(&path).map_err(versioning_io)?)
+            }
             MetadataEncoding::Gpkg => {
-                return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
-                    MetadataEncoding::Gpkg,
-                )));
+                let document = crate::metadata::gpkg::read_document(
+                    &path,
+                    crate::metadata::gpkg::RecordKind::Collection,
+                )?;
+                CollectionManifest::from_json_str(&document)
             }
         };
         manifest.map_err(CdbError::Versioning)
@@ -558,7 +571,12 @@ impl CdbDatastore {
     pub fn versions(&self) -> Result<Vec<CollectionManifest>, CdbError> {
         let dir = self.versions_dir();
         let mut manifests = Vec::new();
-        if dir.is_dir() {
+        let is_directory = match fs::metadata(&dir) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(versioning_io(error)),
+        };
+        if is_directory {
             let encoding = self.global_metadata()?.encoding;
             for entry in fs::read_dir(&dir).map_err(versioning_io)? {
                 let entry = entry.map_err(versioning_io)?;
@@ -569,8 +587,11 @@ impl CdbDatastore {
                 // An id-named dir without a manifest is an UNCOMMITTED
                 // apply (the manifest is the commit point) — skip it; the
                 // next apply reuses its sequence and absorbs the dir.
-                if !self.manifest_path(id, encoding).is_file() {
-                    continue;
+                match fs::metadata(self.manifest_path(id, encoding)) {
+                    Ok(metadata) if metadata.is_file() => {}
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(versioning_io(error)),
                 }
                 manifests.push(self.read_manifest(id, encoding)?);
             }
@@ -619,6 +640,11 @@ impl CdbDatastore {
     /// The SAME `applied` instant lands in all three places (V3-A's "date
     /// and time of the collection of modification(s)").
     ///
+    /// With `gpkg-metadata`, all linked records, the global update and the
+    /// manifest are prepared before the archive phase. Each document is
+    /// atomically replaced; the manifest is still published last. A linked
+    /// metadata record cannot also be an opaque asset target in that apply.
+    ///
     /// Single-writer and non-atomic: a crash mid-apply leaves an
     /// uncommitted `versions/<id>/` directory that the journal skips and
     /// the next apply absorbs; live-tree mutations from the failed attempt
@@ -629,12 +655,30 @@ impl CdbDatastore {
         pending: PendingCollection,
         applied: DateTime<Utc>,
     ) -> Result<CollectionManifest, CdbError> {
+        self.apply_collection_at_with_install(
+            pending,
+            applied,
+            crate::metadata::gpkg::PreparedWrite::install,
+        )
+    }
+
+    fn apply_collection_at_with_install(
+        &self,
+        pending: PendingCollection,
+        applied: DateTime<Utc>,
+        install: impl FnMut(crate::metadata::gpkg::PreparedWrite) -> Result<PathBuf, MetadataError>,
+    ) -> Result<CollectionManifest, CdbError> {
+        #[cfg(not(feature = "gpkg-metadata"))]
+        let _ = install;
         pending.validate().map_err(versioning_violation)?;
         let journal = self.versions()?;
         let sequence = journal.len() as u32 + 1;
         let id = CollectionId::from_sequence(sequence).map_err(versioning_violation)?;
         let mut global = self.global_metadata()?;
         let encoding = global.encoding;
+        if encoding == MetadataEncoding::Gpkg && !cfg!(feature = "gpkg-metadata") {
+            return Err(MetadataError::UnsupportedEncoding(MetadataEncoding::Gpkg).into());
+        }
 
         // Precondition sweep — nothing below may touch the tree.
         let mut physicals = Vec::with_capacity(pending.changes.len());
@@ -700,49 +744,6 @@ impl CdbDatastore {
             physicals.push(physical);
         }
 
-        // Archive phase — copies before any live-tree change.
-        let version_dir = self.version_dir(id);
-        fs::create_dir_all(&version_dir).map_err(versioning_io)?;
-        for (change, physical) in pending.changes.iter().zip(&physicals) {
-            if matches!(change.op, PendingOp::Replace { .. } | PendingOp::Delete) {
-                let mirror = self.archive_path(id, &change.asset);
-                if let Some(parent) = mirror.parent() {
-                    fs::create_dir_all(parent).map_err(versioning_io)?;
-                }
-                fs::copy(physical, &mirror).map_err(versioning_io)?;
-            }
-        }
-
-        // Mutate phase.
-        for (change, physical) in pending.changes.iter().zip(&physicals) {
-            match &change.op {
-                PendingOp::Create { bytes } | PendingOp::Replace { bytes } => {
-                    if let Some(parent) = physical.parent() {
-                        fs::create_dir_all(parent).map_err(versioning_io)?;
-                    }
-                    fs::write(physical, bytes).map_err(versioning_io)?;
-                }
-                PendingOp::Delete => {
-                    fs::remove_file(physical).map_err(versioning_io)?;
-                }
-                PendingOp::SetState { .. } | PendingOp::ClearState => {}
-            }
-        }
-
-        // V3-C: refresh each linked record's `updated` element.
-        for change in &pending.changes {
-            if let Some(record) = &change.resource_record {
-                let mut resource = self.read_resource_metadata(record)?;
-                resource.updated = Some(applied);
-                self.write_resource_metadata(record, &resource)?;
-            }
-        }
-
-        // V3-B: refresh the global `update` element.
-        global.update = Some(applied);
-        self.write_global_metadata(&global)?;
-
-        // Manifest last — the commit point.
         let changes = pending
             .changes
             .iter()
@@ -780,6 +781,63 @@ impl CdbDatastore {
             description: pending.description.clone(),
             changes,
         };
+
+        #[cfg(feature = "gpkg-metadata")]
+        let prepared = if encoding == MetadataEncoding::Gpkg {
+            Some(self.prepare_gpkg_collection_metadata(&pending, &global, &manifest)?)
+        } else {
+            None
+        };
+
+        // Archive phase — copies before any live-tree change.
+        let version_dir = self.version_dir(id);
+        fs::create_dir_all(&version_dir).map_err(versioning_io)?;
+        for (change, physical) in pending.changes.iter().zip(&physicals) {
+            if matches!(change.op, PendingOp::Replace { .. } | PendingOp::Delete) {
+                let mirror = self.archive_path(id, &change.asset);
+                if let Some(parent) = mirror.parent() {
+                    fs::create_dir_all(parent).map_err(versioning_io)?;
+                }
+                fs::copy(physical, &mirror).map_err(versioning_io)?;
+            }
+        }
+
+        // Mutate phase.
+        for (change, physical) in pending.changes.iter().zip(&physicals) {
+            match &change.op {
+                PendingOp::Create { bytes } | PendingOp::Replace { bytes } => {
+                    if let Some(parent) = physical.parent() {
+                        fs::create_dir_all(parent).map_err(versioning_io)?;
+                    }
+                    fs::write(physical, bytes).map_err(versioning_io)?;
+                }
+                PendingOp::Delete => {
+                    fs::remove_file(physical).map_err(versioning_io)?;
+                }
+                PendingOp::SetState { .. } | PendingOp::ClearState => {}
+            }
+        }
+
+        #[cfg(feature = "gpkg-metadata")]
+        if let Some(prepared) = prepared {
+            gpkg_versioning::publish_prepared_collection_metadata(prepared, install)?;
+            return Ok(manifest);
+        }
+
+        // V3-C: refresh each linked record's `updated` element.
+        for change in &pending.changes {
+            if let Some(record) = &change.resource_record {
+                let mut resource = self.read_resource_metadata(record)?;
+                resource.updated = Some(applied);
+                self.write_resource_metadata(record, &resource)?;
+            }
+        }
+
+        // V3-B: refresh the global `update` element.
+        global.update = Some(applied);
+        self.write_global_metadata(&global)?;
+
+        // Manifest last — the commit point.
         let content = match encoding {
             MetadataEncoding::Json => manifest.to_json_string(),
             MetadataEncoding::Xml => manifest.to_xml_string(),
@@ -1957,6 +2015,62 @@ mod tests {
                 .join("global_metadata/vector_attributes.json")
                 .exists(),
             "refused before writing"
+        );
+    }
+    /// V3: manifest persistence is the commit point, even if earlier live changes remain.
+    #[cfg(feature = "gpkg-metadata")]
+    #[test]
+    fn req_core_versioning_gpkg_failed_manifest_is_uncommitted() {
+        let tmp = tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &SimulationProfile::json(),
+            DatastoreSeed::new("id", "Title", "Description", "ops"),
+        )
+        .unwrap();
+        let mut global = store.global_metadata().unwrap();
+        global.encoding = MetadataEncoding::Gpkg;
+        global.write_to(store.layout()).unwrap();
+        fs::remove_file(store.root().join("global_metadata/global_metadata.json")).unwrap();
+        let record = "/Tiles/metadata/Roads.gpkg";
+        store
+            .write_resource_metadata(record, &ResourceMetadata::new("r", "Roads", "Network"))
+            .unwrap();
+        let applied = DateTime::from_timestamp(1_790_510_400, 0).unwrap();
+        let pending = PendingCollection::new()
+            .create("/Tiles/Roads.gpkg", b"one".to_vec())
+            .for_record(record)
+            .create("/Tiles/Bridges.gpkg", b"two".to_vec())
+            .for_record(record);
+        let mut calls = 0;
+        let result = store.apply_collection_at_with_install(pending, applied, |prepared| {
+            calls += 1;
+            if calls == 3 {
+                return Err(MetadataError::Io(io::Error::other(
+                    "injected manifest failure",
+                )));
+            }
+            prepared.install()
+        });
+        assert!(matches!(
+            result,
+            Err(CdbError::Metadata(MetadataError::Io(_)))
+        ));
+        assert_eq!(calls, 3, "one shared resource, global, manifest");
+        assert!(store.versions().unwrap().is_empty());
+        assert!(!store.root().join("versions/v000001/manifest.gpkg").exists());
+        assert_eq!(
+            fs::read(store.resolve("/Tiles/Roads.gpkg").unwrap()).unwrap(),
+            b"one"
+        );
+        assert_eq!(
+            fs::read(store.resolve("/Tiles/Bridges.gpkg").unwrap()).unwrap(),
+            b"two"
+        );
+        assert_eq!(store.global_metadata().unwrap().update, Some(applied));
+        assert_eq!(
+            store.read_resource_metadata(record).unwrap().updated,
+            Some(applied)
         );
     }
 }

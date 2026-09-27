@@ -66,3 +66,18 @@ file permissions. Preparation and failed persistence do not replace old
 bytes, and temporary files are removed on failure. Memory scales with the
 container size. Atomic file replacement does not make an entire collection
 transaction atomic and does not promise byte-identical SQLite layouts.
+
+Collection application prepares all linked resource records, the global
+update and the new manifest before creating archives or changing payloads.
+Two assets may share a resource record; its update is prepared once. A
+linked metadata record cannot also be an asset target in that collection.
+Publication follows payload changes with resource updates, the global
+update, then the manifest. The manifest is the commit point. If its
+installation fails, `versions()` skips the uncommitted directory, but
+preceding live payload or metadata changes can remain and need attention.
+
+Journal inspection distinguishes container corruption (Metadata findings)
+from a malformed manifest body or sequence gap (Versioning findings).
+Unsupported layouts and I/O failures abort inspection. Only successfully
+scanned, committed manifests add container recommendations; archive payloads
+and uncommitted directories are not metadata documents to inspect.

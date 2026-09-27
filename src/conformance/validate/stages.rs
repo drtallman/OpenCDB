@@ -303,7 +303,22 @@ pub(super) fn validate_versioning(
     }
     report.mark_content(RequirementsClass::Versioning);
     match datastore.versions() {
-        Ok(_) => Ok(()),
+        Ok(manifests) => {
+            if global
+                .is_some_and(|global| global.encoding == crate::metadata::MetadataEncoding::Gpkg)
+            {
+                for manifest in manifests {
+                    super::record_gpkg_warning(
+                        report,
+                        &format!("/versions/{}/manifest.gpkg", manifest.id),
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(CdbError::Metadata(error)) => {
+            super::record_metadata_error(report, Some("/versions"), error)
+        }
         Err(CdbError::Versioning(VersioningError::Violation(violation))) => {
             report.record_violation(violation.into());
             Ok(())

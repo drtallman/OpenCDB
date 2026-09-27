@@ -12,7 +12,6 @@ mod schema;
 pub(crate) enum RecordKind {
     Global,
     Resource,
-    #[allow(dead_code)] // Connected by the collection coordinator in task 5.
     Collection,
 }
 #[cfg(feature = "gpkg-metadata")]

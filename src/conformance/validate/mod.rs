@@ -577,10 +577,8 @@ fn filter_known(warnings: Vec<NamingWarning>, known: &[String]) -> Vec<NamingWar
 /// [`MetadataViolation::Link`] is re-filed under Links by
 /// [`ConformanceReport::record_violation`]); a serialization failure becomes a
 /// [`MetadataViolation::Malformed`]. [`MetadataError::UnsupportedEncoding`] is
-/// unreachable from the reader (it only reads json/xml), but is armed
-/// defensively as `Malformed` so a future caller cannot make it panic. I/O — and
-/// any future operational variant — is not a conformance finding and returns
-/// `Err`.
+/// and [`MetadataError::UnsupportedContainer`] are operational refusals, as
+/// are I/O failures: none becomes a CDB conformance finding.
 ///
 /// `subject` names the document the failure is about — a record's logical
 /// path, or `None` for the datastore's one global record. It is prefixed onto
