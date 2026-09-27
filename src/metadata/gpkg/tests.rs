@@ -463,3 +463,52 @@ fn gpkg_binding_writer_refuses_corrupt_or_wrong_kind_targets() {
     ));
     assert_eq!(directory_snapshot(tmp.path()), before);
 }
+
+/// GeoPackage 1.2.1 accepts equivalent SQL, including function case and key order.
+#[test]
+fn gpkg_binding_accepts_mixed_case_defaults() {
+    for spelling in ["Strftime", "sTrFtImE", "STRFTIME"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("record.gpkg");
+        let sql = include_str!("../../../tests/fixtures/gpkg/independent.sql")
+            .replace("strftime", spelling);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(&sql).unwrap();
+        db.close().unwrap();
+        let before = directory_snapshot(tmp.path());
+        assert!(
+            read_document(&path, RecordKind::Resource).is_ok(),
+            "{spelling}"
+        );
+        assert!(directory_snapshot(tmp.path()) == before);
+    }
+}
+
+/// Annex C.8's composite uniqueness is independent of index column ordering.
+#[test]
+fn gpkg_binding_accepts_reordered_unique_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("record.gpkg");
+    let sql = include_str!("../../../tests/fixtures/gpkg/independent.sql").replace(
+        "UNIQUE (table_name, column_name, extension_name)",
+        "UNIQUE (extension_name, table_name, column_name)",
+    );
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(&sql).unwrap();
+    db.close().unwrap();
+    let before = directory_snapshot(tmp.path());
+    assert!(read_document(&path, RecordKind::Resource).is_ok());
+    assert!(directory_snapshot(tmp.path()) == before);
+}
+
+/// Table 3 defines organization as case-insensitive, not merely two spellings.
+#[test]
+fn gpkg_binding_accepts_mixed_case_srs_organizations() {
+    let (tmp, path) = fixture();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("UPDATE gpkg_spatial_ref_sys SET organization=CASE WHEN srs_id=4326 THEN 'Epsg' ELSE 'None' END").unwrap();
+    db.close().unwrap();
+    let before = directory_snapshot(tmp.path());
+    assert!(read_document(&path, RecordKind::Resource).is_ok());
+    assert!(directory_snapshot(tmp.path()) == before);
+}

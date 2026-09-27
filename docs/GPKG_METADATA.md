@@ -231,8 +231,10 @@ transaction atomic and does not promise byte-identical SQLite layouts.
 
 Collection application prepares all linked resource records, the global
 update and the new manifest before creating archives or changing payloads.
-Two assets may share a resource record; its update is prepared once. A
-linked metadata record cannot also be an asset target in that collection.
+Two assets may share a resource record; its update is prepared once using
+the canonical filesystem target, including case and symlink aliases.
+Publication updates that target and preserves a symlink used to reach it.
+A linked metadata record cannot also be an asset target in that collection.
 Publication follows payload changes with resource updates, the global
 update, then the manifest. The manifest is the commit point. If its
 installation fails, `versions()` skips the uncommitted directory, but

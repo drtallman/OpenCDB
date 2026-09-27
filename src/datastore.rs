@@ -2037,11 +2037,17 @@ mod tests {
             .write_resource_metadata(record, &ResourceMetadata::new("r", "Roads", "Network"))
             .unwrap();
         let applied = DateTime::from_timestamp(1_790_510_400, 0).unwrap();
+        let record_alias = "/Tiles/metadata/roads.gpkg";
+        let second_record = if store.resolve(record_alias).unwrap().exists() {
+            record_alias
+        } else {
+            record
+        };
         let pending = PendingCollection::new()
             .create("/Tiles/Roads.gpkg", b"one".to_vec())
             .for_record(record)
             .create("/Tiles/Bridges.gpkg", b"two".to_vec())
-            .for_record(record);
+            .for_record(second_record);
         let mut calls = 0;
         let result = store.apply_collection_at_with_install(pending, applied, |prepared| {
             calls += 1;

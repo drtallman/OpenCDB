@@ -258,12 +258,15 @@ fn check_unique(conn: &Connection, table: &str, columns: &[&str]) -> Result<(), 
             .map_err(sql_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql_error)?;
-        if names.len() == columns.len()
-            && names
-                .iter()
-                .zip(columns)
-                .all(|(a, b)| a.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(b)))
-        {
+        let expected: BTreeSet<_> = columns
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        let actual: Option<BTreeSet<_>> = names
+            .iter()
+            .map(|name| name.as_ref().map(|name| name.to_ascii_lowercase()))
+            .collect();
+        if names.len() == columns.len() && actual.as_ref() == Some(&expected) {
             return Ok(());
         }
     }
@@ -319,7 +322,7 @@ fn check_srs(conn: &Connection) -> Result<(), MetadataError> {
         let org_id: i64 = row.get(2).map_err(sql_error)?;
         let definition: String = row.get(3).map_err(sql_error)?;
         if name.trim().is_empty()
-            || !(organization == org || (id == 4326 && organization == "epsg"))
+            || !organization.eq_ignore_ascii_case(org)
             || org_id != id
             || definition.trim().is_empty()
             || (id != 4326 && definition != "undefined")
@@ -416,15 +419,13 @@ fn equivalent_default(actual: &str, expected: &str) -> bool {
             if ch == '\'' {
                 quoted = !quoted;
             }
-            if quoted || !ch.is_ascii_whitespace() {
+            if quoted {
                 normalized.push(ch);
+            } else if !ch.is_ascii_whitespace() {
+                normalized.push(ch.to_ascii_lowercase());
             }
         }
-        normalized
-            .strip_prefix("STRFTIME")
-            .map_or(normalized == expected, |rest| {
-                format!("strftime{rest}") == expected
-            })
+        normalized == expected
     } else {
         value == expected
     }

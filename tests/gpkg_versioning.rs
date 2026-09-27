@@ -188,6 +188,95 @@ mod enabled {
         assert!(snapshot(store.root()) == before, "refusal changed the tree");
     }
 
+    /// Binding overlap guards compare filesystem targets even when case aliases exist.
+    #[test]
+    fn gpkg_binding_apply_case_alias_overlap_preserves_tree() {
+        let (_tmp, store) = store();
+        let record = "/Tiles/metadata/Roads.gpkg";
+        let alias = "/Tiles/metadata/roads.gpkg";
+        if !store.resolve(alias).unwrap().exists() {
+            // Case-sensitive filesystems do not alias these two names.
+            return;
+        }
+        let before = snapshot(store.root());
+        let result = store.apply_collection_at(
+            PendingCollection::new()
+                .replace(alias, b"requested opaque payload".to_vec())
+                .for_record(record),
+            support::ts("2026-09-27T12:00:00Z"),
+        );
+        assert!(matches!(
+            result,
+            Err(CdbError::Metadata(
+                MetadataError::UnsupportedContainer { .. }
+            ))
+        ));
+        assert!(snapshot(store.root()) == before, "refusal changed the tree");
+    }
+
+    /// Binding overlap checks also follow symlinks that resolve to a managed record.
+    #[cfg(unix)]
+    #[test]
+    fn gpkg_binding_apply_symlink_overlap_preserves_tree() {
+        let (_tmp, store) = store();
+        let record = "/Tiles/metadata/Roads.gpkg";
+        let alias = "/Tiles/metadata/RoadsAlias.gpkg";
+        std::os::unix::fs::symlink("Roads.gpkg", store.resolve(alias).unwrap()).unwrap();
+        let before = snapshot(store.root());
+        let result = store.apply_collection_at(
+            PendingCollection::new()
+                .replace(alias, b"requested opaque payload".to_vec())
+                .for_record(record),
+            support::ts("2026-09-27T12:00:00Z"),
+        );
+        assert!(matches!(
+            result,
+            Err(CdbError::Metadata(
+                MetadataError::UnsupportedContainer { .. }
+            ))
+        ));
+        assert!(snapshot(store.root()) == before, "refusal changed the tree");
+        assert!(
+            std::fs::symlink_metadata(store.resolve(alias).unwrap())
+                .unwrap()
+                .is_symlink()
+        );
+    }
+
+    /// V3-C: publishing a shared symlinked record updates the target and preserves the link.
+    #[cfg(unix)]
+    #[test]
+    fn req_core_versioning_gpkg_shared_symlink_record_updates_target() {
+        let (_tmp, store) = store();
+        let record = "/Tiles/metadata/Roads.gpkg";
+        let alias = "/Tiles/metadata/RoadsAlias.gpkg";
+        std::os::unix::fs::symlink("Roads.gpkg", store.resolve(alias).unwrap()).unwrap();
+        let at = support::ts("2026-09-27T12:00:00Z");
+        store
+            .apply_collection_at(
+                PendingCollection::new()
+                    .create("/Tiles/Roads.gpkg", b"one".to_vec())
+                    .for_record(alias)
+                    .create("/Tiles/Bridges.gpkg", b"two".to_vec())
+                    .for_record(record),
+                at,
+            )
+            .unwrap();
+        assert!(
+            std::fs::symlink_metadata(store.resolve(alias).unwrap())
+                .unwrap()
+                .is_symlink()
+        );
+        assert_eq!(
+            store.read_resource_metadata(record).unwrap().updated,
+            Some(at)
+        );
+        assert_eq!(
+            store.read_resource_metadata(alias).unwrap(),
+            store.read_resource_metadata(record).unwrap()
+        );
+    }
+
     /// Malformed linked metadata must fail before any payload or archive mutation.
     #[test]
     fn gpkg_binding_apply_bad_linked_metadata_preserves_entire_tree() {

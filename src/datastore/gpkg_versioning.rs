@@ -20,7 +20,7 @@ impl CdbDatastore {
         let assets: BTreeSet<_> = pending
             .changes
             .iter()
-            .map(|change| self.resolve(&change.asset))
+            .map(|change| target_path(self.resolve(&change.asset)?).map_err(CdbError::from))
             .collect::<Result<_, _>>()?;
         let mut records = Vec::new();
         let mut seen = BTreeSet::new();
@@ -29,7 +29,7 @@ impl CdbDatastore {
             .iter()
             .filter_map(|change| change.resource_record.as_deref())
         {
-            let path = self.resolve(logical)?;
+            let path = target_path(self.resolve(logical)?)?;
             if assets.contains(&path) {
                 return Err(MetadataError::UnsupportedContainer { reason: format!(
                     "managed metadata record {logical:?} is also an asset target in this collection") }.into());
@@ -94,6 +94,17 @@ impl CdbDatastore {
             global,
             manifest,
         })
+    }
+}
+
+// Existing targets need their filesystem identity: case and symlink aliases
+// must neither bypass overlap checks nor split one record into two writes.
+// Only new asset targets may be absent during the preparation phase.
+fn target_path(path: PathBuf) -> Result<PathBuf, MetadataError> {
+    match fs::canonicalize(&path) {
+        Ok(target) => Ok(target),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(error.into()),
     }
 }
 
