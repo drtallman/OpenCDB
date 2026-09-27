@@ -713,13 +713,17 @@ fn req_profile_preflight_an_invalid_attribute_model_is_a_usage_error() {
 /// Exit 3 means "the tool could not inspect your datastore". The truth here is
 /// "you asked for an encoding this build does not implement", which is a fact
 /// about the request, and the message says the stance is deliberate.
+#[cfg(not(feature = "gpkg-metadata"))]
 #[test]
 fn req_profile_preflight_rejects_gpkg_as_a_deliberate_stance() {
     let mut descriptor = minimal();
     descriptor["metadata_encoding"] = json!("gpkg");
 
     let message = refused(&descriptor);
-    names(&message, &["metadata_encoding", "gpkg", "deliberate"]);
+    names(
+        &message,
+        &["metadata_encoding", "gpkg", "--features gpkg-metadata"],
+    );
 }
 
 /// A name-shaped field whose value can never match one path component is a

@@ -300,17 +300,24 @@ impl DescriptorProfile {
     /// it.
     fn preflight(&mut self, path: &Path) -> Result<(), UsageError> {
         if self.metadata_encoding == MetadataEncoding::Gpkg {
-            return Err(invalid(
-                path,
-                format_args!(
-                    "declares `metadata_encoding` `gpkg`. The token belongs to Requirement \
-                 Metadata5's vocabulary, but this build implements no GeoPackage metadata \
-                 container: writing one answers `UnsupportedEncoding`. The refusal is \
-                 deliberate, not a gap — the fault is in the request rather than in any \
-                 datastore, so it exits 2 and not the code that means the datastore could not \
-                 be read. Lifting the stance is future work (TDD_PLAN §8). Use `json` or `xml`"
-                ),
-            ));
+            // Check the CLI's own opt-in, even if Cargo feature unification
+            // has enabled the codec on the library through another package.
+            if !cfg!(feature = "gpkg-metadata") {
+                return Err(invalid(
+                    path,
+                    format_args!(
+                        "declares `metadata_encoding` `gpkg`; rebuild cdb-lint with `--features gpkg-metadata`, or use `json` or `xml`"
+                    ),
+                ));
+            }
+            if self.attribute_model.is_some() {
+                return Err(invalid(
+                    path,
+                    format_args!(
+                        "declares `attribute_model` with `metadata_encoding` `gpkg`; Attr1-C requires XML/JSON model files while Metadata5 requires one encoding"
+                    ),
+                ));
+            }
         }
 
         if let Err(violation) = self.storage_crs() {
@@ -696,9 +703,9 @@ fn parse_metadata_standard(value: &str) -> Result<MetadataStandard, FieldError> 
 /// `metadata_encoding`: Requirement Metadata5's vocabulary, the library's.
 ///
 /// All three spellings are accepted here, `gpkg` included, because all three
-/// are the requirement's. This build implements only two of them, and the
-/// pre-flight of [`DescriptorProfile::preflight`] says so in its own words
-/// rather than pretending the third is a typo.
+/// are the requirement's. The pre-flight of [`DescriptorProfile::preflight`]
+/// checks whether this linter build enabled the optional GeoPackage codec,
+/// rather than pretending the third spelling is a typo.
 fn parse_metadata_encoding(value: &str) -> Result<MetadataEncoding, FieldError> {
     MetadataEncoding::parse(value).map_err(|_| {
         rejected(
@@ -1249,11 +1256,12 @@ mod tests {
 
     /// `gpkg` is refused at pre-flight, and the message says the refusal is a
     /// stance about this build rather than a typo in the descriptor.
+    #[cfg(not(feature = "gpkg-metadata"))]
     #[test]
     fn req_profile_preflight_refuses_gpkg_in_its_own_words() {
         let message = refused(&with("metadata_encoding", serde_json::json!("gpkg")));
 
-        for fragment in ["metadata_encoding", "gpkg", "deliberate", "TDD_PLAN §8"] {
+        for fragment in ["metadata_encoding", "gpkg", "--features gpkg-metadata"] {
             assert!(message.contains(fragment), "{fragment}: {message}");
         }
     }

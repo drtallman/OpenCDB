@@ -12,7 +12,7 @@ artifact implementers test against.*
 What it judges is **structure and metadata**: the file hierarchy, the naming
 system, the links, the metadata records, the declared CRS, the attribute model,
 the tiling declaration, the versioning journal. What it does **not** judge is
-payload content — the bytes inside a GeoPackage, a raster, or a model file are
+payload content — the bytes inside a payload GeoPackage, a raster, or a model file are
 never decoded. That boundary is not an omission to be fixed later; it is stated
 plainly in [what a pass does and does not mean](#what-a-pass-does-and-does-not-mean),
 and the tool reports it on every run rather than leaving you to read this file
@@ -277,7 +277,7 @@ descriptor means the same thing wherever it is run from.
 | `case_rule` | yes | — | `PascalCase`, `camelCase`, `Snake_case`, `kebab-case` |
 | `language` | yes | — | a BCP 47 tag, e.g. `en` |
 | `metadata_standard` | yes | — | `ISO-19115:2019`, `ISO-19115:2003`, `DDMS-5.0`, `DDMS-4.1`, `DCAT`, `DCAT-AP`, `GeoDCAT-AP`, `NGCMP`, `FG3D`, `NoMetadata` |
-| `metadata_encoding` | yes | — | `json`, `xml` (`gpkg` parses but is refused — see below) |
+| `metadata_encoding` | yes | — | `json`, `xml`; `gpkg` with the optional feature (see below) |
 | `uom` | yes | — | `M`, `FT`, `K`, `MI` |
 | `storage_crs_wkt` | one of the two | — | WKT-2 (ISO 19162) text |
 | `storage_crs_wkt_path` | one of the two | — | a path to a WKT-2 file, resolved **against the descriptor's own directory** |
@@ -296,7 +296,7 @@ Two behaviours are worth stating outright:
   produce a yardstick nobody stated, which is worse than a failed run.
 - **A broken descriptor exits 2, before the datastore is opened.** WKT that
   does not parse, a malformed language tag, an invalid attribute model, or
-  `"metadata_encoding": "gpkg"` — which this build does not implement — are all
+  `"metadata_encoding": "gpkg"` in a build without `gpkg-metadata` are all
   usage errors naming the field at fault. So is a field whose value could
   never take effect: a `resource_metadata_dir` carrying a `/` matches no
   directory component, so every resource record would go unrecognized and the
@@ -517,3 +517,48 @@ versions for exactly that reason, and every report's header repeats them.
 | `docs/CONFORMANCE.md` | the public conformance matrix: requirement → API → test, the errata list, and §6's honesty notes that these rules descend from |
 | `docs/TDD_PLAN.md` §8 | the post-1.0 charter this effort was drawn from |
 | OGC 23-034 | the standard itself — `http://www.opengis.net/doc/IS/CDB-core/2.0` |
+
+## Optional GeoPackage metadata
+
+Build from this checkout with the explicit feature:
+
+```sh
+cargo build -p cdb-lint --features gpkg-metadata
+cargo run -p cdb-lint --features gpkg-metadata -- --profile-file profile.json /path/to/cdb
+```
+
+Select the encoding through a JSON descriptor; the built-in `--encoding`
+choices remain `json` and `xml`. A minimal descriptor for this binding is:
+
+```json
+{
+  "name": "opencdb-gpkg-v1",
+  "case_rule": "PascalCase",
+  "language": "en",
+  "storage_crs_wkt_path": "crs.wkt",
+  "metadata_standard": "DCAT",
+  "metadata_encoding": "gpkg",
+  "uom": "M",
+  "conformance_classes": "all",
+  "resource_metadata_dir": "metadata",
+  "known_extensions": ["wkt"]
+}
+```
+
+Place a WGS-84 WKT-2 declaration in `crs.wkt` beside the descriptor. See
+[the binding contract](../docs/GPKG_METADATA.md) for the supported GeoPackage
+1.2.1 subset and document schemas. Bundled SQLite requires no separate
+system SQLite installation; default builds do not include it.
+
+A descriptor requesting GeoPackage without this feature exits **2** before
+opening the datastore. A descriptor requiring an `attribute_model` with
+GeoPackage also exits **2**: CDB Attr1-C names XML/JSON attribute files while
+Metadata5 requires one encoding. Unsupported container layouts exit **3**;
+corrupt recognized metadata produces findings and exits **1**.
+
+Metadata-only containers carry the warning `/rec/geopackage/user-data-table`
+from GeoPackage 1.2.1 §2. A conformant datastore may therefore exit **0** with
+warnings; `--deny-warnings` can change that to **1**, and a baseline can
+ratchet it, without removing warnings or changing the underlying report.
+Geometry and Topology payloads remain unchecked in every format. GeoPackage
+payload files outside the metadata convention remain opaque.

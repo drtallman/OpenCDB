@@ -8,8 +8,13 @@ repository = "https://github.com/drtallman/OpenCDB"
 keywords = ["ogc", "cdb", "geospatial", "conformance", "lint"]
 categories = ["command-line-utilities", "science::geo"]
 
-# Nothing new ever enters the lockfile (design §2, decision 5): every crate
-# named here was already a dependency of `opencdb`, at these exact versions.
+[features]
+default = []
+gpkg-metadata = ["opencdb/gpkg-metadata"]
+
+# The original CLI reused the library's dependencies (design §2, decision 5).
+# GeoPackage support is an explicit optional addition forwarded to opencdb;
+# the default linter still adds no SQLite dependency.
 # `serde_json` renders the `--format json` artifact and parses a baseline;
 # the version pins match the library's so nothing re-resolves.
 [dependencies]

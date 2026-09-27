@@ -88,7 +88,7 @@ use opencdb::coverage::CoverageViolation;
 use opencdb::crs::CrsViolation;
 use opencdb::geometry::GeometryViolation;
 use opencdb::hierarchy::{HierarchyViolation, HierarchyWarning};
-use opencdb::metadata::MetadataViolation;
+use opencdb::metadata::{MetadataViolation, MetadataWarning};
 use opencdb::naming::{NamingViolation, NamingWarning};
 use opencdb::tiling::TilingViolation;
 use opencdb::topology::TopologyViolation;
@@ -604,6 +604,9 @@ fn locate_violation(violation: &CdbViolation, root: &Path) -> Option<Vec<u8>> {
 fn locate_warning(warning: &CdbWarning, root: &Path) -> Option<Vec<u8>> {
     match warning {
         CdbWarning::Hierarchy(HierarchyWarning::EmptyFolder(path)) => relative_to(root, path),
+        CdbWarning::Metadata(MetadataWarning::GpkgWithoutUserData { file }) => {
+            relative_logical(file)
+        }
 
         // Names again: the two naming recommendations judge a component, and
         // `RootNameNotCdb` judges the root's own name — which is the root.

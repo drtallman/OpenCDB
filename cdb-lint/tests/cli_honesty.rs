@@ -893,6 +893,7 @@ fn req_cdb_lint_a_broken_yardstick_is_a_usage_error_in_every_format() {
                 ]
             }),
         ),
+        #[cfg(not(feature = "gpkg-metadata"))]
         (
             "an encoding this build does not implement",
             "metadata_encoding",
