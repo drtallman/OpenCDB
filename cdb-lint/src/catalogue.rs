@@ -65,12 +65,31 @@ pub struct Entry {
     /// The requirements class a report files this code under: a
     /// `RequirementsClass::as_str` token, or [`ANY_CLASS`].
     pub class: &'static str,
-    /// The clause in OGC 23-034 that defines it — digits and dots, with no
+    /// The clause in the source specification that defines it — digits and dots, with no
     /// `§` prefix (`7.4.7`), or an annex clause (`A.2`).
     pub section: &'static str,
     /// One line describing the clause, in the present tense and with no
     /// trailing period.
     pub gloss: &'static str,
+}
+
+impl Entry {
+    /// The normative source document for this finding code.
+    pub fn specification(&self) -> &'static str {
+        if self.code == "/rec/geopackage/user-data-table" {
+            "OGC 12-128r15"
+        } else {
+            "OGC 23-034"
+        }
+    }
+    /// The source document's external OGC identifier.
+    pub fn specification_uri(&self) -> &'static str {
+        if self.code == "/rec/geopackage/user-data-table" {
+            "http://www.opengis.net/doc/IS/geopackage/1.2.1"
+        } else {
+            "http://www.opengis.net/doc/IS/CDB-core/2.0"
+        }
+    }
 }
 
 /// The [`Entry::class`] of a code whose filing class is not fixed.
@@ -122,6 +141,12 @@ pub const CATALOGUE: &[Entry] = &[
         // class table contradicts (CONFORMANCE.md errata row 21).
         section: "7.10.2.7",
         gloss: "A tiling scheme complies with one of the two tiling extensions",
+    },
+    Entry {
+        code: "/rec/geopackage/user-data-table",
+        class: "metadata",
+        section: "2",
+        gloss: "GeoPackage recommends at least one user data table; OpenCDB metadata containers have none",
     },
     Entry {
         code: "/req/core/attribute-model",

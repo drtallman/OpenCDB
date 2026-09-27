@@ -160,15 +160,25 @@ It is the only cross-class normalization in the crate.
 
 | Requirement | Code | API | Tests |
 |---|---|---|---|
-| Metadata1 / Metadata3 — a global record in `global_metadata/`, locatable | `/req/core/metadata-global` | `GlobalMetadata::read_from`, `GlobalMetadata::write_to`, `GlobalMetadata::locate` | `req_core_metadata_repository_json_roundtrip_and_locate`, `req_core_metadata_global_missing_file_errors`, `conf_core_break_metadata_reports_missing_global_record` |
+| Metadata1 / Metadata3 — a global record in `global_metadata/`, locatable | `/req/core/metadata-global` | `GlobalMetadata::read_from`, `GlobalMetadata::write_to`, `GlobalMetadata::locate` | `req_core_metadata_repository_json_roundtrip_and_locate`, `req_core_metadata_global_missing_file_errors`, `conf_core_break_metadata_reports_missing_global_record`, `req_core_metadata_gpkg_facade_roundtrip`, `req_core_metadata_gpkg_global_discovery_refuses_ambiguity` |
 | Metadata2 — one metadata standard | `/req/core/metadata-standard` | `MetadataStandard`, `ApplicationProfile::metadata_standard` | `req_core_metadata_standard_list_and_reject`, `req_core_metadata_standard_and_uom_pinned` |
 | Metadata4 — one BCP 47 language | `/req/core/metadata-language` | `LanguageTag` | `req_core_metadata_language_bcp47` |
-| Metadata5 — one encoding (xml/json/gpkg) | `/req/core/metadata-encoding` | `MetadataEncoding`, `metadata::encoding_violations`, `CdbDatastore::write_global_metadata` | `req_core_metadata_encoding_values`, `req_core_metadata_encoding_consistency`, `req_core_metadata_encoding_write_global_metadata_refuses_switch`, `req_core_metadata_encoding_write_attribute_model_refuses_switch`, `req_core_metadata_encoding_simulation_json_or_xml`, `req_core_metadata_encoding_gnosis_mirrors_simulation_convention`, `req_core_metadata_declaration_mismatch_detected` |
+| Metadata5 — one encoding (xml/json/gpkg) | `/req/core/metadata-encoding` | `MetadataEncoding`, `metadata::encoding_violations`, `CdbDatastore::write_global_metadata` | `req_core_metadata_encoding_values`, `req_core_metadata_encoding_consistency`, `req_core_metadata_encoding_write_global_metadata_refuses_switch`, `req_core_metadata_encoding_write_attribute_model_refuses_switch`, `req_core_metadata_encoding_simulation_json_or_xml`, `req_core_metadata_encoding_gnosis_mirrors_simulation_convention`, `req_core_metadata_declaration_mismatch_detected`, `req_core_metadata_gpkg_rejects_cross_encoding_writes` |
 | Metadata6 — UTC, RFC 3339 §5.6 | `/req/core/metadata-datetime`, `/req/core/metadata-datetime-A` | `metadata::temporal` | `req_core_metadata_datetime_accepts_utc_forms`, `req_core_metadata_datetime_rejects_non_utc`, `req_core_metadata_datetime_rejects_malformed`, `req_core_metadata_datetime_formats_canonical_z`, `req_core_metadata_datetime_enforced_on_deserialize` |
 | Metadata7 — temporal intervals (incl. half-bounded) | `/req/core/metadata-temporal-interval` | `metadata::temporal::Temporal` (its `Interval` arm), `metadata::temporal::parse_datetime` | `req_core_metadata_temporal_instant`, `req_core_metadata_temporal_bounded_interval`, `req_core_metadata_temporal_half_bounded`, `req_core_metadata_temporal_rejects_invalid` |
 | Metadata8 — one unit of measure, element `uom` | `/req/core/metadata-uom-measure` | `UnitOfMeasure` | `req_core_metadata_uom_values`, `req_core_metadata_standard_and_uom_pinned` |
 | §7.9.4.1 — global element table | `/req/core/metadata-` (`MissingElement`) | `GlobalMetadata`, `GlobalMetadataBuilder` | `req_core_metadata_global_builder_requires_mandatory`, `req_core_metadata_global_wire_names`, `req_core_metadata_malformed_record_is_named` |
 | §7.9.4.2 — resource element table and its four conditional elements | `/req/core/metadata-` | `ResourceMetadata` (`uom`, `domainSet`, `windingOrder`; `tilingScheme` on the global record) | `req_core_geometry_mvalue_resource_uom_roundtrip`, `req_core_coverage_domainset_resource_roundtrip`, `req_core_topology_winding_resource_roundtrip`, `req_core_tiling_tilingscheme_global_roundtrip` |
+| GeoPackage 1.2.1 §2 — user data table SHOULD | `/rec/geopackage/user-data-table` | `MetadataWarning::GpkgWithoutUserData`, `CdbWarning::Metadata` | `gpkg_binding_warning_has_stable_report_shape`, `req_core_metadata_gpkg_fresh_store_has_one_recommendation` |
+
+`/rec/geopackage/user-data-table` is an **OpenCDB local identifier** for the
+unnumbered SHOULD in GeoPackage 1.2.1 §2 (OGC 12-128r15), not an OGC CDB
+requirement URI. Metadata-only containers intentionally lack user data.
+The optional `gpkg-metadata` binding reports one warning per inspected
+supported container; a warning does not defeat CDB conformance. Unsupported
+layouts or a disabled codec abort inspection operationally; they never
+produce a clean report. The [binding contract](GPKG_METADATA.md) describes
+the supported subset.
 
 The §7.9.4.2 conditional-element mechanism is how four optional classes make
 themselves visible at the datastore level; it is also the only signal the

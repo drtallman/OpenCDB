@@ -292,3 +292,184 @@ fn req_core_metadata_gpkg_discovery_propagates_stat_failure() {
         Err(CdbError::Metadata(MetadataError::Io(_)))
     ));
 }
+
+/// The GeoPackage recommendation uses the existing four-field warning wire shape.
+#[test]
+fn gpkg_binding_warning_has_stable_report_shape() {
+    use opencdb::conformance::{CdbWarning, RequirementsClass};
+    use opencdb::metadata::MetadataWarning;
+    let warning = CdbWarning::Metadata(MetadataWarning::GpkgWithoutUserData {
+        file: "/global_metadata/global_metadata.gpkg".to_owned(),
+    });
+    assert_eq!(warning.class(), RequirementsClass::Metadata);
+    assert_eq!(warning.code(), "/rec/geopackage/user-data-table");
+    let wire = serde_json::to_value(warning).unwrap();
+    assert_eq!(wire.as_object().unwrap().len(), 4);
+    assert_eq!(wire["severity"], "warning");
+    assert_eq!(wire["class"], "metadata");
+}
+
+/// A disabled codec cannot mark an unread recognized metadata record as checked.
+#[cfg(not(feature = "gpkg-metadata"))]
+#[test]
+fn gpkg_binding_validation_without_feature_is_operational() {
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = opencdb::SimulationProfile::json();
+    let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+    let path = store.resolve("/Tiles/metadata/Roads.gpkg").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"opaque Gpkg bytes").unwrap();
+    assert!(matches!(
+        store.validate(&profile),
+        Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
+            MetadataEncoding::Gpkg
+        )))
+    ));
+}
+
+#[cfg(feature = "gpkg-metadata")]
+mod conformance {
+    use super::*;
+    use opencdb::conformance::RequirementsClass as Class;
+    use opencdb::metadata::{ResourceMetadata, UnitOfMeasure};
+
+    /// GeoPackage 1.2.1 §2 is a SHOULD: a fresh metadata datastore remains conformant.
+    #[test]
+    fn req_core_metadata_gpkg_fresh_store_has_one_recommendation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = support::GpkgProfile::default();
+        let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(report.is_conformant(), "{report}");
+        assert_eq!(report.warnings(Class::Metadata).len(), 1, "{report}");
+        assert_eq!(
+            report.warnings(Class::Metadata)[0].code(),
+            "/rec/geopackage/user-data-table"
+        );
+    }
+
+    /// Link1/2: an association carried inside Gpkg enters the existing Links stage.
+    #[test]
+    fn req_core_metadata_gpkg_invalid_association_is_a_links_finding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = support::GpkgProfile::default();
+        let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+        let logical = "/Tiles/metadata/Roads.gpkg";
+        let path = store
+            .write_resource_metadata(logical, &ResourceMetadata::new("roads", "Roads", "Network"))
+            .unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        let content: String = db
+            .query_row("SELECT metadata FROM gpkg_metadata", [], |r| r.get(0))
+            .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        value["associations"] = serde_json::json!([{"href":"", "rel":"describes"}]);
+        db.execute("UPDATE gpkg_metadata SET metadata=?1", [value.to_string()])
+            .unwrap();
+        db.close().unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(!report.violations(Class::Links).is_empty(), "{report}");
+        assert_eq!(report.warnings(Class::Metadata).len(), 2, "{report}");
+    }
+
+    /// Coverages6, Tiling10 and Face4 conditional metadata retain their existing stages.
+    #[test]
+    fn req_core_metadata_gpkg_conditional_records_reach_class_stages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = support::GpkgProfile::default();
+        let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+        let mut global = store.global_metadata().unwrap();
+        global.tiling_scheme = Some(opencdb::tiling::TilingScheme::cdb1_global_grid());
+        store.write_global_metadata(&global).unwrap();
+        let mut record = ResourceMetadata::new("roads", "Roads", "Network");
+        record.domain_set = Some(opencdb::coverage::DomainSet::new("m"));
+        record.uom = Some(UnitOfMeasure::Meters);
+        record.winding_order = Some(opencdb::topology::WindingOrder::Clockwise);
+        store
+            .write_resource_metadata("/Tiles/metadata/Roads.gpkg", &record)
+            .unwrap();
+        let report = store.validate(&profile).unwrap();
+        assert!(
+            report
+                .violations(Class::Tiling)
+                .iter()
+                .any(|v| v.code() == "/req/core/tiling-tileset-metadata-elements"),
+            "{report}"
+        );
+        let coverage = |class| {
+            report
+                .classes()
+                .find(|(found, _)| *found == class)
+                .unwrap()
+                .1
+                .coverage
+        };
+        assert_eq!(
+            coverage(Class::Coverages),
+            opencdb::conformance::ContentCoverage::Checked
+        );
+        assert_eq!(
+            coverage(Class::Geometry),
+            opencdb::conformance::ContentCoverage::Unchecked
+        );
+        assert_eq!(
+            coverage(Class::Topology),
+            opencdb::conformance::ContentCoverage::Unchecked
+        );
+        assert_eq!(report.warnings(Class::Metadata).len(), 2);
+    }
+}
+
+/// Container recommendations follow the physical encoding, not a JSON declaration.
+#[test]
+fn gpkg_binding_json_claiming_gpkg_gets_no_container_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = opencdb::SimulationProfile::json();
+    let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+    let path = store.root().join("global_metadata/global_metadata.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["metadataEncoding"] = serde_json::json!("gpkg");
+    std::fs::write(path, document.to_string()).unwrap();
+    let report = store.validate(&profile).unwrap();
+    assert!(!report.is_conformant());
+    assert!(
+        report
+            .warnings(opencdb::conformance::RequirementsClass::Metadata)
+            .is_empty()
+    );
+}
+
+/// Unsupported containers abort; corrupt recognized containers are Metadata findings.
+#[cfg(feature = "gpkg-metadata")]
+#[test]
+fn gpkg_binding_validation_distinguishes_corrupt_and_unsupported_containers() {
+    use opencdb::metadata::ResourceMetadata;
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = support::GpkgProfile::default();
+    let store = CdbDatastore::create(tmp.path(), &profile, support::seed()).unwrap();
+    let path = store
+        .write_resource_metadata(
+            "/Tiles/metadata/Roads.gpkg",
+            &ResourceMetadata::new("roads", "Roads", "Network"),
+        )
+        .unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE payload (id INTEGER)")
+        .unwrap();
+    db.close().unwrap();
+    assert!(matches!(
+        store.validate(&profile),
+        Err(CdbError::Metadata(
+            MetadataError::UnsupportedContainer { .. }
+        ))
+    ));
+    std::fs::write(path, b"corrupt container").unwrap();
+    let report = store.validate(&profile).unwrap();
+    assert!(
+        report
+            .violations(opencdb::conformance::RequirementsClass::Metadata)
+            .iter()
+            .any(|v| v.code() == "/req/core/metadata-encoding")
+    );
+}

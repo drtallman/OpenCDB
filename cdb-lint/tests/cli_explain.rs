@@ -85,7 +85,7 @@ fn cli_explain_list_prints_every_row() {
 
     let lines: Vec<&str> = run.out.lines().collect();
     assert_eq!(lines.len(), CATALOGUE.len(), "one line per row");
-    assert_eq!(lines.len(), 82, "the vocabulary is 82 codes");
+    assert_eq!(lines.len(), 83, "the vocabulary is 83 codes");
 
     for (line, entry) in lines.iter().zip(CATALOGUE) {
         assert!(
@@ -287,4 +287,14 @@ fn cli_explain_resolves_every_catalogued_code() {
         assert!(run.out.contains(entry.gloss), "{}: {}", entry.code, run.out);
         assert_eq!(lookup(entry.code), Some(entry));
     }
+}
+
+/// The metadata-container warning cites GeoPackage, not the CDB Core document.
+#[test]
+fn cli_explain_geopackage_recommendation_names_its_own_standard() {
+    let run = lint(&["explain", "/rec/geopackage/user-data-table"]);
+    assert_eq!(run.code, exit::OK, "{}", run.err);
+    assert!(run.out.contains("OGC 12-128r15 §2"), "{}", run.out);
+    assert!(!run.out.contains("OGC 23-034"));
+    assert!(run.out.contains("GeoPackage"));
 }

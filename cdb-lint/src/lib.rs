@@ -136,9 +136,10 @@ fn explain(args: &cli::ExplainArgs, out: &mut dyn Write, err: &mut dyn Write) ->
 /// One catalogue row, rendered for a reader.
 fn describe(entry: &catalogue::Entry) -> String {
     format!(
-        "{}\n  class    {}\n  spec     OGC 23-034 §{}\n  {}\n",
+        "{}\n  class    {}\n  spec     {} §{}\n  {}\n",
         entry.code,
         class_line(entry.class),
+        entry.specification(),
         entry.section,
         entry.gloss
     )

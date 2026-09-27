@@ -363,9 +363,15 @@ fn cli_sarif_rules_cite_the_spec_and_synthesize_no_help_uri() {
             "no code yields a dereferenceable URL: {rule}"
         );
         let help = rule["help"]["text"].as_str().expect("help.text");
-        assert!(
-            help.starts_with("OGC 23-034 (http://www.opengis.net/doc/IS/CDB-core/2.0) §"),
-            "{help}"
+        let entry = cdb_lint::catalogue::lookup(rule["id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            help,
+            format!(
+                "{} ({}) §{}",
+                entry.specification(),
+                entry.specification_uri(),
+                entry.section
+            )
         );
         assert!(
             rule["shortDescription"]["text"].is_string(),

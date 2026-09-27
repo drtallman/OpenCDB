@@ -88,6 +88,26 @@ pub enum MetadataViolation {
     Link(#[from] LinkViolation),
 }
 
+/// A SHOULD finding from a supported metadata container specification.
+/// Kept separate from errors: the recommendation never makes CDB non-conformant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MetadataWarning {
+    /// GeoPackage 1.2.1 §2 recommends at least one user data table.
+    GpkgWithoutUserData { file: String },
+}
+
+impl fmt::Display for MetadataWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GpkgWithoutUserData { file } => write!(
+                f,
+                "metadata container {file:?} has no user data table; GeoPackage 1.2.1 §2 recommends at least one"
+            ),
+        }
+    }
+}
+
 /// Operational errors for metadata I/O.
 #[derive(Debug, Error)]
 #[non_exhaustive]

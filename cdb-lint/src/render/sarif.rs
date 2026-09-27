@@ -113,11 +113,6 @@ const DATASTORE_ROOT: &str = "DATASTORE_ROOT";
 /// The location of a finding that has none of its own: the datastore itself.
 const ROOT_URI: &str = ".";
 
-/// OGC 23-034's verified identity — its internal reference number and its
-/// external identifier, both read out of the standard's front matter — quoted
-/// in every rule's `help.text` in place of a URL that would not resolve.
-const SPEC: &str = "OGC 23-034 (http://www.opengis.net/doc/IS/CDB-core/2.0)";
-
 /// SARIF's `baselineState` for a result the baseline already recorded.
 const UNCHANGED: &str = "unchanged";
 
@@ -298,7 +293,7 @@ fn rule(entry: &catalogue::Entry) -> Value {
     json!({
         "id": entry.code,
         "shortDescription": { "text": entry.gloss },
-        "help": { "text": format!("{SPEC} §{}", entry.section) },
+        "help": { "text": format!("{} ({}) §{}", entry.specification(), entry.specification_uri(), entry.section) },
         "properties": properties,
     })
 }

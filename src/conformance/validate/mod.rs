@@ -24,7 +24,9 @@ use crate::datastore::{CdbDatastore, path_extension};
 use crate::error::CdbError;
 use crate::hierarchy::{GLOBAL_METADATA_DIR, HierarchyError};
 use crate::metadata::{
-    GlobalMetadata, MetadataError, MetadataViolation, ResourceMetadata, encoding_violations,
+    GlobalMetadata, MetadataError, MetadataViolation, MetadataWarning, ResourceMetadata,
+    encoding_violations,
+    gpkg::{self, RecordKind},
 };
 use crate::naming::{
     NamingWarning, StyleGuide, component_warnings, file_warnings, guard_eq, split_extension,
@@ -126,7 +128,18 @@ pub fn validate(
     // file's encoding (Metadata5). The parsed record is kept: the declared
     // optional classes read their §7.9.4.2 conditional elements off it.
     let mut global_record = None;
-    match GlobalMetadata::read_from(datastore.layout()) {
+    let read_global = (|| {
+        let logical = GlobalMetadata::locate(datastore.layout())?;
+        if path_extension(&logical) == Some("gpkg") {
+            let physical = datastore.root().join(logical.trim_start_matches('/'));
+            let document = gpkg::read_document(&physical, RecordKind::Global)?;
+            record_gpkg_warning(&mut report, &logical);
+            GlobalMetadata::from_json_str(&document)
+        } else {
+            GlobalMetadata::read_from(datastore.layout())
+        }
+    })();
+    match read_global {
         Ok(global) => {
             if global.encoding != profile.metadata_encoding() {
                 report.record_violation(CdbViolation::DeclarationMismatch {
@@ -262,23 +275,25 @@ pub fn validate(
             continue;
         }
         let extension = path_extension(logical_path).map(str::to_ascii_lowercase);
-        if extension.as_deref() == Some("gpkg") {
-            // The core cannot parse the GeoPackage container; its encoding
-            // mismatch (if any) was already recorded by the Metadata5 sweep.
-            continue;
-        }
         let physical = match datastore.resolve(logical_path) {
             Ok(path) => path,
             // A resolve failure is a naming violation the File Naming walk
             // already recorded; skip rather than abort validation.
             Err(_) => continue,
         };
-        let content = fs::read_to_string(&physical).map_err(MetadataError::from)?;
-        // `from_*_str` deserialize *and* validate, so a bad link or missing
-        // element surfaces here as `Err(Violation(..))`.
-        let parsed = match extension.as_deref() {
-            Some("xml") => ResourceMetadata::from_xml_str(&content),
-            _ => ResourceMetadata::from_json_str(&content),
+        // Inspect containers before parsing their JSON record. A supported
+        // container earns its recommendation even when the CDB record is invalid.
+        let parsed = if extension.as_deref() == Some("gpkg") {
+            gpkg::read_document(&physical, RecordKind::Resource).and_then(|document| {
+                record_gpkg_warning(&mut report, logical_path);
+                ResourceMetadata::from_json_str(&document)
+            })
+        } else {
+            let content = fs::read_to_string(&physical).map_err(MetadataError::from)?;
+            match extension.as_deref() {
+                Some("xml") => ResourceMetadata::from_xml_str(&content),
+                _ => ResourceMetadata::from_json_str(&content),
+            }
         };
         match parsed {
             Ok(record) => {
@@ -380,7 +395,7 @@ pub fn validate(
 /// parses the resource metadata records.
 ///
 /// **Every signal is a directory entry or a parsed metadata element — never a
-/// payload byte.** The crate does not decode GeoPackage containers or raster
+/// payload byte.** The crate does not decode GeoPackage payloads or raster
 /// files, so "this datastore holds topology" means *a resource metadata
 /// record carries the Face4 `windingOrder` conditional element*, and "this
 /// datastore holds a coverage" means *a record carries the Coverages6
@@ -596,19 +611,18 @@ fn record_metadata_error(
             );
             Ok(())
         }
-        MetadataError::UnsupportedEncoding(encoding) => {
-            report.record_violation(
-                MetadataViolation::Malformed {
-                    reason: about(format!(
-                        "declares the {encoding} encoding the core cannot read"
-                    )),
-                }
-                .into(),
-            );
-            Ok(())
-        }
         other => Err(other.into()),
     }
+}
+
+/// The supported binding has no user data; GeoPackage 1.2.1 §2 recommends it.
+fn record_gpkg_warning(report: &mut ConformanceReport, logical: &str) {
+    report.record_warning(
+        MetadataWarning::GpkgWithoutUserData {
+            file: logical.to_owned(),
+        }
+        .into(),
+    );
 }
 
 #[cfg(test)]

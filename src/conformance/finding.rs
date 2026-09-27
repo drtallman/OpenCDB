@@ -27,7 +27,7 @@ use crate::crs::{CrsViolation, CrsWarning};
 use crate::geometry::GeometryViolation;
 use crate::hierarchy::{HierarchyViolation, HierarchyWarning};
 use crate::links::LinkViolation;
-use crate::metadata::MetadataViolation;
+use crate::metadata::{MetadataViolation, MetadataWarning};
 use crate::naming::{NamingViolation, NamingWarning};
 use crate::tiling::{TilingViolation, TilingWarning};
 use crate::topology::TopologyViolation;
@@ -460,6 +460,8 @@ pub enum CdbWarning {
     Coverage(CoverageWarning),
     /// A Tiling recommendation finding (spec §7.10).
     Tiling(TilingWarning),
+    /// A metadata-container recommendation (GeoPackage 1.2.1 §2).
+    Metadata(MetadataWarning),
     /// The datastore language is not English (Recommendation Name3-B); English
     /// is recommended for interoperability.
     LanguageNotEnglish { language: String },
@@ -477,6 +479,7 @@ impl CdbWarning {
             CdbWarning::Crs(_) => RequirementsClass::Crs,
             CdbWarning::Coverage(_) => RequirementsClass::Coverages,
             CdbWarning::Tiling(_) => RequirementsClass::Tiling,
+            CdbWarning::Metadata(_) => RequirementsClass::Metadata,
         }
     }
 
@@ -532,6 +535,10 @@ impl CdbWarning {
             CdbWarning::Tiling(TilingWarning::NonExtensionScheme { .. }) => {
                 "/rec/core/tiling-extension"
             }
+            // Local identifier for the unnumbered SHOULD in GeoPackage 1.2.1 §2.
+            CdbWarning::Metadata(MetadataWarning::GpkgWithoutUserData { .. }) => {
+                "/rec/geopackage/user-data-table"
+            }
             CdbWarning::LanguageNotEnglish { .. } => "/req/core/name-language-B",
         }
     }
@@ -576,6 +583,12 @@ impl From<TilingWarning> for CdbWarning {
     }
 }
 
+impl From<MetadataWarning> for CdbWarning {
+    fn from(warning: MetadataWarning) -> Self {
+        CdbWarning::Metadata(warning)
+    }
+}
+
 impl fmt::Display for CdbWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -584,6 +597,7 @@ impl fmt::Display for CdbWarning {
             CdbWarning::Crs(warning) => warning.fmt(f),
             CdbWarning::Coverage(warning) => warning.fmt(f),
             CdbWarning::Tiling(warning) => warning.fmt(f),
+            CdbWarning::Metadata(warning) => warning.fmt(f),
             CdbWarning::LanguageNotEnglish { language } => write!(
                 f,
                 "datastore language {language:?}; English is recommended \
