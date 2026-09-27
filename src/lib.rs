@@ -42,6 +42,19 @@
 //!   part of its type, so `[RequirementsClass; 11]` would have made a
 //!   twelfth class a `2.0` break and quietly cancelled the promise above.
 //!
+//! # Optional GeoPackage metadata
+//!
+//! Enable `gpkg-metadata` and select [`metadata::MetadataEncoding::Gpkg`]
+//! from a custom [`ApplicationProfile`] to read and write the OpenCDB
+//! single-document binding for GeoPackage 1.2.1. Global/resource records
+//! and versioning manifests use existing public APIs; SQLite stays private.
+//! `docs/GPKG_METADATA.md` specifies the binding and its limits. The built-in
+//! simulation and GNOSIS profiles keep their JSON/XML policy.
+//!
+//! Unsupported layouts or an unavailable codec abort inspection
+//! operationally. Supported metadata-only containers carry a GeoPackage
+//! recommendation warning; geometry, raster and model payloads remain opaque.
+//!
 //! # Example
 //!
 //! Create a datastore from the default simulation profile and validate it

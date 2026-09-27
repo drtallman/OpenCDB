@@ -52,6 +52,26 @@ let report = datastore.validate(&profile)?;
 assert!(report.is_conformant());
 ```
 
+### Optional GeoPackage metadata
+
+This checkout supports the `gpkg-metadata` feature for custom application
+profiles declaring `MetadataEncoding::Gpkg`. It stores global/resource
+metadata and collection manifests using the documented
+[OpenCDB GeoPackage 1.2.1 binding](docs/GPKG_METADATA.md). SQLite is bundled
+and optional; default builds and the built-in profiles keep their existing
+behavior. Spatial payloads remain opaque.
+
+```sh
+cargo run --example gpkg_metadata --features gpkg-metadata -- /tmp/gpkg-example
+```
+
+The example creates `/tmp/gpkg-example/cdb` only when an explicit destination
+is supplied, refuses an existing datastore, and prints a conformance report.
+A supported metadata container has no user data table, so its report includes
+the GeoPackage recommendation warning. See [the linter's opt-in descriptor](cdb-lint/README.md#optional-geopackage-metadata)
+for checking the same binding from the command line. No release version or
+publication is implied by this source-checkout feature.
+
 ## The linter
 
 ```sh

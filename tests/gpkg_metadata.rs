@@ -473,3 +473,269 @@ fn gpkg_binding_validation_distinguishes_corrupt_and_unsupported_containers() {
             .any(|v| v.code() == "/req/core/metadata-encoding")
     );
 }
+
+#[cfg(feature = "gpkg-metadata")]
+mod spec_fields {
+    use super::*;
+    use opencdb::conformance::RequirementsClass;
+    use opencdb::metadata::{
+        Bbox, CharacterSet, Extent, MetadataStandard, ResourceMetadata, ResourceType, Temporal,
+        UnitOfMeasure,
+    };
+    use serde_json::{Value, json};
+
+    fn set_document(path: &std::path::Path, document: &Value) {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute(
+            "UPDATE gpkg_metadata SET metadata=?1",
+            [document.to_string()],
+        )
+        .unwrap();
+        db.close().unwrap();
+    }
+
+    /// §7.9.4.1/.2 and conditional Geom4/Coverages6/Tiling8/Face4 preserve every field.
+    #[test]
+    fn req_core_metadata_gpkg_all_fields_and_precise_values_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &support::GpkgProfile::default(),
+            support::seed(),
+        )
+        .unwrap();
+        let mut global = store.global_metadata().unwrap();
+        global.created = support::ts("2026-09-27T12:00:00.123456789Z");
+        global.update = Some(support::ts("2026-09-27T13:00:00.987654321Z"));
+        global.temporal =
+            Some(Temporal::parse("2026-09-01T00:00:00Z/2026-09-30T00:00:00Z").unwrap());
+        global.access_rights = Some("public".into());
+        global.license = Some("CC-BY-4.0".into());
+        global.tiling_scheme = Some(opencdb::tiling::TilingScheme::cdb1_global_grid());
+        store.write_global_metadata(&global).unwrap();
+        let domain = opencdb::coverage::DomainSet {
+            uom: "m".into(),
+            precision: 0.12345678901234568,
+            scale: 1.2345678901234567,
+            offset: -0.12345678901234568,
+            data_null: Some(-9999.123456789013),
+            grid_cell_encoding: opencdb::coverage::GridCellEncoding::ValueIsCorner,
+            which_corner: Some(opencdb::coverage::GridCorner::UpperRight),
+            field_type: "Depth".into(),
+            quantity_definition: Some("Depth below sea level".into()),
+        };
+        let resource = ResourceMetadata {
+            id: "all-fields".into(),
+            resource_type: ResourceType::Dataset,
+            title: "Bathymetry".into(),
+            description: "A complete record".into(),
+            keywords: vec!["depth".into()],
+            keywords_codespace: Some("https://example.com/keywords".into()),
+            external_id: Some("urn:example:depth".into()),
+            publisher: Some("OpenCDB".into()),
+            created: Some(global.created),
+            updated: global.update,
+            themes: vec!["ocean".into()],
+            formats: vec![opencdb::media_types::MediaType::parse(
+                "application/geopackage+sqlite3",
+            )],
+            contact_point: Some("ops@example.com".into()),
+            license: Some("CC-BY-4.0".into()),
+            rights: Some("public".into()),
+            uom: Some(UnitOfMeasure::Meters),
+            domain_set: Some(domain.clone()),
+            winding_order: Some(opencdb::topology::WindingOrder::Counterclockwise),
+            extent: Some(Extent {
+                spatial: Some(Bbox {
+                    west: -122.12345678901235,
+                    south: 36.0,
+                    east: -121.0,
+                    north: 38.0,
+                }),
+                temporal: global.temporal.clone(),
+            }),
+            associations: vec![
+                opencdb::links::Link::new("https://example.com/depth", "describes")
+                    .unwrap()
+                    .with_media_type("application/geopackage+sqlite3")
+                    .with_title("Depth"),
+            ],
+            character_set: CharacterSet::Utf16,
+        };
+        store
+            .write_resource_metadata("/Tiles/metadata/Depth.gpkg", &resource)
+            .unwrap();
+        let reopened = CdbDatastore::open(store.root()).unwrap();
+        assert_eq!(reopened.global_metadata().unwrap(), global);
+        let actual = reopened
+            .read_resource_metadata("/Tiles/metadata/Depth.gpkg")
+            .unwrap();
+        assert_eq!(actual, resource);
+        let actual = actual.domain_set.unwrap();
+        for (expected, found) in [
+            (domain.precision, actual.precision),
+            (domain.scale, actual.scale),
+            (domain.offset, actual.offset),
+            (domain.data_null.unwrap(), actual.data_null.unwrap()),
+        ] {
+            assert_eq!(expected.to_bits(), found.to_bits());
+        }
+    }
+
+    /// Metadata2/7/8: all declared standards, units, and bounded/half-bounded forms survive.
+    #[test]
+    fn req_core_metadata_gpkg_standards_units_and_temporal_forms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &support::GpkgProfile::default(),
+            support::seed(),
+        )
+        .unwrap();
+        let mut global = store.global_metadata().unwrap();
+        for standard in MetadataStandard::ALL {
+            global.metadata_standard = standard;
+            store.write_global_metadata(&global).unwrap();
+            assert_eq!(store.global_metadata().unwrap().metadata_standard, standard);
+        }
+        for uom in [
+            UnitOfMeasure::Meters,
+            UnitOfMeasure::Feet,
+            UnitOfMeasure::Kilometers,
+            UnitOfMeasure::Miles,
+        ] {
+            global.uom = uom;
+            store.write_global_metadata(&global).unwrap();
+            assert_eq!(store.global_metadata().unwrap().uom, uom);
+        }
+        for text in [
+            "2026-09-01T00:00:00Z/2026-09-30T00:00:00Z",
+            "../2026-09-30T00:00:00Z",
+            "2026-09-01T00:00:00Z/..",
+            "/2026-09-30T00:00:00Z",
+            "2026-09-01T00:00:00Z/",
+        ] {
+            global.temporal = Some(Temporal::parse(text).unwrap());
+            store.write_global_metadata(&global).unwrap();
+            assert_eq!(store.global_metadata().unwrap().temporal, global.temporal);
+            let mut record = ResourceMetadata::new("r", "Roads", "Network");
+            record.extent = Some(Extent {
+                spatial: None,
+                temporal: global.temporal.clone(),
+            });
+            store
+                .write_resource_metadata("/Tiles/metadata/Roads.gpkg", &record)
+                .unwrap();
+            assert_eq!(
+                store
+                    .read_resource_metadata("/Tiles/metadata/Roads.gpkg")
+                    .unwrap(),
+                record
+            );
+        }
+    }
+
+    fn assert_metadata_finding(store: &CdbDatastore, code: &str) {
+        let report = store.validate(&support::GpkgProfile::default()).unwrap();
+        let finding = report
+            .violations(RequirementsClass::Metadata)
+            .iter()
+            .find(|v| v.code() == code)
+            .unwrap_or_else(|| panic!("missing {code}: {report}"));
+        assert_eq!(
+            serde_json::to_value(finding).unwrap()["severity"],
+            "violation"
+        );
+    }
+
+    /// Metadata1–8 and §7.9.4.1: container encoding never bypasses mandatory/global validators.
+    #[test]
+    fn req_core_metadata_gpkg_global_field_rejections_keep_existing_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &support::GpkgProfile::default(),
+            support::seed(),
+        )
+        .unwrap();
+        let path = store.root().join("global_metadata/global_metadata.gpkg");
+        let original = serde_json::to_value(store.global_metadata().unwrap()).unwrap();
+        for (field, value) in [
+            ("metadataStandard", json!("unknown")),
+            ("metadataEncoding", json!("csv")),
+            ("language", json!("en_US!")),
+            ("uom", json!("cm")),
+            ("created", json!("2026-09-27T12:00:00-04:00")),
+            ("update", json!("2026-09-27T12:00:00+02:00")),
+            ("temporal", json!("../..")),
+            (
+                "temporal",
+                json!("2026-09-30T00:00:00Z/2026-09-01T00:00:00Z"),
+            ),
+        ] {
+            let mut document = original.clone();
+            document[field] = value;
+            set_document(&path, &document);
+            assert!(store.global_metadata().is_err(), "{field}");
+            assert_metadata_finding(&store, "/req/core/metadata-encoding");
+        }
+        for field in [
+            "ID",
+            "title",
+            "description",
+            "contactPoint",
+            "created",
+            "language",
+            "metadataStandard",
+            "metadataEncoding",
+            "uom",
+        ] {
+            let mut document = original.clone();
+            document.as_object_mut().unwrap().remove(field);
+            set_document(&path, &document);
+            assert!(store.global_metadata().is_err(), "missing {field}");
+            assert_metadata_finding(&store, "/req/core/metadata-encoding");
+        }
+    }
+
+    /// §7.9.4.2/Metadata6: type, mandatory elements and UTC remain enforced inside Gpkg.
+    #[test]
+    fn req_core_metadata_gpkg_resource_field_rejections_keep_existing_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CdbDatastore::create(
+            tmp.path(),
+            &support::GpkgProfile::default(),
+            support::seed(),
+        )
+        .unwrap();
+        let logical = "/Tiles/metadata/Roads.gpkg";
+        let record = ResourceMetadata::new("r", "Roads", "Network");
+        let path = store.write_resource_metadata(logical, &record).unwrap();
+        let original = serde_json::to_value(record).unwrap();
+        for (field, value) in [
+            ("type", json!("feature")),
+            ("uom", json!("cm")),
+            ("created", json!("2026-09-27T12:00:00-04:00")),
+            ("updated", json!("2026-09-27T12:00:00+02:00")),
+            ("extent", json!({"temporal":"../.."})),
+            ("CharacterSetCode", json!("ascii")),
+            ("windingOrder", json!("unknown")),
+        ] {
+            let mut document = original.clone();
+            document[field] = value;
+            set_document(&path, &document);
+            assert!(store.read_resource_metadata(logical).is_err(), "{field}");
+            assert_metadata_finding(&store, "/req/core/metadata-encoding");
+        }
+        for field in ["ID", "type", "title", "description"] {
+            let mut document = original.clone();
+            document.as_object_mut().unwrap().remove(field);
+            set_document(&path, &document);
+            assert!(
+                store.read_resource_metadata(logical).is_err(),
+                "missing {field}"
+            );
+            assert_metadata_finding(&store, "/req/core/metadata-encoding");
+        }
+    }
+}

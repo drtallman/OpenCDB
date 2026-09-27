@@ -53,7 +53,8 @@ const RESOURCE_METADATA_EXTENSIONS: [&str; 3] = ["json", "xml", "gpkg"];
 /// construction choice is the metadata encoding, JSON ([`Self::json`]) or
 /// XML ([`Self::xml`]) per Requirement Metadata5. The third Metadata5
 /// encoding, GeoPackage, is unrepresentable by construction: no constructor
-/// accepts an encoding value, and the core cannot write that container.
+/// accepts an encoding value. Custom profiles may select the optional
+/// `gpkg-metadata` binding.
 #[derive(Debug, Clone)]
 pub struct SimulationProfile {
     encoding: MetadataEncoding,
@@ -256,7 +257,7 @@ mod tests {
     /// constructor pins — `json()` -> JSON, `xml()` -> XML, `Default` -> JSON.
     /// `Gpkg` is unrepresentable by construction: no constructor accepts an
     /// encoding, so a simulation datastore can never declare the container
-    /// encoding the core cannot write.
+    /// encoding outside this built-in profile's policy.
     #[test]
     fn req_core_metadata_encoding_simulation_json_or_xml() {
         assert_eq!(

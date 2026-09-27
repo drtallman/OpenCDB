@@ -638,9 +638,22 @@ an ecosystem.
   fixtures were unavailable on this macOS volume; helper checks do not establish
   Linux-native verification. Final whole-branch review follows task acceptance;
   this status does not declare the milestone released or published.
-- **GeoPackage metadata encoding** — lift the deliberate
-  `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
-  (needs a sqlite/gpkg dependency; keep out of the core path).
+- **GeoPackage metadata encoding — implemented, unreleased.** The optional
+  `gpkg-metadata` feature supplies the [document binding](GPKG_METADATA.md)
+  for GeoPackage 1.2.1 (12-128r15), the edition cited by the bundled Core.
+  It covers global/resource metadata and collection manifests through existing
+  APIs, with preparation before collection mutation and atomic document
+  replacement. The linter forwards an explicit opt-in; default dependency
+  trees omit SQLite and built-in profile policies remain JSON/XML. Optional
+  `rusqlite` 0.40.2 uses bundled SQLite plus serialization to prepare complete
+  containers without requiring native-library installation; optional `tempfile`
+  stages sibling replacements. Unsupported layouts remain operational errors;
+  the absence of user data yields a locally identified GeoPackage SHOULD
+  warning. Attr1-C/Metadata5 still rule out a required attribute model in this
+  binding. Independent SQL fixtures, field-level metadata tests, journal
+  round trips, preflight snapshots and CLI honesty tests cover the boundary.
+  Geometry, raster and model payloads remain opaque; no version bump, tag or
+  publication is part of this follow-on.
 - **Content codecs** — imagery/raster and model payload decode (feature-
   gated `gdal` or pure-Rust codecs) so "work with CDB" extends from
   structure/metadata into content; explicitly outside Part 1 Core scope.
