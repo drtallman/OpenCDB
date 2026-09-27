@@ -63,3 +63,30 @@ pub(super) fn open_readonly(path: &Path) -> Result<Connection, MetadataError> {
         .map_err(sql_error)?;
     Ok(conn)
 }
+
+/// One-file publication. The persist seam permits deterministic failure tests.
+pub(super) fn install_with(
+    prepared: super::PreparedWrite,
+    persist: impl FnOnce(tempfile::NamedTempFile, &Path) -> Result<(), std::io::Error>,
+) -> Result<std::path::PathBuf, MetadataError> {
+    let parent = prepared.target.parent().ok_or_else(|| {
+        MetadataError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "metadata path has no parent",
+        ))
+    })?;
+    let permissions = match std::fs::metadata(&prepared.target) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    std::fs::create_dir_all(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::Write::write_all(&mut staged, &prepared.bytes)?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    staged.as_file().sync_all()?;
+    persist(staged, &prepared.target)?;
+    Ok(prepared.target)
+}

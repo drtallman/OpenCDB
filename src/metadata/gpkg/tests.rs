@@ -289,3 +289,177 @@ fn gpkg_binding_rejects_invalid_reserved_crs_definition() {
         );
     }
 }
+
+fn timestamp() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2026-09-27T12:00:00.123Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+/// Writer output is inspected independently against OGC 12-128r15 Annex C/F.8.
+#[test]
+fn gpkg_binding_writer_emits_registered_metadata_extension() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("record.gpkg");
+    prepare_write(
+        &path,
+        RecordKind::Resource,
+        r#"{"ID":"writer"}"#,
+        timestamp(),
+    )
+    .unwrap()
+    .install()
+    .unwrap();
+    let db =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let app: i64 = db
+        .pragma_query_value(None, "application_id", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 10200);
+    assert_eq!(app, 0x4750_4B47);
+    let registrations: i64 = db.query_row("SELECT count(*) FROM gpkg_extensions WHERE extension_name='gpkg_metadata' AND scope='read-write' AND column_name IS NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(registrations, 2);
+    let rows: i64 = db.query_row("SELECT count(*) FROM gpkg_spatial_ref_sys WHERE (srs_id IN (-1,0) AND organization='NONE' AND organization_coordsys_id=srs_id AND definition='undefined') OR (srs_id=4326 AND organization='EPSG' AND organization_coordsys_id=4326)", [], |r| r.get(0)).unwrap();
+    assert_eq!(rows, 3);
+    let broken: i64 = db
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(broken, 0);
+    let check: String = db
+        .pragma_query_value(None, "quick_check", |r| r.get(0))
+        .unwrap();
+    assert_eq!(check, "ok");
+    let (stamp, valid): (String, bool) = db.query_row("SELECT timestamp, reference_scope='geopackage' AND table_name IS NULL AND column_name IS NULL AND row_id_value IS NULL AND md_parent_id IS NULL FROM gpkg_metadata_reference", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(stamp, "2026-09-27T12:00:00.123Z");
+    assert!(valid);
+    let (uri, mime, json): (String, String, String) = db
+        .query_row(
+            "SELECT md_standard_uri, mime_type, metadata FROM gpkg_metadata",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        uri,
+        "https://github.com/drtallman/OpenCDB/blob/main/docs/GPKG_METADATA.md#resource-v1"
+    );
+    assert_eq!(mime, "application/json");
+    assert_eq!(json, r#"{"ID":"writer"}"#);
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+}
+
+/// Replacement may not erase another document in a valid larger container.
+#[test]
+fn gpkg_binding_writer_refuses_extra_content_without_mutation() {
+    let (tmp, path) = fixture();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("INSERT INTO gpkg_metadata SELECT 43,md_scope,md_standard_uri,mime_type,metadata FROM gpkg_metadata").unwrap();
+    db.close().unwrap();
+    let before = directory_snapshot(tmp.path());
+    assert!(matches!(
+        prepare_write(&path, RecordKind::Resource, "{}", timestamp()),
+        Err(MetadataError::UnsupportedContainer { .. })
+    ));
+    assert_eq!(directory_snapshot(tmp.path()), before);
+}
+
+/// Preparation creates nothing; install creates parents and publishes one file.
+#[test]
+fn gpkg_binding_writer_prepares_before_io_and_replaces_valid_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("new/metadata");
+    let path = parent.join("record.gpkg");
+    let prepared = prepare_write(&path, RecordKind::Global, "{}", timestamp()).unwrap();
+    assert!(!parent.exists());
+    prepared.install().unwrap();
+    assert_eq!(read_document(&path, RecordKind::Global).unwrap(), "{}");
+    prepare_write(
+        &path,
+        RecordKind::Global,
+        r#"{"ID":"replacement"}"#,
+        timestamp(),
+    )
+    .unwrap()
+    .install()
+    .unwrap();
+    assert_eq!(
+        read_document(&path, RecordKind::Global).unwrap(),
+        r#"{"ID":"replacement"}"#
+    );
+    assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
+}
+
+/// Invalid JSON must fail before creating any directories or replacing bytes.
+#[test]
+fn gpkg_binding_writer_rejects_invalid_json_before_mutation() {
+    let (tmp, path) = fixture();
+    let before = directory_snapshot(tmp.path());
+    assert!(matches!(
+        prepare_write(&path, RecordKind::Resource, "not JSON", timestamp()),
+        Err(MetadataError::Serialization(_))
+    ));
+    assert_eq!(directory_snapshot(tmp.path()), before);
+    let missing = tmp.path().join("missing/new.gpkg");
+    assert!(prepare_write(&missing, RecordKind::Resource, "{", timestamp()).is_err());
+    assert!(!missing.parent().unwrap().exists());
+}
+
+/// An install failure preserves old bytes and removes the temporary sibling.
+#[test]
+fn gpkg_binding_writer_failed_persist_preserves_old_file_and_cleans_staging() {
+    let (tmp, path) = fixture();
+    let before = directory_snapshot(tmp.path());
+    let prepared =
+        prepare_write(&path, RecordKind::Resource, r#"{"ID":"new"}"#, timestamp()).unwrap();
+    assert_eq!(directory_snapshot(tmp.path()), before);
+    let result = io::install_with(prepared, |file, target| {
+        assert_eq!(target, path);
+        assert_eq!(std::fs::read(&path).unwrap(), before[0].1);
+        drop(file);
+        Err(std::io::Error::other("injected persist failure"))
+    });
+    assert!(matches!(result, Err(MetadataError::Io(_))));
+    assert_eq!(directory_snapshot(tmp.path()), before);
+}
+
+/// Replacing a metadata document preserves its access permissions.
+#[test]
+#[cfg(unix)]
+fn gpkg_binding_writer_preserves_destination_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_tmp, path) = fixture();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    prepare_write(&path, RecordKind::Resource, "{}", timestamp())
+        .unwrap()
+        .install()
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+}
+
+/// Corrupt input and a different document kind must never be overwritten.
+#[test]
+fn gpkg_binding_writer_refuses_corrupt_or_wrong_kind_targets() {
+    let (tmp, path) = fixture();
+    let before = directory_snapshot(tmp.path());
+    assert!(matches!(
+        prepare_write(&path, RecordKind::Collection, "{}", timestamp()),
+        Err(MetadataError::UnsupportedContainer { .. })
+    ));
+    assert_eq!(directory_snapshot(tmp.path()), before);
+    std::fs::write(&path, b"corrupt input").unwrap();
+    let before = directory_snapshot(tmp.path());
+    assert!(matches!(
+        prepare_write(&path, RecordKind::Resource, "{}", timestamp()),
+        Err(MetadataError::Serialization(_))
+    ));
+    assert_eq!(directory_snapshot(tmp.path()), before);
+}

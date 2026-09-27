@@ -53,3 +53,73 @@ fn unsupported(reason: impl Into<String>) -> MetadataError {
         reason: reason.into(),
     }
 }
+
+pub(crate) struct PreparedWrite {
+    target: std::path::PathBuf,
+    bytes: Vec<u8>,
+}
+
+#[cfg(not(feature = "gpkg-metadata"))]
+pub(crate) fn prepare_write(
+    _target: &Path,
+    _kind: RecordKind,
+    _json: &str,
+    _timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<PreparedWrite, MetadataError> {
+    Err(MetadataError::UnsupportedEncoding(MetadataEncoding::Gpkg))
+}
+
+#[cfg(feature = "gpkg-metadata")]
+pub(crate) fn prepare_write(
+    target: &Path,
+    kind: RecordKind,
+    json: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<PreparedWrite, MetadataError> {
+    match std::fs::symlink_metadata(target) {
+        Ok(_) => {
+            let existing = read_document(target, kind)?;
+            let _: serde_json::Value = serde_json::from_str(&existing).map_err(super::ser_err)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let _: serde_json::Value = serde_json::from_str(json).map_err(super::ser_err)?;
+    let mut connection = rusqlite::Connection::open_in_memory().map_err(io::sql_error)?;
+    {
+        let tx = connection.transaction().map_err(io::sql_error)?;
+        tx.execute_batch(include_str!("schema.sql"))
+            .map_err(io::sql_error)?;
+        tx.execute("INSERT INTO gpkg_metadata (id,md_scope,md_standard_uri,mime_type,metadata) VALUES (1,'dataset',?1,'application/json',?2)",
+            [kind.schema_uri(), json]).map_err(io::sql_error)?;
+        tx.execute("INSERT INTO gpkg_metadata_reference (reference_scope,table_name,column_name,row_id_value,timestamp,md_file_id,md_parent_id) VALUES ('geopackage',NULL,NULL,NULL,?1,1,NULL)",
+            [timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)]).map_err(io::sql_error)?;
+        tx.commit().map_err(io::sql_error)?;
+    }
+    // Keep PreparedWrite an invariant: the entire container is valid before I/O.
+    schema::read_document(&connection, kind)?;
+    let bytes = connection
+        .serialize("main")
+        .map_err(io::sql_error)?
+        .to_vec();
+    connection
+        .close()
+        .map_err(|(_, error)| io::sql_error(error))?;
+    Ok(PreparedWrite {
+        target: target.to_owned(),
+        bytes,
+    })
+}
+
+impl PreparedWrite {
+    #[cfg(feature = "gpkg-metadata")]
+    pub(crate) fn install(self) -> Result<std::path::PathBuf, MetadataError> {
+        io::install_with(self, |file, path| {
+            file.persist(path).map(|_| ()).map_err(|error| error.error)
+        })
+    }
+    #[cfg(not(feature = "gpkg-metadata"))]
+    pub(crate) fn install(self) -> Result<std::path::PathBuf, MetadataError> {
+        Err(MetadataError::UnsupportedEncoding(MetadataEncoding::Gpkg))
+    }
+}
