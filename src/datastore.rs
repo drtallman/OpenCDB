@@ -138,6 +138,16 @@ impl CdbDatastore {
         // Resolve the profile's storage CRS; a mis-declared CRS fails here,
         // still before any disk write (Requirements CRS3/CRS4).
         let crs = profile.storage_crs().map_err(CrsError::from)?;
+        if metadata.encoding == MetadataEncoding::Gpkg {
+            if !cfg!(feature = "gpkg-metadata") {
+                return Err(MetadataError::UnsupportedEncoding(MetadataEncoding::Gpkg).into());
+            }
+            if profile.attribute_model().is_some() {
+                return Err(MetadataError::UnsupportedContainer { reason:
+                    "a GeoPackage profile cannot require an attribute model: Attr1-C names XML/JSON files while Metadata5 requires one encoding".into()
+                }.into());
+            }
+        }
         // Policy is now proven; only now touch the disk.
         let layout = DatastoreLayout::create_named(parent, profile.root_folder_name())?;
         metadata.write_to(&layout)?;
@@ -209,10 +219,16 @@ impl CdbDatastore {
         for (extension, found) in [
             ("json", MetadataEncoding::Json),
             ("xml", MetadataEncoding::Xml),
+            ("gpkg", MetadataEncoding::Gpkg),
         ] {
             if found != metadata.encoding {
                 let name = format!("{GLOBAL_METADATA_STEM}.{extension}");
-                if dir.join(&name).is_file() {
+                let is_file = match fs::metadata(dir.join(&name)) {
+                    Ok(metadata) => metadata.is_file(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(MetadataError::Io(error).into()),
+                };
+                if is_file {
                     return Err(CdbError::Metadata(MetadataError::Violation(
                         MetadataViolation::EncodingMismatch {
                             file: name,
@@ -345,9 +361,8 @@ impl CdbDatastore {
     /// encoding is a [`MetadataViolation::EncodingMismatch`]; an absent or
     /// unrecognized extension is a [`MetadataViolation::Malformed`] (that
     /// mismatch variant cannot name a "no encoding" found value). A
-    /// `gpkg`-declared datastore cannot be written by the core and yields
-    /// [`MetadataError::UnsupportedEncoding`], as [`GlobalMetadata::write_to`]
-    /// does.
+    /// `gpkg`-declared datastore requires the optional `gpkg-metadata` feature;
+    /// without it this operation yields [`MetadataError::UnsupportedEncoding`].
     pub fn write_resource_metadata(
         &self,
         logical_path: &str,
@@ -378,16 +393,23 @@ impl CdbDatastore {
                 )));
             }
         }
+        let path = self.resolve(logical_path)?;
         let content = match declared {
             MetadataEncoding::Json => metadata.to_json_string()?,
             MetadataEncoding::Xml => metadata.to_xml_string()?,
             MetadataEncoding::Gpkg => {
-                return Err(CdbError::Metadata(MetadataError::UnsupportedEncoding(
-                    MetadataEncoding::Gpkg,
-                )));
+                return Ok(crate::metadata::gpkg::prepare_write(
+                    &path,
+                    crate::metadata::gpkg::RecordKind::Resource,
+                    &metadata.to_json_string()?,
+                    metadata
+                        .updated
+                        .or(metadata.created)
+                        .unwrap_or_else(Utc::now),
+                )?
+                .install()?);
             }
         };
-        let path = self.resolve(logical_path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(MetadataError::from)?;
         }
@@ -397,19 +419,28 @@ impl CdbDatastore {
 
     /// Reads a resource metadata record from `logical_path`, parsing it by the
     /// path's final-component extension (§7.9.4.2): `json` as JSON,
-    /// `xml`/`xsd` as XML. Any other extension is a
-    /// [`MetadataViolation::Malformed`] — the core reads only the two textual
-    /// encodings.
+    /// `xml`/`xsd` as XML, or `gpkg` via the optional GeoPackage binding.
+    /// Any other extension is a [`MetadataViolation::Malformed`].
     pub fn read_resource_metadata(&self, logical_path: &str) -> Result<ResourceMetadata, CdbError> {
         let path = self.resolve(logical_path)?;
-        let content = fs::read_to_string(&path).map_err(MetadataError::from)?;
         match path_extension(logical_path).and_then(extension_encoding) {
-            Some(MetadataEncoding::Json) => Ok(ResourceMetadata::from_json_str(&content)?),
-            Some(MetadataEncoding::Xml) => Ok(ResourceMetadata::from_xml_str(&content)?),
-            _ => Err(CdbError::Metadata(MetadataError::Violation(
+            Some(MetadataEncoding::Gpkg) => {
+                let document = crate::metadata::gpkg::read_document(
+                    &path,
+                    crate::metadata::gpkg::RecordKind::Resource,
+                )?;
+                Ok(ResourceMetadata::from_json_str(&document)?)
+            }
+            Some(MetadataEncoding::Json) => Ok(ResourceMetadata::from_json_str(
+                &fs::read_to_string(&path).map_err(MetadataError::from)?,
+            )?),
+            Some(MetadataEncoding::Xml) => Ok(ResourceMetadata::from_xml_str(
+                &fs::read_to_string(&path).map_err(MetadataError::from)?,
+            )?),
+            None => Err(CdbError::Metadata(MetadataError::Violation(
                 MetadataViolation::Malformed {
                     reason: format!(
-                        "resource metadata path {logical_path:?} has no json or xml extension"
+                        "resource metadata path {logical_path:?} has no json, xml, xsd or gpkg extension"
                     ),
                 },
             ))),
@@ -1866,9 +1897,8 @@ mod tests {
     /// GeoPackage-declared datastore has no core-readable attribute
     /// model: both facade directions report
     /// [`MetadataError::UnsupportedEncoding`], the metadata readers'
-    /// precedent. (`gpkg` is unrepresentable through a profile
-    /// constructor, so the declaration is patched on disk — the only way
-    /// a `gpkg`-declaring store can exist for the core.)
+    /// precedent. The declaration is patched on disk so this test also runs
+    /// without the optional GeoPackage feature.
     #[test]
     fn req_core_attribute_model_facade_gpkg_unsupported() {
         let tmp = tempdir().unwrap();

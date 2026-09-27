@@ -1,6 +1,4 @@
 //! OpenCDB metadata binding for GeoPackage 1.2.1.
-// Removed when the facade and journal callers land in tasks 3/5.
-#![allow(dead_code)]
 #[cfg(not(feature = "gpkg-metadata"))]
 use super::MetadataEncoding;
 use super::MetadataError;
@@ -14,8 +12,10 @@ mod schema;
 pub(crate) enum RecordKind {
     Global,
     Resource,
+    #[allow(dead_code)] // Connected by the collection coordinator in task 5.
     Collection,
 }
+#[cfg(feature = "gpkg-metadata")]
 impl RecordKind {
     pub(crate) fn schema_uri(self) -> &'static str {
         match self {
@@ -55,7 +55,9 @@ fn unsupported(reason: impl Into<String>) -> MetadataError {
 }
 
 pub(crate) struct PreparedWrite {
+    #[cfg(feature = "gpkg-metadata")]
     target: std::path::PathBuf,
+    #[cfg(feature = "gpkg-metadata")]
     bytes: Vec<u8>,
 }
 

@@ -94,9 +94,7 @@ pub enum MetadataViolation {
 pub enum MetadataError {
     #[error(transparent)]
     Violation(#[from] MetadataViolation),
-    #[error(
-        "the core cannot write {0}-encoded metadata files; that container belongs to an application profile"
-    )]
+    #[error("{0}-encoded metadata is unavailable for this operation or build")]
     UnsupportedEncoding(MetadataEncoding),
     #[error("unsupported GeoPackage metadata container: {reason}")]
     UnsupportedContainer { reason: String },
@@ -466,55 +464,85 @@ impl GlobalMetadata {
     /// (Requirement Metadata1, `/req/core/metadata-repository`).
     pub fn write_to(&self, layout: &DatastoreLayout) -> Result<PathBuf, MetadataError> {
         self.validate()?;
-        let content = match self.encoding {
-            MetadataEncoding::Json => self.to_json_string()?,
-            MetadataEncoding::Xml => self.to_xml_string()?,
-            MetadataEncoding::Gpkg => {
-                return Err(MetadataError::UnsupportedEncoding(MetadataEncoding::Gpkg));
-            }
-        };
         let dir = layout.global_metadata_dir();
-        fs::create_dir_all(&dir)?;
         let path = dir.join(format!(
             "{GLOBAL_METADATA_STEM}.{}",
             self.encoding.extension()
         ));
+        let content = match self.encoding {
+            MetadataEncoding::Json => self.to_json_string()?,
+            MetadataEncoding::Xml => self.to_xml_string()?,
+            MetadataEncoding::Gpkg => {
+                return gpkg::prepare_write(
+                    &path,
+                    gpkg::RecordKind::Global,
+                    &self.to_json_string()?,
+                    self.update.unwrap_or(self.created),
+                )?
+                .install();
+            }
+        };
+        fs::create_dir_all(&dir)?;
         fs::write(&path, content)?;
         Ok(path)
     }
 
     /// Reads the global metadata record from a datastore.
     pub fn read_from(layout: &DatastoreLayout) -> Result<Self, MetadataError> {
-        let dir = layout.global_metadata_dir();
-        for extension in ["json", "xml"] {
-            let path = dir.join(format!("{GLOBAL_METADATA_STEM}.{extension}"));
-            if !path.is_file() {
-                continue;
+        let path = locate_global(layout)?;
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some("gpkg") => {
+                Self::from_json_str(&gpkg::read_document(&path, gpkg::RecordKind::Global)?)
             }
-            let content = fs::read_to_string(&path)?;
-            return if extension == "json" {
-                Self::from_json_str(&content)
-            } else {
-                Self::from_xml_str(&content)
-            };
+            Some("json") => Self::from_json_str(&fs::read_to_string(path)?),
+            _ => Self::from_xml_str(&fs::read_to_string(path)?),
         }
-        Err(MetadataViolation::MissingGlobalMetadata { searched: dir }.into())
     }
 
-    /// The logical path (link) to the physical global metadata file
-    /// (Requirement Metadata3, `/req/core/metadata-global`).
+    /// The logical path to the physical global metadata file (Metadata3).
+    /// GeoPackage candidates coexisting with JSON/XML are ambiguous.
     pub fn locate(layout: &DatastoreLayout) -> Result<String, MetadataError> {
-        for extension in ["json", "xml"] {
-            let name = format!("{GLOBAL_METADATA_STEM}.{extension}");
-            if layout.global_metadata_dir().join(&name).is_file() {
-                return Ok(format!("/{GLOBAL_METADATA_DIR}/{name}"));
-            }
-        }
-        Err(MetadataViolation::MissingGlobalMetadata {
-            searched: layout.global_metadata_dir(),
-        }
-        .into())
+        let path = locate_global(layout)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                MetadataError::Serialization("global metadata path has no UTF-8 filename".into())
+            })?;
+        Ok(format!("/{GLOBAL_METADATA_DIR}/{name}"))
     }
+}
+
+fn locate_global(layout: &DatastoreLayout) -> Result<PathBuf, MetadataError> {
+    let dir = layout.global_metadata_dir();
+    let mut candidates = Vec::new();
+    for extension in ["json", "xml", "gpkg"] {
+        let path = dir.join(format!("{GLOBAL_METADATA_STEM}.{extension}"));
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => candidates.push(path),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if candidates.len() > 1
+        && candidates
+            .iter()
+            .any(|p| p.extension().is_some_and(|ext| ext == "gpkg"))
+    {
+        let names: Vec<_> = candidates
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|name| format!("/{GLOBAL_METADATA_DIR}/{}", name.to_string_lossy()))
+            .collect();
+        return Err(MetadataError::UnsupportedContainer {
+            reason: format!("ambiguous global metadata candidates: {}", names.join(", ")),
+        });
+    }
+    candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| MetadataViolation::MissingGlobalMetadata { searched: dir }.into())
 }
 
 /// Fluent builder for [`GlobalMetadata`]; `build` enforces the mandatory
@@ -1110,8 +1138,8 @@ mod tests {
         assert!(error.to_string().contains("UTC"), "{error}");
     }
 
-    /// gpkg is a valid declared encoding (Metadata5) but the core cannot
-    /// write that container; profiles do.
+    /// Metadata5 permits gpkg; builds without the optional codec refuse it.
+    #[cfg(not(feature = "gpkg-metadata"))]
     #[test]
     fn gpkg_file_encoding_unsupported_for_write() {
         let tmp = tempdir().unwrap();
