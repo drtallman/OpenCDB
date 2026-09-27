@@ -609,7 +609,9 @@ an ecosystem.
   inference. Version chains and configurations selecting other/multiple roots
   are refused. CLI inventory and migrate commands, dry-run planning, immutable
   source-bound plans, byte/address verification and complete reports are
-  implemented. The stable profile identity `cdb-migrator-v1` is separate from
+  implemented. Empty CLI source/destination arguments are refused before
+  filesystem access; an unset output variable cannot select the working directory.
+  The stable profile identity `cdb-migrator-v1` is separate from
   companion filenames; equivalent baselines require comparing full descriptors.
   **Task 10 acceptance, 2026-09-21:** all eleven San Diego roots from
   [CesiumGS/cdb-to-3dtiles](https://github.com/CesiumGS/cdb-to-3dtiles/tree/0f9487f03c9e5f7d0c8e2505509ef07fa3eb41fc/Tests/Data)

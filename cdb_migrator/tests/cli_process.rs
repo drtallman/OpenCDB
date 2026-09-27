@@ -29,6 +29,32 @@ fn mig_cli_process_missing_output_flag_creates_nothing() {
     assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
 }
 
+/// Empty positional paths (for example, an unset shell variable) must refuse
+/// before source reads or output creation in the process working directory.
+#[test]
+fn mig_cli_process_empty_paths_refuse_without_writes() {
+    for args in [
+        vec!["migrate", "source", ""],
+        vec!["migrate", "source", "", "--dry-run"],
+        vec!["migrate", "", "output"],
+        vec!["inventory", ""],
+    ] {
+        let hold = tempfile::tempdir().unwrap();
+        let root = hold.path().canonicalize().unwrap();
+        fs::create_dir(root.join("source")).unwrap();
+        let result = invoke(&root, &args);
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            1,
+            "{args:?} must not create output; exit {:?}",
+            result.status.code()
+        );
+        assert_eq!(result.status.code(), Some(2), "{args:?}: {result:?}");
+        assert!(result.stdout.is_empty(), "{args:?}");
+        assert!(!result.stderr.is_empty(), "{args:?}");
+    }
+}
+
 /// Explicit relative paths disambiguate literal names beginning with option syntax.
 #[test]
 fn mig_cli_process_explicit_option_named_paths_remain_supported() {

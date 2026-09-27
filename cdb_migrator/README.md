@@ -62,8 +62,9 @@ Non-UTF-8 command arguments are refused without replacement or panic.
 | `--timestamp RFC3339` | UTC creation/update/collection time; otherwise use the facade clock |
 | `--dry-run` | Print planned `MOVE`/`SKIP` rows and counts; create nothing |
 
-Options follow both positional paths. Bare option tokens cannot fill either path
-slot; use an explicit path such as `./--dry-run` for a literal name beginning
+Options follow both positional paths. Empty positional paths are rejected; use
+`.` explicitly for the current directory. Bare option tokens cannot fill either
+path slot; use an explicit path such as `./--dry-run` for a literal name beginning
 with `-`. Repeated or unknown options are rejected.
 A dry run validates the source and operator plan only: its rows are planned,
 not copied or verified, and it makes no output-conformance claim. Destination

@@ -63,6 +63,9 @@ fn read_input(path: &str) -> Result<String, Cdb1Error> {
     std::fs::read_to_string(path).map_err(|e| Cdb1Error::Io(path.into(), e))
 }
 fn require_path(value: &str, slot: &str) -> Result<(), Cdb1Error> {
+    if value.is_empty() {
+        return Err(usage(&format!("{slot} requires a nonempty path")));
+    }
     if value.starts_with('-') {
         return Err(usage(&format!(
             "{slot} requires a path, not an option; prefix a literal option-named path with ./"
