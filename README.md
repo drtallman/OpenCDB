@@ -14,6 +14,7 @@ djb's constant-database file format.
 |---|---|---|
 | `opencdb` | 1.0.0 | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
 | [`cdb-lint`](cdb-lint/README.md) | 0.1.0 | the CLI: judges a datastore against a profile and renders the report as text, JSON, or SARIF |
+| [`cdb_migrator`](cdb_migrator/README.md) | 0.1.0 (unpublished) | source-built CDB 1.x reader and migrator with explicit operator metadata and descriptor-scoped validation |
 
 ## The library
 
@@ -114,7 +115,7 @@ and output can evolve without touching the library's semver.
 
 Every change is test-driven against the spec: first a failing test named
 `req_<module>_<slug>` citing the clause, then the minimum implementation,
-then a refactor with the gates green. The workspace holds 553 tests.
+then a refactor with the workspace gates green.
 
 ```sh
 cargo test --workspace                                      # the gate

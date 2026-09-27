@@ -592,29 +592,52 @@ an ecosystem.
   positions the project as a contributor to the standard. Precede any
   public "first/only" positioning with a fresh landscape-verification
   sweep (post-Jan-2026 ecosystem check).
-- **CDB 1.x reader + 1.x→2.0 migration tool** — the likely killer adoption
-  feature (all fielded data is 1.x); a separate project with its own spec
-  corpus (1.x volumes), NOT an extension of the 2.0 core modules. The
-  technical bridge already exists in-crate: `Cdb1GlobalGrid` is the
-  1.x-compatible tiling scheme (LOD/row/col ↔ geocell math match), so a
-  migrator maps 1.x tile files onto identical 2.0 tile addresses and
-  translates layout/metadata around them — the tiling itself round-trips.
-  **Chartered 2026-09-15** (the 2026-09-15 CDB 1.x migrator design note and
-  its implementation plan; implementation awaits owner review and a crate
-  name): reader + migrator in a third workspace crate, zero new
-  dependencies, payloads opaque; reads every version a 1.x Version.xml can
-  declare (1.0/1.1/1.2 and pre-OGC 3.0/3.1/3.2, per OGC 15-113r6 §10.1.7)
-  and tolerates the undeclared trees that real corpora are; the 1.x↔2.0
-  zone tables were verified value-identical, and the address bridge
-  delegates to the grid's own math. The measured hard fact that shaped the
-  design: real 1.x names satisfy none of Name6's four case rules (70
-  name-case convictions on a real corpus tree under `Snake_case`), so the
-  migrator renames by a deterministic ASCII lower-snake fold — invertible
-  through the 1.x grammar itself — and emits the cdb-lint profile
-  descriptor its output claims, making "migrated" mean "validates
-  CONFORMANT under the emitted yardstick" (a folded mini-layout already
-  judges conformant with zero findings). v1 is single-root: version
-  chains and multi-version configurations are refused, not flattened.
+- **CDB 1.x reader + 1.x→2.0 migration tool** — implemented in the
+  unpublished third workspace crate `cdb_migrator` (0.1.0), with no new
+  dependency packages and no changes to the frozen library or linter trees.
+  The reader recognizes declaration values 1.0/1.1/1.2 and pre-OGC 3.0/3.1/3.2
+  using the verified layout/control subset of
+  [OGC 15-113r6](https://docs.ogc.org/is/15-113r6/15-113r6.html);
+  this is not blanket historical-schema support. The destination follows
+  [OGC 23-034](https://docs.ogc.org/is/23-034/23-034.html) through the public
+  facade. Source declarations and exact original paths remain provenance.
+  Structural name tokens can be canonicalized, but arbitrary dataset/model
+  labels cannot recover their original case after ASCII lowercase folding.
+  Explicit rename maps resolve unsupported names without changing tile identity;
+  explicit carry/skip policy governs unrecognized entries. Required resource
+  metadata and applicability come from strict operator manifests, never payload
+  inference. Version chains and configurations selecting other/multiple roots
+  are refused. CLI inventory and migrate commands, dry-run planning, immutable
+  source-bound plans, byte/address verification and complete reports are
+  implemented. Empty CLI source/destination arguments are refused before
+  filesystem access; an unset output variable cannot select the working directory.
+  The stable profile identity `cdb-migrator-v1` is separate from
+  companion filenames; equivalent baselines require comparing full descriptors.
+  **Task 10 acceptance, 2026-09-21:** all eleven San Diego roots from
+  [CesiumGS/cdb-to-3dtiles](https://github.com/CesiumGS/cdb-to-3dtiles/tree/0f9487f03c9e5f7d0c8e2505509ef07fa3eb41fc/Tests/Data)
+  were actually migrated: 1,455 source files / 239,094,424 bytes, 741 tiles,
+  707 global payloads, seven explicitly carried unknown files and 1,448
+  generated records. Independent direct-byte comparisons, original SHA-256
+  baselines, source accounting, all 741 filename-derived addresses and written
+  metadata passed. All eleven independent cdb-lint runs matched the complete
+  embedded reports: conformant under emitted descriptors, eleven classes and
+  zero warnings/violations each. Three explicit tree.rgb.attr renames preserved
+  the final attr extension. Operator fixtures assumed metre/Height elevation,
+  dimensionless/ImageSample imagery, center sampling, unit precision/scale,
+  zero offset, no null sentinel, no other coverage, no measurement values or
+  generated faces, and no attribute model. These are unverified test assertions,
+  not production inference. All source Version.xml declarations were absent;
+  findings were preserved. Payload semantics and embedded references remain
+  unchecked and renaming may break embedded paths. Memory includes inventory,
+  plan, manifest, report and journal metadata plus the largest buffered payload.
+  One collection per copied file limits v1 to 999,999 files, and per-collection
+  journal scans preclude unmeasured speed/capacity promises. Physical stable
+  source/output paths and destination hard-link support are required; incomplete
+  output is retained for diagnosis and retry requires a fresh location.
+  Yemen-scale corpus: **NOT TESTED**. Native case-distinct/non-UTF-8 filesystem
+  fixtures were unavailable on this macOS volume; helper checks do not establish
+  Linux-native verification. Final whole-branch review follows task acceptance;
+  this status does not declare the milestone released or published.
 - **GeoPackage metadata encoding** — lift the deliberate
   `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
   (needs a sqlite/gpkg dependency; keep out of the core path).

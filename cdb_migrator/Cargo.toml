@@ -1,0 +1,15 @@
+[package]
+name = "cdb_migrator"
+version = "0.1.0"
+edition = "2021"
+description = "OGC CDB 1.x reader and 1.x-to-2.0 migrator built on opencdb"
+license = "Apache-2.0"
+
+[dependencies]
+opencdb = { path = "..", version = "1.0.0" }
+quick-xml = { version = "0.41.0", features = ["serialize"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
+
+[dev-dependencies]
+tempfile = "3"
