@@ -11,7 +11,13 @@ repository = "https://github.com/drtallman/OpenCDB"
 keywords = ["ogc", "cdb", "geospatial", "conformance", "gis"]
 categories = ["science::geo"]
 
+[features]
+default = []
+gpkg-metadata = ["dep:rusqlite", "dep:tempfile"]
+
 [dependencies]
+rusqlite = { version = "0.40.2", optional = true, default-features = false, features = ["bundled", "serialize"] }
+tempfile = { version = "3.27.0", optional = true }
 chrono = { version = "0.4.45", features = ["serde"] }
 geo = "0.33.1"
 geo-types = { version = "0.7.19", features = ["serde"] }

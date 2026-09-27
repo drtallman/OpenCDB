@@ -9,6 +9,7 @@
 //! in §7.9.3.1 but `global_metadata` in Requirement File6 (§7.5.7); this
 //! crate follows File6 via [`crate::hierarchy::GLOBAL_METADATA_DIR`].
 
+pub(crate) mod gpkg;
 pub mod temporal;
 
 use std::fmt;
@@ -97,6 +98,8 @@ pub enum MetadataError {
         "the core cannot write {0}-encoded metadata files; that container belongs to an application profile"
     )]
     UnsupportedEncoding(MetadataEncoding),
+    #[error("unsupported GeoPackage metadata container: {reason}")]
+    UnsupportedContainer { reason: String },
     #[error("metadata (de)serialization failed: {0}")]
     Serialization(String),
     #[error(transparent)]
