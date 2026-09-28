@@ -1,0 +1,94 @@
+name: GeoPackage pre-publish
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/geopackage-metadata]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: geopackage-prepublish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.configuration }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: default
+            args: ''
+          - configuration: gpkg-metadata
+            args: --all-features
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup override set stable
+          rustc --version
+          cargo --version
+      - name: Workspace gates
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo fmt --all --check
+          cargo build --workspace --locked ${{ matrix.args }}
+          cargo test --workspace --locked ${{ matrix.args }}
+          cargo clippy --workspace --all-targets --locked ${{ matrix.args }} -- -D warnings
+          cargo doc --workspace --no-deps --locked ${{ matrix.args }}
+      - name: Check default dependencies and independent CLI opt-in
+        if: matrix.configuration == 'default'
+        run: |
+          cargo tree -p opencdb --no-default-features -e normal,build --locked > "$RUNNER_TEMP/default-dependencies.txt"
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          tree = (Path(os.environ['RUNNER_TEMP']) / 'default-dependencies.txt').read_text()
+          assert 'rusqlite' not in tree and 'libsqlite3-sys' not in tree, tree
+          PYTHON
+          cargo test -p cdb-lint --features opencdb/gpkg-metadata --test cli_gpkg --locked
+      - name: Verify both release packages without uploading
+        run: cargo publish -p opencdb -p cdb-lint --dry-run --locked ${{ matrix.args }}
+      - name: Verify package contents and prepare standalone CLI checks
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          package = Path('target/package')
+          library = (package / 'opencdb-1.1.0').resolve()
+          cli = (package / 'cdb-lint-0.2.0').resolve()
+          for root in [library, cli]:
+              assert (root / 'LICENSE').read_bytes() == Path('LICENSE').read_bytes()
+              for name in ['README.md', 'CHANGELOG.md']:
+                  assert (root / name).is_file(), (root, name)
+          for name in ['docs/CONFORMANCE.md', 'docs/GPKG_METADATA.md',
+                       'src/metadata/gpkg/schema.sql', 'tests/fixtures/gpkg/independent.sql']:
+              assert (library / name).is_file(), name
+          # Test the exact unpacked library before it exists on crates.io.
+          # The preceding dry run independently verifies registry resolution.
+          (cli / '.cargo').mkdir(exist_ok=True)
+          (cli / '.cargo/config.toml').write_text(
+              '[patch.crates-io]\nopencdb = { path = ' + json.dumps(str(library)) + ' }\n')
+          PYTHON
+      - name: Test the unpacked library and CLI and install the CLI
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo test --manifest-path target/package/opencdb-1.1.0/Cargo.toml --locked --offline ${{ matrix.args }}
+          cd target/package/cdb-lint-0.2.0
+          cargo update -p opencdb --precise 1.1.0 --offline
+          cargo test --locked --offline ${{ matrix.args }}
+          cargo install --path . --locked --offline --root "$RUNNER_TEMP/cdb-lint-install" ${{ matrix.args }}
+          "$RUNNER_TEMP/cdb-lint-install/bin/cdb-lint" --version
+          "$RUNNER_TEMP/cdb-lint-install/bin/cdb-lint" --help

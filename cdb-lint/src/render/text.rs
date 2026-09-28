@@ -3,7 +3,7 @@
 //! and a verdict.
 //!
 //! ```text
-//! cdb-lint 0.1.0 (opencdb 1.0.0)
+//! cdb-lint 0.2.0 (opencdb 1.1.0)
 //! datastore  /Users/x/cdb
 //! profile    simulation (json)
 //!

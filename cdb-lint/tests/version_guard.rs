@@ -12,12 +12,14 @@
 //! reader can find by eye.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// The library's manifest, found relative to this crate rather than to the
-/// working directory, which cargo is free to choose.
+#[path = "support/library_source.rs"]
+mod library_source;
+
+/// The manifest of the library Cargo actually built, including registry sources.
 fn library_manifest() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml")
+    library_source::manifest()
 }
 
 /// The `version` of the `[package]` section, ignoring every other section —

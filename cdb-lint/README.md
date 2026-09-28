@@ -37,11 +37,11 @@ cargo build --release -p cdb-lint                     # → target/release/cdb-l
 cargo install --path cdb-lint                         # this checkout → ~/.cargo/bin/cdb-lint
 ```
 
-A first real run:
+A first run from this checkout:
 
 ```sh
 $ cdb-lint --profile simulation --encoding json /srv/data/cdb
-cdb-lint 0.1.0 (opencdb 1.0.0)
+cdb-lint 0.2.0 (opencdb 1.1.0)
 datastore  /srv/data/cdb
 profile    simulation (json)
 
@@ -498,11 +498,12 @@ consume only `$?`, you are reading half of what the run said.
 
 ## Versions and stability
 
-`cdb-lint` is at **0.1.0** and is pre-1.0 in earnest: its flags, its rendered
+This checkout prepares **0.2.0**; crates.io currently provides **0.1.0**.
+The CLI is pre-1.0: its flags, its rendered
 output, its SARIF property names and its descriptor schema may change in a
 later `0.x`. Pin a version if a pipeline depends on the shape of what it reads.
 
-The library it wraps, **`opencdb` 1.0**, is under semver — but the freeze
+The library it wraps, **`opencdb` 1.1**, is under semver — but the freeze
 covers the public *API surface*, not the *content* of a conformance report. A
 spec erratum or a revised interpretation may change what a validator reports
 without that being a breaking API change. `cdb-lint --version` names both
@@ -520,7 +521,8 @@ versions for exactly that reason, and every report's header repeats them.
 
 ## Optional GeoPackage metadata
 
-Build from this checkout with the explicit feature:
+GeoPackage support is prepared for 0.2.0 and is not in the published 0.1.0
+crate. Build from this checkout with the explicit feature:
 
 ```sh
 cargo build -p cdb-lint --features gpkg-metadata
@@ -548,7 +550,8 @@ choices remain `json` and `xml`. A minimal descriptor for this binding is:
 Place a WGS-84 WKT-2 declaration in `crs.wkt` beside the descriptor. See
 [the binding contract](../docs/GPKG_METADATA.md) for the supported GeoPackage
 1.2.1 subset and document schemas. Bundled SQLite requires no separate
-system SQLite installation; default builds do not include it.
+system SQLite installation, but building the feature requires a C compiler.
+Default builds do not include SQLite.
 
 A descriptor requesting GeoPackage without this feature exits **2** before
 opening the datastore. A descriptor requiring an `attribute_model` with

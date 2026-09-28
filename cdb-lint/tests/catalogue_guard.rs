@@ -29,10 +29,15 @@ use std::path::{Path, PathBuf};
 use cdb_lint::catalogue::{self, CATALOGUE, Entry};
 use opencdb::conformance::RequirementsClass;
 
-/// The library's conformance tree, found relative to *this* crate rather
-/// than to the working directory, which cargo is free to choose.
+#[path = "support/library_source.rs"]
+mod library_source;
+
+/// The conformance tree of the library Cargo actually built.
 fn conformance_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/conformance")
+    library_source::manifest()
+        .parent()
+        .expect("the library manifest has a parent")
+        .join("src/conformance")
 }
 
 /// Every `.rs` file under `root`, recursively, in path order so that a

@@ -12,8 +12,8 @@ djb's constant-database file format.
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `opencdb` | 1.0.0 | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
-| [`cdb-lint`](cdb-lint/README.md) | 0.1.0 | the CLI: judges a datastore against a profile and renders the report as text, JSON, or SARIF |
+| `opencdb` | 1.1.0 (unreleased) | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
+| [`cdb-lint`](cdb-lint/README.md) | 0.2.0 (unreleased) | the CLI: judges a datastore against a profile and renders the report as text, JSON, or SARIF |
 | [`cdb_migrator`](cdb_migrator/README.md) | 0.1.0 | CDB 1.x reader and migrator with explicit operator metadata and descriptor-scoped validation |
 
 ## The library
@@ -39,7 +39,7 @@ profile*. The crate mirrors that split.
 
 ```toml
 [dependencies]
-opencdb = "1.0"
+opencdb = "1.0" # latest published release; this checkout prepares 1.1.0
 ```
 
 ```rust
@@ -58,8 +58,8 @@ This checkout supports the `gpkg-metadata` feature for custom application
 profiles declaring `MetadataEncoding::Gpkg`. It stores global/resource
 metadata and collection manifests using the documented
 [OpenCDB GeoPackage 1.2.1 binding](docs/GPKG_METADATA.md). SQLite is bundled
-and optional; default builds and the built-in profiles keep their existing
-behavior. Spatial payloads remain opaque.
+and optional; enabling it requires a C compiler. Default builds and the
+built-in profiles keep their existing behavior. Spatial payloads remain opaque.
 
 ```sh
 cargo run --example gpkg_metadata --features gpkg-metadata -- /tmp/gpkg-example
@@ -69,8 +69,10 @@ The example creates `/tmp/gpkg-example/cdb` only when an explicit destination
 is supplied, refuses an existing datastore, and prints a conformance report.
 A supported metadata container has no user data table, so its report includes
 the GeoPackage recommendation warning. See [the linter's opt-in descriptor](cdb-lint/README.md#optional-geopackage-metadata)
-for checking the same binding from the command line. No release version or
-publication is implied by this source-checkout feature.
+for checking the same binding from the command line. This feature is prepared
+for `opencdb` 1.1.0 and `cdb-lint` 0.2.0; those versions are not published yet.
+See [the library release notes](CHANGELOG.md), [CLI release notes](cdb-lint/CHANGELOG.md),
+and [release procedure](docs/RELEASING.md).
 
 ## The linter
 
@@ -79,8 +81,10 @@ cargo install cdb-lint
 cdb-lint --profile simulation --encoding json /path/to/datastore
 ```
 
+Output from this checkout:
+
 ```text
-cdb-lint 0.1.0 (opencdb 1.0.0)
+cdb-lint 0.2.0 (opencdb 1.1.0)
 datastore  /path/to/datastore
 profile    simulation (json)
 
@@ -128,7 +132,7 @@ types, traits, signatures, module paths, and the serde wire shape of a
 report. It deliberately leaves the content of findings unfrozen: the
 standard is a draft that carries recorded defects, so the findings a
 datastore draws may change within 1.x. Key on a finding's `code()`, never on
-its display text. `cdb-lint` is versioned separately at 0.1.0 so its flags
+its display text. `cdb-lint` is versioned separately so its flags
 and output can evolve without touching the library's semver.
 
 ## Development
@@ -154,7 +158,8 @@ naming test to 1.0.
 Features mandate; the crate adds the Z and M variants the spec needs as thin
 typed wrappers. A purpose-built tokenizer in `crs/wkt2.rs` reads CRS WKT-2.
 `proj` and `gdal` are absent on purpose: the core stores CRS metadata and
-never transforms coordinates, so nothing here needs a native library.
+never transforms coordinates. Default builds have no SQLite dependency;
+`gpkg-metadata` builds bundled SQLite and requires a C compiler.
 
 ## License
 

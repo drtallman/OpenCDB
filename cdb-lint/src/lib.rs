@@ -59,7 +59,7 @@ pub mod snapshot;
 /// library's own `Cargo.toml` so that it cannot quietly fall behind. It is a
 /// constant rather than a build-script product because the two crates live
 /// in one workspace and a build script would be machinery for a string.
-pub const OPENCDB_VERSION: &str = "1.0.0";
+pub const OPENCDB_VERSION: &str = "1.1.0";
 
 /// The ambient state that would otherwise make a run non-reproducible.
 ///

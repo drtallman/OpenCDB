@@ -659,8 +659,11 @@ an ecosystem.
   warning. Attr1-C/Metadata5 still rule out a required attribute model in this
   binding. Independent SQL fixtures, field-level metadata tests, journal
   round trips, preflight snapshots and CLI honesty tests cover the boundary.
-  Geometry, raster and model payloads remain opaque; no version bump, tag or
-  publication is part of this follow-on.
+  Geometry, raster and model payloads remain opaque. The subsequent integration
+  prepares `opencdb` 1.1.0 and `cdb-lint` 0.2.0, with an explicit 1.1.0 library
+  dependency in the CLI. Publication remains pending. Native Linux CI checks
+  default and enabled builds, source guards, both packages and CLI installation;
+  macOS runs the same workspace gates locally. See [RELEASING.md](RELEASING.md).
 - **Content codecs** — imagery/raster and model payload decode (feature-
   gated `gdal` or pure-Rust codecs) so "work with CDB" extends from
   structure/metadata into content; explicitly outside Part 1 Core scope.

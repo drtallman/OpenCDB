@@ -3,11 +3,13 @@ members = ["cdb-lint", "cdb_migrator"]
 
 [package]
 name = "opencdb"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Read, write, and validate OGC CDB 2.0 Core datastores"
 license = "Apache-2.0"
 repository = "https://github.com/drtallman/OpenCDB"
+documentation = "https://docs.rs/opencdb"
+readme = "README.md"
 keywords = ["ogc", "cdb", "geospatial", "conformance", "gis"]
 categories = ["science::geo"]
 

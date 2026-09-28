@@ -1,6 +1,6 @@
 # opencdb — OGC CDB 2.0 Core conformance matrix
 
-**Crate version 1.0.0** · **Standard:** OGC CDB Version 2, Part 1: Core
+**Crate version 1.1.0 (unreleased)** · **Standard:** OGC CDB Version 2, Part 1: Core
 (OGC 23-034, version 2.0) · **Audience:** implementers auditing this crate's
 conformance claim.
 
@@ -698,7 +698,7 @@ what the citation is for: the row tells you where to look, and the test's own
 doc comment cites the spec clause it verifies.
 
 **This document has an executable form.** `cdb-lint` — the workspace's CLI,
-`cdb-lint/` at `0.1.0` — runs the same `CdbDatastore::validate` against a
+`cdb-lint/` at `0.2.0` (unreleased) — runs the same `CdbDatastore::validate` against a
 stated profile and renders the verdict as text, as the JSON wire shape §2
 describes, or as SARIF. Every finding code in §5 has a row in its catalogue
 carrying the class the report files it under, the clause in OGC 23-034, and one
