@@ -635,9 +635,16 @@ an ecosystem.
   source/output paths and destination hard-link support are required; incomplete
   output is retained for diagnosis and retry requires a fresh location.
   Yemen-scale corpus: **NOT TESTED**. Native case-distinct/non-UTF-8 filesystem
-  fixtures were unavailable on this macOS volume; helper checks do not establish
-  Linux-native verification. Final whole-branch review follows task acceptance;
-  this status does not declare the milestone released or published.
+  fixtures were unavailable during the original macOS corpus run. Final review
+  and independent oracle completed with no outstanding implementation findings;
+  subsequent PR review added the empty-positional-path regression.
+  **0.1.0 release preparation:** package metadata, a packaged Apache-2.0 license,
+  installation guidance and crate-local release notes accompany a native
+  Ubuntu 24.04 pre-publish workflow. It verifies filesystem capabilities and
+  reader cases, workspace gates, the packaged crate against registry dependencies,
+  and installed CLI execution. Require a green run at the release commit;
+  the workflow performs only a publish dry-run. Windows remains unverified.
+  Version 0.1.0 is reserved for the initial release; publication is still pending.
 - **GeoPackage metadata encoding** — lift the deliberate
   `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
   (needs a sqlite/gpkg dependency; keep out of the core path).

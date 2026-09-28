@@ -1,0 +1,87 @@
+name: Migrator pre-publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrator-prepublish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux package and filesystem checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup override set stable
+          rustc --version
+          cargo --version
+      - name: Verify native Linux filesystem capabilities
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import sys
+          import tempfile
+          assert sys.platform == "linux"
+          assert os.geteuid() != 0, "permission tests require a non-root runner"
+          with tempfile.TemporaryDirectory() as directory:
+              root = pathlib.Path(directory)
+              (root / "Case").write_bytes(b"upper")
+              (root / "case").write_bytes(b"lower")
+              assert (root / "Case").read_bytes() == b"upper"
+              assert len(list(root.iterdir())) == 2
+              raw = os.fsencode(directory) + b"/non_utf8_\xff"
+              with open(raw, "wb") as output:
+                  output.write(b"identity")
+              assert b"non_utf8_\xff" in os.listdir(os.fsencode(directory))
+          print("Native case-distinct and non-UTF-8 fixtures are supported")
+          PYTHON
+      - name: Exercise native reader cases
+        run: |
+          cargo test -p cdb_migrator --locked --test reader_tree unix::mig_reader_ambiguous_controls_are_explicit -- --exact --nocapture
+          cargo test -p cdb_migrator --locked --test reader_tree unix::mig_reader_non_utf8_paths_keep_exact_identity -- --exact --nocapture
+      - name: Workspace checks
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo fmt --all --check
+          cargo build --workspace --locked
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo doc --workspace --no-deps --locked
+      - name: Check package contents and license
+        run: |
+          cargo package -p cdb_migrator --locked --list > "$RUNNER_TEMP/migrator-package-files.txt"
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          entries = set((Path(os.environ["RUNNER_TEMP"]) / "migrator-package-files.txt").read_text().splitlines())
+          required = {"LICENSE", "README.md", "CHANGELOG.md", "src/bin/cdb_migrator.rs"}
+          assert required <= entries, required - entries
+          assert Path("cdb_migrator/LICENSE").read_bytes() == Path("LICENSE").read_bytes()
+          print("License, README, release notes and CLI are included")
+          PYTHON
+      - name: Verify publication without uploading
+        run: cargo publish -p cdb_migrator --dry-run --locked
+      - name: Test and install the unpacked package
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          cargo test --locked --manifest-path target/package/cdb_migrator-0.1.0/Cargo.toml
+          cargo install --locked --path target/package/cdb_migrator-0.1.0 --root "$RUNNER_TEMP/migrator-install"
+          "$RUNNER_TEMP/migrator-install/bin/cdb_migrator" --help

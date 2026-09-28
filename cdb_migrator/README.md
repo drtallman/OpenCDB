@@ -1,6 +1,6 @@
 # cdb_migrator
 
-An unpublished Rust reader and migrator for OGC CDB 1.x trees. It copies opaque
+A Rust reader and migrator for OGC CDB 1.x trees. It copies opaque
 payload bytes into a CDB 2.0 datastore through `opencdb`'s public facade, generates
 records from explicit operator metadata, and validates against an emitted
 application-profile descriptor. It does not decode raster, model, geometry,
@@ -13,20 +13,37 @@ The reader recognizes specification declarations `1.0`, `1.1`, `1.2`, `3.0`,
 blanket support for every historical schema. Missing or unknown declarations
 remain visible in reader findings and provenance; no source version is inferred.
 
-## Build and commands
+## Installation and commands
 
-Build from this workspace; the package is not published to crates.io:
+Version 0.1.0 is being prepared for release. Once it is available on crates.io,
+install the CLI with its tested dependency lockfile:
 
 ```sh
-cargo build --workspace
-./target/debug/cdb_migrator --help
-./target/debug/cdb_migrator inventory /private/tmp/source_cdb
-./target/debug/cdb_migrator migrate /private/tmp/source_cdb /private/tmp/migration_out \
+cargo install cdb_migrator --version 0.1.0 --locked
+cdb_migrator --help
+```
+
+The package provides both the `cdb_migrator` binary and a Rust library.
+See [the release notes](CHANGELOG.md) for the supported scope and limitations.
+To use the independent output checker, install it separately:
+
+```sh
+cargo install cdb-lint --version 0.1.0 --locked
+```
+
+From a repository checkout, `cargo build --workspace --locked` builds all three
+crates; use `./target/debug/cdb_migrator` and `./target/debug/cdb-lint` for those
+local binaries. With the installed commands:
+
+```sh
+cdb_migrator --help
+cdb_migrator inventory /private/tmp/source_cdb
+cdb_migrator migrate /private/tmp/source_cdb /private/tmp/migration_out \
   --metadata-file /private/tmp/metadata.json \
   --rename-map /private/tmp/renames.json --carry-extras \
   --id example --title 'Example datastore' --description 'Operator description' \
   --contact ops@example.com --timestamp 2026-09-20T12:00:00Z
-./target/debug/cdb-lint --profile-file /private/tmp/migration_out/cdb_migrator-descriptor.json \
+cdb-lint --profile-file /private/tmp/migration_out/cdb_migrator-descriptor.json \
   --format json /private/tmp/migration_out/cdb
 ```
 
@@ -242,6 +259,17 @@ declared noncoverage; all declared no measurement values or generated faces,
 and no attribute model was supplied. These declarations were not checked against
 payload headers or contents. All trees lacked `Version.xml`; the missing-source
 version findings were retained. **Yemen-scale corpus: NOT TESTED.** Native
-case-distinct and non-UTF-8 filesystem fixtures were unavailable on the macOS
-volume; production helper tests cover those guards without claiming Linux-native
-verification. Whole-branch review remains separate from this task's acceptance.
+case-distinct and non-UTF-8 filesystem fixtures were unavailable on that macOS
+volume. The completed whole-branch review and independent oracle found no
+outstanding implementation findings; subsequent PR review also added an
+empty-positional-path regression.
+
+The [migrator pre-publish workflow](https://github.com/drtallman/OpenCDB/actions/workflows/migrator-prepublish.yml)
+provides native Ubuntu 24.04 validation. It checks that the test filesystem
+supports distinct case variants and non-UTF-8 names, runs those reader tests
+explicitly, and runs the complete workspace gates. It also checks package
+contents, performs a publish dry-run, tests the unpacked crate against registry
+dependencies, and installs the packaged CLI in a temporary directory for a help
+smoke test. Publication requires a successful run for the release commit.
+The workflow never uploads a crate. Windows and Yemen-scale performance remain
+unverified.
