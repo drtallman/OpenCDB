@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "OGC CDB 1.x reader and 1.x-to-2.0 migrator built on opencdb"
 license = "Apache-2.0"
+repository = "https://github.com/drtallman/OpenCDB"
+documentation = "https://docs.rs/cdb_migrator"
+readme = "README.md"
+keywords = ["ogc", "cdb", "geospatial", "migration", "gis"]
+categories = ["command-line-utilities", "science::geo"]
 
 [dependencies]
 opencdb = { path = "..", version = "1.0.0" }

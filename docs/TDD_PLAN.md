@@ -593,7 +593,7 @@ an ecosystem.
   public "first/only" positioning with a fresh landscape-verification
   sweep (post-Jan-2026 ecosystem check).
 - **CDB 1.x reader + 1.x→2.0 migration tool** — implemented in the
-  unpublished third workspace crate `cdb_migrator` (0.1.0), with no new
+  third workspace crate `cdb_migrator` (0.1.0), with no new
   dependency packages and no changes to the frozen library or linter trees.
   The reader recognizes declaration values 1.0/1.1/1.2 and pre-OGC 3.0/3.1/3.2
   using the verified layout/control subset of
@@ -635,9 +635,16 @@ an ecosystem.
   source/output paths and destination hard-link support are required; incomplete
   output is retained for diagnosis and retry requires a fresh location.
   Yemen-scale corpus: **NOT TESTED**. Native case-distinct/non-UTF-8 filesystem
-  fixtures were unavailable on this macOS volume; helper checks do not establish
-  Linux-native verification. Final whole-branch review follows task acceptance;
-  this status does not declare the milestone released or published.
+  fixtures were unavailable during the original macOS corpus run. Final review
+  and independent oracle completed with no outstanding implementation findings;
+  subsequent PR review added the empty-positional-path regression.
+  **0.1.0 release preparation:** package metadata, a packaged Apache-2.0 license,
+  installation guidance and crate-local release notes accompany a native
+  Ubuntu 24.04 pre-publish workflow. It verifies filesystem capabilities and
+  reader cases, workspace gates, the packaged crate against registry dependencies,
+  and installed CLI execution. Require a green run at the release commit;
+  the workflow performs only a publish dry-run. Windows remains unverified.
+  Version 0.1.0 is the initial release.
 - **GeoPackage metadata encoding — implemented, unreleased.** The optional
   `gpkg-metadata` feature supplies the [document binding](GPKG_METADATA.md)
   for GeoPackage 1.2.1 (12-128r15), the edition cited by the bundled Core.
