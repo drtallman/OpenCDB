@@ -3,7 +3,7 @@ name: Migrator pre-publish
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, codex/migrator-release-prep]
   workflow_dispatch:
 
 permissions:
