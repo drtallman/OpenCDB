@@ -593,7 +593,7 @@ an ecosystem.
   public "first/only" positioning with a fresh landscape-verification
   sweep (post-Jan-2026 ecosystem check).
 - **CDB 1.x reader + 1.x→2.0 migration tool** — implemented in the
-  unpublished third workspace crate `cdb_migrator` (0.1.0), with no new
+  third workspace crate `cdb_migrator` (0.1.0), with no new
   dependency packages and no changes to the frozen library or linter trees.
   The reader recognizes declaration values 1.0/1.1/1.2 and pre-OGC 3.0/3.1/3.2
   using the verified layout/control subset of
@@ -644,7 +644,7 @@ an ecosystem.
   reader cases, workspace gates, the packaged crate against registry dependencies,
   and installed CLI execution. Require a green run at the release commit;
   the workflow performs only a publish dry-run. Windows remains unverified.
-  Version 0.1.0 is reserved for the initial release; publication is still pending.
+  Version 0.1.0 is the initial release.
 - **GeoPackage metadata encoding** — lift the deliberate
   `MetadataEncoding::Gpkg` unsupported stance behind a feature gate
   (needs a sqlite/gpkg dependency; keep out of the core path).

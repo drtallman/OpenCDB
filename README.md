@@ -14,7 +14,7 @@ djb's constant-database file format.
 |---|---|---|
 | `opencdb` | 1.0.0 | the library: types, validators, profiles, and a conformance reporter for every core requirements module |
 | [`cdb-lint`](cdb-lint/README.md) | 0.1.0 | the CLI: judges a datastore against a profile and renders the report as text, JSON, or SARIF |
-| [`cdb_migrator`](cdb_migrator/README.md) | 0.1.0 (release pending) | CDB 1.x reader and migrator with explicit operator metadata and descriptor-scoped validation |
+| [`cdb_migrator`](cdb_migrator/README.md) | 0.1.0 | CDB 1.x reader and migrator with explicit operator metadata and descriptor-scoped validation |
 
 ## The library
 

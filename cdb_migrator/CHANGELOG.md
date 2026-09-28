@@ -1,6 +1,6 @@
 # cdb_migrator release notes
 
-## 0.1.0 — release pending
+## 0.1.0 — 2026-09-27
 
 Initial Rust library and command-line release for reading CDB 1.x trees and
 migrating them into CDB 2.0 datastores through `opencdb` 1.0.0.
@@ -40,4 +40,4 @@ acceptance and its explicit metadata assumptions. The
 [pre-publish workflow](https://github.com/drtallman/OpenCDB/actions/workflows/migrator-prepublish.yml)
 checks Linux filesystem behavior, workspace gates, package contents, registry
 dependencies and CLI installation. Require a green run for the selected release
-commit before publishing. This entry does not announce publication.
+commit before publishing.

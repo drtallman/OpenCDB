@@ -15,8 +15,7 @@ remain visible in reader findings and provenance; no source version is inferred.
 
 ## Installation and commands
 
-Version 0.1.0 is being prepared for release. Once it is available on crates.io,
-install the CLI with its tested dependency lockfile:
+Install the CLI from crates.io with its tested dependency lockfile:
 
 ```sh
 cargo install cdb_migrator --version 0.1.0 --locked
